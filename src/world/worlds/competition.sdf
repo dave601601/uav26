@@ -1,0 +1,374 @@
+<?xml version="1.0"?>
+<!--
+  UAV26 line_tracer 검증용 월드.
+
+  - 30 × 20 m 격자 바닥 (셀 4 m, 라인 폭 10 cm, 두께 0.5 cm, 색=짙은 회색)
+  - 9 개 ArUco 마커 (DICT_6X6_250, 50 × 50 cm)
+  - X-frame quadrotor (model://uav26_quad) 1대, 가짜 FC 내장
+
+  Mesh 와 텍스처는 model://world_assets/... 로 해석되므로 실행 시
+  GZ_SIM_RESOURCE_PATH 에 <install>/share/world/models 가 포함돼야 한다
+  (sim.launch.py 가 자동으로 set 해 준다).
+-->
+<sdf version="1.10">
+  <world name="competition">
+
+    <physics name="2ms" type="ignored">
+      <max_step_size>0.002</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system"
+            name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system"
+            name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+            name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system"
+            name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system"
+            name="gz::sim::systems::Imu"/>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.7 0.7 0.8 1</background>
+      <grid>false</grid>
+    </scene>
+
+    <!-- ===== 조명 ===== -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>15 10 10 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.2 -0.1 -1</direction>
+    </light>
+    <light type="directional" name="fill_1">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 8 0 0 0</pose>
+      <diffuse>0.4 0.4 0.4 1</diffuse>
+      <specular>0.05 0.05 0.05 1</specular>
+      <attenuation>
+        <range>500</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>0.5 0.5 -1</direction>
+    </light>
+
+    <!-- ===== 바닥 (밝은 회색) ===== -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>200 200</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>200 200</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.85 0.85 0.85 1</ambient>
+            <diffuse>0.85 0.85 0.85 1</diffuse>
+            <specular>0.2 0.2 0.2 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ===== 격자선 (짙은 회색 PBR) =====
+         시각만 — STL collision 은 dartsim 미지원이고, 0.5cm 두께 painted line
+         이 비행에 영향 줄 일도 없으므로 collision 생략. -->
+    <model name="grid_30x20">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <mesh>
+              <uri>model://world_assets/meshes/grid_30x20_t0.10_cell4.stl</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.05 0.05 0.05 1</ambient>
+            <diffuse>0.10 0.10 0.10 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ===== ArUco 마커 (50×50 cm, DICT_6X6_250) =====
+         pose 좌표는 src/world/config/aruco_layout.yaml 와 일치해야 함.
+         z = 0.001 = 1 mm (두께 0.002 의 절반) - 격자선(0.005) 보다 살짝 낮으나
+         바닥(z=0) 위에서 이격되어 z-fight 가 없도록 plane visual 을 z=0.0015 로 띄움.
+    -->
+    <model name="aruco_0">
+      <static>true</static>
+      <pose>4.0 4.0 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>0.5 0.5</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <albedo_map>model://world_assets/textures/aruco_0.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>0.9</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="aruco_1">
+      <static>true</static>
+      <pose>12.0 4.0 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>0.5 0.5</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <albedo_map>model://world_assets/textures/aruco_1.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>0.9</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="aruco_2">
+      <static>true</static>
+      <pose>20.0 4.0 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>0.5 0.5</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <albedo_map>model://world_assets/textures/aruco_2.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>0.9</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="aruco_3">
+      <static>true</static>
+      <pose>28.0 4.0 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>0.5 0.5</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <albedo_map>model://world_assets/textures/aruco_3.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>0.9</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="aruco_4">
+      <static>true</static>
+      <pose>8.0 12.0 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>0.5 0.5</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <albedo_map>model://world_assets/textures/aruco_4.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>0.9</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="aruco_5">
+      <static>true</static>
+      <pose>16.0 12.0 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>0.5 0.5</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <albedo_map>model://world_assets/textures/aruco_5.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>0.9</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="aruco_6">
+      <static>true</static>
+      <pose>24.0 12.0 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>0.5 0.5</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <albedo_map>model://world_assets/textures/aruco_6.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>0.9</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="aruco_7">
+      <static>true</static>
+      <pose>12.0 16.0 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>0.5 0.5</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <albedo_map>model://world_assets/textures/aruco_7.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>0.9</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="aruco_8">
+      <static>true</static>
+      <pose>20.0 16.0 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>0.5 0.5</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <albedo_map>model://world_assets/textures/aruco_8.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>0.9</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ===== 드론 ===== -->
+    <include>
+      <uri>model://uav26_quad</uri>
+      <name>uav26_quad</name>
+      <pose>2.0 2.0 0.15 0 0 0</pose>
+    </include>
+
+  </world>
+</sdf>

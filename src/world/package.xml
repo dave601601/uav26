@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>world</name>
+  <version>0.1.0</version>
+  <description>
+    UAV26 line_tracer 검증용 Gazebo Harmonic 월드 + X-frame quadrotor + 가짜 FC.
+    30×20 m 격자 바닥, ArUco DICT_6X6_250 마커 9개, 하향 D435 카메라 sim.
+  </description>
+
+  <maintainer email="noreply@todo.todo">Dongha Gwak</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>ros_gz_image</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

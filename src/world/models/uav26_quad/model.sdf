@@ -1,0 +1,441 @@
+<?xml version="1.0"?>
+<!--
+  UAV26 X-frame quadrotor.
+
+  Body: FLU (REP-103). +x forward, +y left, +z up. base_link 가 드론 중심.
+  Camera mount: 드론 하단 중앙 (0, 0, -0.05), 광축 = -Z_body (수직 하향).
+  Camera optical frame: ROS REP-103 — +X right, +Y down, +Z forward (= 광축).
+  Camera yaw offset = 0 → 드론 +X(forward) 가 image 의 v-up 방향.
+
+  Rotor 번호 (PX4 X-frame 관례):
+    rotor_0 : front-right, CCW
+    rotor_1 : back-left,   CCW
+    rotor_2 : front-left,  CW
+    rotor_3 : back-right,  CW
+
+  Plugins:
+    - 4 × gz-sim-multicopter-motor-model-system (개별 rotor 추력)
+    - 1 × gz-sim-multicopter-control-system (cmd_vel → motor cmd)
+    - gz-sim-odometry-publisher-system (디버그용)
+-->
+<sdf version="1.10">
+  <model name="uav26_quad">
+    <pose>0 0 0 0 0 0</pose>
+
+    <!-- ===== base_link ===== -->
+    <link name="base_link">
+      <inertial>
+        <pose>0 0 0 0 0 0</pose>
+        <mass>1.5</mass>
+        <inertia>
+          <ixx>0.0135</ixx>
+          <iyy>0.0135</iyy>
+          <izz>0.0240</izz>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+        </inertia>
+      </inertial>
+
+      <visual name="body_visual">
+        <geometry>
+          <box>
+            <size>0.20 0.20 0.05</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.1 0.1 0.1 1</ambient>
+          <diffuse>0.2 0.2 0.2 1</diffuse>
+        </material>
+      </visual>
+
+      <visual name="arm_x_visual">
+        <geometry>
+          <box>
+            <size>0.40 0.03 0.02</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.15 0.15 0.15 1</ambient>
+          <diffuse>0.25 0.25 0.25 1</diffuse>
+        </material>
+      </visual>
+
+      <visual name="arm_y_visual">
+        <geometry>
+          <box>
+            <size>0.03 0.40 0.02</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.15 0.15 0.15 1</ambient>
+          <diffuse>0.25 0.25 0.25 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- 전방 표시 (시각화용 빨간 점) -->
+      <visual name="forward_indicator">
+        <pose>0.10 0 0.03 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.04 0.04 0.005</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.6 0.0 0.0 1</ambient>
+          <diffuse>0.9 0.0 0.0 1</diffuse>
+        </material>
+      </visual>
+
+      <collision name="body_collision">
+        <geometry>
+          <box>
+            <size>0.40 0.40 0.06</size>
+          </box>
+        </geometry>
+      </collision>
+
+      <!-- ===== 하향 D435 카메라 (color + depth) =====
+           pose pitch=+π/2 → Gazebo camera +X (view) 가 -Z_body (정확히 하향).
+           Frame name 은 ROS optical 표준 (camera_color/depth_optical_frame)
+           으로 명시 → ros_gz_bridge 가 image header.frame_id 를 그대로 노출. -->
+      <sensor name="color" type="camera">
+        <pose>0 0 -0.05 0 1.5707963267948966 0</pose>
+        <topic>uav26_quad/camera/color/image</topic>
+        <gz_frame_id>camera_color_optical_frame</gz_frame_id>
+        <update_rate>30</update_rate>
+        <camera>
+          <horizontal_fov>1.20428</horizontal_fov>  <!-- 69° in rad -->
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.05</near>
+            <far>100.0</far>
+          </clip>
+        </camera>
+        <always_on>1</always_on>
+      </sensor>
+
+      <sensor name="depth" type="depth_camera">
+        <pose>0 0 -0.05 0 1.5707963267948966 0</pose>
+        <topic>uav26_quad/camera/depth/image</topic>
+        <gz_frame_id>camera_depth_optical_frame</gz_frame_id>
+        <update_rate>30</update_rate>
+        <camera>
+          <horizontal_fov>1.20428</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R_FLOAT32</format>
+          </image>
+          <clip>
+            <near>0.05</near>
+            <far>100.0</far>
+          </clip>
+          <depth_camera>
+            <clip>
+              <near>0.3</near>
+              <far>3.0</far>
+            </clip>
+          </depth_camera>
+        </camera>
+        <always_on>1</always_on>
+      </sensor>
+
+      <!-- IMU (line_tracer 는 사용 안 하지만 가짜 FC 가 angular rate 추정에 씀) -->
+      <sensor name="imu" type="imu">
+        <topic>uav26_quad/imu</topic>
+        <gz_frame_id>base_link</gz_frame_id>
+        <update_rate>200</update_rate>
+        <always_on>1</always_on>
+      </sensor>
+    </link>
+
+    <!-- ===== rotor_0 : front-right, CCW ===== -->
+    <link name="rotor_0">
+      <pose>0.14 -0.14 0.05 0 0 0</pose>
+      <inertial>
+        <mass>0.005</mass>
+        <inertia>
+          <ixx>9.75e-07</ixx>
+          <iyy>4.17e-05</iyy>
+          <izz>4.26e-05</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <geometry>
+          <cylinder>
+            <radius>0.10</radius>
+            <length>0.005</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.4 0.4 0.4 1</ambient>
+          <diffuse>0.6 0.6 0.6 1</diffuse>
+        </material>
+      </visual>
+    </link>
+    <joint name="rotor_0_joint" type="revolute">
+      <parent>base_link</parent>
+      <child>rotor_0</child>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <lower>-1e16</lower>
+          <upper>1e16</upper>
+        </limit>
+        <dynamics>
+          <damping>0.005</damping>
+        </dynamics>
+      </axis>
+    </joint>
+
+    <!-- ===== rotor_1 : back-left, CCW ===== -->
+    <link name="rotor_1">
+      <pose>-0.14 0.14 0.05 0 0 0</pose>
+      <inertial>
+        <mass>0.005</mass>
+        <inertia>
+          <ixx>9.75e-07</ixx>
+          <iyy>4.17e-05</iyy>
+          <izz>4.26e-05</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <geometry>
+          <cylinder>
+            <radius>0.10</radius>
+            <length>0.005</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.4 0.4 0.4 1</ambient>
+          <diffuse>0.6 0.6 0.6 1</diffuse>
+        </material>
+      </visual>
+    </link>
+    <joint name="rotor_1_joint" type="revolute">
+      <parent>base_link</parent>
+      <child>rotor_1</child>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <lower>-1e16</lower>
+          <upper>1e16</upper>
+        </limit>
+        <dynamics>
+          <damping>0.005</damping>
+        </dynamics>
+      </axis>
+    </joint>
+
+    <!-- ===== rotor_2 : front-left, CW ===== -->
+    <link name="rotor_2">
+      <pose>0.14 0.14 0.05 0 0 0</pose>
+      <inertial>
+        <mass>0.005</mass>
+        <inertia>
+          <ixx>9.75e-07</ixx>
+          <iyy>4.17e-05</iyy>
+          <izz>4.26e-05</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <geometry>
+          <cylinder>
+            <radius>0.10</radius>
+            <length>0.005</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.4 0.0 0.0 1</ambient>
+          <diffuse>0.7 0.0 0.0 1</diffuse>
+        </material>
+      </visual>
+    </link>
+    <joint name="rotor_2_joint" type="revolute">
+      <parent>base_link</parent>
+      <child>rotor_2</child>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <lower>-1e16</lower>
+          <upper>1e16</upper>
+        </limit>
+        <dynamics>
+          <damping>0.005</damping>
+        </dynamics>
+      </axis>
+    </joint>
+
+    <!-- ===== rotor_3 : back-right, CW ===== -->
+    <link name="rotor_3">
+      <pose>-0.14 -0.14 0.05 0 0 0</pose>
+      <inertial>
+        <mass>0.005</mass>
+        <inertia>
+          <ixx>9.75e-07</ixx>
+          <iyy>4.17e-05</iyy>
+          <izz>4.26e-05</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <geometry>
+          <cylinder>
+            <radius>0.10</radius>
+            <length>0.005</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.4 0.0 0.0 1</ambient>
+          <diffuse>0.7 0.0 0.0 1</diffuse>
+        </material>
+      </visual>
+    </link>
+    <joint name="rotor_3_joint" type="revolute">
+      <parent>base_link</parent>
+      <child>rotor_3</child>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <lower>-1e16</lower>
+          <upper>1e16</upper>
+        </limit>
+        <dynamics>
+          <damping>0.005</damping>
+        </dynamics>
+      </axis>
+    </joint>
+
+    <!-- ===== Multicopter motor model: 각 rotor 추력 시뮬 ===== -->
+    <plugin filename="gz-sim-multicopter-motor-model-system"
+            name="gz::sim::systems::MulticopterMotorModel">
+      <jointName>rotor_0_joint</jointName>
+      <linkName>rotor_0</linkName>
+      <turningDirection>ccw</turningDirection>
+      <timeConstantUp>0.0125</timeConstantUp>
+      <timeConstantDown>0.025</timeConstantDown>
+      <maxRotVelocity>800.0</maxRotVelocity>
+      <motorConstant>8.54858e-06</motorConstant>
+      <momentConstant>0.016</momentConstant>
+      <commandSubTopic>command/motor_speed</commandSubTopic>
+      <actuator_number>0</actuator_number>
+      <rotorDragCoefficient>8.06428e-05</rotorDragCoefficient>
+      <rollingMomentCoefficient>1e-06</rollingMomentCoefficient>
+      <motorSpeedPubTopic>motor_speed/0</motorSpeedPubTopic>
+      <rotorVelocitySlowdownSim>10</rotorVelocitySlowdownSim>
+      <motorType>velocity</motorType>
+    </plugin>
+    <plugin filename="gz-sim-multicopter-motor-model-system"
+            name="gz::sim::systems::MulticopterMotorModel">
+      <jointName>rotor_1_joint</jointName>
+      <linkName>rotor_1</linkName>
+      <turningDirection>ccw</turningDirection>
+      <timeConstantUp>0.0125</timeConstantUp>
+      <timeConstantDown>0.025</timeConstantDown>
+      <maxRotVelocity>800.0</maxRotVelocity>
+      <motorConstant>8.54858e-06</motorConstant>
+      <momentConstant>0.016</momentConstant>
+      <commandSubTopic>command/motor_speed</commandSubTopic>
+      <actuator_number>1</actuator_number>
+      <rotorDragCoefficient>8.06428e-05</rotorDragCoefficient>
+      <rollingMomentCoefficient>1e-06</rollingMomentCoefficient>
+      <motorSpeedPubTopic>motor_speed/1</motorSpeedPubTopic>
+      <rotorVelocitySlowdownSim>10</rotorVelocitySlowdownSim>
+      <motorType>velocity</motorType>
+    </plugin>
+    <plugin filename="gz-sim-multicopter-motor-model-system"
+            name="gz::sim::systems::MulticopterMotorModel">
+      <jointName>rotor_2_joint</jointName>
+      <linkName>rotor_2</linkName>
+      <turningDirection>cw</turningDirection>
+      <timeConstantUp>0.0125</timeConstantUp>
+      <timeConstantDown>0.025</timeConstantDown>
+      <maxRotVelocity>800.0</maxRotVelocity>
+      <motorConstant>8.54858e-06</motorConstant>
+      <momentConstant>0.016</momentConstant>
+      <commandSubTopic>command/motor_speed</commandSubTopic>
+      <actuator_number>2</actuator_number>
+      <rotorDragCoefficient>8.06428e-05</rotorDragCoefficient>
+      <rollingMomentCoefficient>1e-06</rollingMomentCoefficient>
+      <motorSpeedPubTopic>motor_speed/2</motorSpeedPubTopic>
+      <rotorVelocitySlowdownSim>10</rotorVelocitySlowdownSim>
+      <motorType>velocity</motorType>
+    </plugin>
+    <plugin filename="gz-sim-multicopter-motor-model-system"
+            name="gz::sim::systems::MulticopterMotorModel">
+      <jointName>rotor_3_joint</jointName>
+      <linkName>rotor_3</linkName>
+      <turningDirection>cw</turningDirection>
+      <timeConstantUp>0.0125</timeConstantUp>
+      <timeConstantDown>0.025</timeConstantDown>
+      <maxRotVelocity>800.0</maxRotVelocity>
+      <motorConstant>8.54858e-06</motorConstant>
+      <momentConstant>0.016</momentConstant>
+      <commandSubTopic>command/motor_speed</commandSubTopic>
+      <actuator_number>3</actuator_number>
+      <rotorDragCoefficient>8.06428e-05</rotorDragCoefficient>
+      <rollingMomentCoefficient>1e-06</rollingMomentCoefficient>
+      <motorSpeedPubTopic>motor_speed/3</motorSpeedPubTopic>
+      <rotorVelocitySlowdownSim>10</rotorVelocitySlowdownSim>
+      <motorType>velocity</motorType>
+    </plugin>
+
+    <!-- ===== 가짜 FC: cmd_vel 받아 자세 PID + motor speed 출력 =====
+         cmd_vel : geometry_msgs/Twist (body FLU). linear.x/y/z, angular.z 사용.
+         enable  : Boolean. true 보내야 비행 시작 (sim.launch.py 가 자동 send). -->
+    <plugin filename="gz-sim-multicopter-control-system"
+            name="gz::sim::systems::MulticopterVelocityControl">
+      <robotNamespace>uav26_quad</robotNamespace>
+      <commandSubTopic>cmd_vel</commandSubTopic>
+      <enableSubTopic>enable</enableSubTopic>
+      <comLinkName>base_link</comLinkName>
+      <velocityGain>2.7 2.7 2.7</velocityGain>
+      <attitudeGain>2 3 0.15</attitudeGain>
+      <angularRateGain>0.4 0.52 0.18</angularRateGain>
+      <maximumLinearAcceleration>2 2 2</maximumLinearAcceleration>
+      <maximumLinearVelocity>3 3 2</maximumLinearVelocity>
+      <maximumAngularVelocity>1.5 1.5 1.5</maximumAngularVelocity>
+
+      <rotorConfiguration>
+        <rotor>
+          <jointName>rotor_0_joint</jointName>
+          <forceConstant>8.54858e-06</forceConstant>
+          <momentConstant>0.016</momentConstant>
+          <direction>1</direction>
+        </rotor>
+        <rotor>
+          <jointName>rotor_1_joint</jointName>
+          <forceConstant>8.54858e-06</forceConstant>
+          <momentConstant>0.016</momentConstant>
+          <direction>1</direction>
+        </rotor>
+        <rotor>
+          <jointName>rotor_2_joint</jointName>
+          <forceConstant>8.54858e-06</forceConstant>
+          <momentConstant>0.016</momentConstant>
+          <direction>-1</direction>
+        </rotor>
+        <rotor>
+          <jointName>rotor_3_joint</jointName>
+          <forceConstant>8.54858e-06</forceConstant>
+          <momentConstant>0.016</momentConstant>
+          <direction>-1</direction>
+        </rotor>
+      </rotorConfiguration>
+    </plugin>
+
+    <!-- 디버그용 ground-truth odometry — 기본 토픽 /model/uav26_quad/odometry -->
+    <plugin filename="gz-sim-odometry-publisher-system"
+            name="gz::sim::systems::OdometryPublisher">
+      <dimensions>3</dimensions>
+    </plugin>
+  </model>
+</sdf>

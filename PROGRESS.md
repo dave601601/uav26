@@ -4,6 +4,33 @@
 
 ## Done
 
+### `world/` 패키지 — Gazebo Harmonic 시뮬 (instruction `260429_world.md`)
+산출물 (이번 세션):
+- `src/world/script/grid_stl.py` — argparse 기반 격자 STL 생성기
+- `src/world/mesh/grid_30x20_t0.10_cell4.stl` — 30 × 20 m, 셀 4 m, 라인 폭 10 cm
+- `src/world/script/aruco.py` — DICT_6X6_250 PNG 일괄 생성기
+- `src/world/textures/aruco_{0..8}.png` — 9 개 마커 (512px)
+- `src/world/config/aruco_layout.yaml` — 9 개 마커 좌표
+- `src/world/worlds/competition.sdf` — physics + 조명 + 격자 + 마커 9 + 드론 include
+- `src/world/models/uav26_quad/{model.sdf,model.config}` — X-frame quad,
+  하향 D435 (color + depth) sensor, 4×motor model + multicopter velocity control
+- `src/world/models/world_assets/{model.sdf,model.config}` — `model://` 해석용
+- `src/world/config/bridge.yaml` — 카메라/cmd_vel/IMU/odom/clock 매핑
+- `src/world/launch/sim.launch.py` — gz_sim include + parameter_bridge + auto-enable
+- `src/world/{package.xml,CMakeLists.txt}` — ament_cmake 패키지 메타
+
+검증:
+- `colcon build --packages-select world line_tracer line_tracer_msgs` 통과
+- `colcon test --packages-select line_tracer` 32/32 OK
+- headless `ros2 launch world sim.launch.py headless:=true` →
+  `/clock` 500 Hz, `/camera/.../color/image_raw` 30 Hz,
+  `camera_info` fx/fy=465.6 cx/cy=320/240 frame_id=`camera_color_optical_frame`,
+  `/cmd_vel` → 드론 z 상승 (가짜 FC 동작 확인)
+
+상세 보고: `report_260429_world.md`
+
+
+
 ### `line_tracer_msgs/` (commit `b57e20f`, `c216f08`)
 - ament_cmake 패키지
 - `srv/SetState.srv` — FSM 상태 전이용 (string state → bool success + string message)

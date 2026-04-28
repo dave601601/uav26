@@ -1,0 +1,62 @@
+# ros_gz_bridge parameter_bridge YAML.
+#
+# 본 매핑은 sim.launch.py 의 parameter_bridge 노드가 로드한다.
+# Gazebo (gz) topic 명은 model.sdf 의 <topic> / 플러그인 <commandSubTopic> 와 일치해야 함.
+#
+# 주의: 깊이 영상은 gz-sim 이 R_FLOAT32 (m) 로 publish → ROS sensor_msgs/Image
+#       encoding 은 32FC1 [m]. line_tracer 의 perception 단계에서 16UC1[mm]
+#       대신 32FC1[m] 로 처리해야 함 (RealSense 와 다름 — 시뮬 한정).
+
+# === 카메라 (color) ===
+- ros_topic_name: "/camera/camera/color/image_raw"
+  gz_topic_name: "/uav26_quad/camera/color/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/camera/color/camera_info"
+  gz_topic_name: "/uav26_quad/camera/color/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# === 카메라 (depth, aligned-to-color 가정) ===
+- ros_topic_name: "/camera/camera/aligned_depth_to_color/image_raw"
+  gz_topic_name: "/uav26_quad/camera/depth/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/camera/aligned_depth_to_color/camera_info"
+  gz_topic_name: "/uav26_quad/camera/depth/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# === IMU (디버그 / 가짜 FC 내부 사용) ===
+- ros_topic_name: "/imu"
+  gz_topic_name: "/uav26_quad/imu"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS
+
+# === Ground-truth odometry (디버그용) ===
+- ros_topic_name: "/odom_truth"
+  gz_topic_name: "/model/uav26_quad/odometry"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+# === 명령 ===
+- ros_topic_name: "/cmd_vel"
+  gz_topic_name: "/uav26_quad/cmd_vel"
+  ros_type_name: "geometry_msgs/msg/Twist"
+  gz_type_name: "gz.msgs.Twist"
+  direction: ROS_TO_GZ
+
+# === 시뮬 시계 ===
+- ros_topic_name: "/clock"
+  gz_topic_name: "/clock"
+  ros_type_name: "rosgraph_msgs/msg/Clock"
+  gz_type_name: "gz.msgs.Clock"
+  direction: GZ_TO_ROS
