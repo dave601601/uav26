@@ -1,11 +1,10 @@
-version: "3.9"
-
 services:
-  px4-ros2:
+  uav-aruco:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: px4-ros2
+    image: uav-aruco:latest
+    container_name: uav-aruco
 
     stdin_open: true
     tty: true
@@ -14,14 +13,29 @@ services:
       - ./src:/workspace/src
       - ./build:/workspace/build
       - ./ros:/workspace/ros
+      # GUI (Gazebo, rqt, rviz)
+      - /tmp/.X11-unix:/tmp/.X11-unix
 
     working_dir: /workspace
 
     environment:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
+      - XDG_RUNTIME_DIR=/tmp/runtime-root
+      # NVIDIA GPU 쓸 거면
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
 
     network_mode: host
     privileged: true
+
+    # GPU passthrough (NVIDIA Container Toolkit 깔려있어야 함)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
     command: /bin/bash
