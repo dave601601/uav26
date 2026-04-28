@@ -57,22 +57,50 @@
 - Frame: body=FLU(REP-103), world=ENU
 - 카메라→body 회전은 모듈 외부 (호출자) 책임
 
+### Step 4 — `line_tracer/perception.py` (이번 세션)
+- `PerceptionConfig`, `PerceptionResult`, `ArucoDetection` dataclasses
+- `detect_lines` (Canny + HoughLinesP), `classify_lines` (vert/horiz),
+  `pick_nearest_line`, `compute_pixel_errors` → (du, dv, psi_err)
+- `detect_aruco` (DICT_6X6_250, ArucoDetector or legacy fallback)
+- `process_image` 통합 + `draw_debug_overlay`
+- 카메라→body 회전 결정: optical pitch=+π/2 ⇒ +X_opt = -Y_body / +Y_opt = -X_body
+- 부호 약속: du>0 ⇒ 라인이 image 우측 ⇒ `-y_body` 이동, dv>0 ⇒ 라인이 아래 ⇒ `-x_body` 이동, psi>0 ⇒ +wz
+- 테스트 22개 추가 (`test_perception.py`)
+
+### Step 5 — `line_tracer/state_machine.py` (이번 세션)
+- `StateName` enum + `Behavior` dataclass + `StateMachine` 컨테이너
+- TAKEOFF (climb only) / LINE_FOLLOW (lateral+heading+forward+cruise) / LAND (target_alt=0)
+- WAYPOINT_VISIT / ARRANGE_BY_ID / RETURN_PATH 는 LINE_FOLLOW 와 동일 동작 (스텁)
+- `set_state()` 대소문자 무시 / 알 수 없는 이름은 ValueError + 미전이
+- 테스트 17개 추가 (`test_state_machine.py`)
+
+### Step 6 — `line_tracer/line_tracer_node.py` (이번 세션)
+- 색/깊이/카메라정보 + `/line_tracer/pixel_error` 외부 override 구독
+- `/cmd_vel`, `/odom_dr`, `/waypoints/aruco`, `/line_tracer/debug_image` 발행
+- `/line_tracer/set_state` 서비스 (line_tracer_msgs/SetState)
+- DR 타이머 20 Hz: 픽셀→body 변환 → P 제어 → cmd_vel + odom_dr 발행
+- override TTL (기본 0.5s) 안에서는 외부 입력 우선, 그 외엔 perception
+- 깊이 단위 자동 핸들링: 16UC1[mm] (RealSense) 또는 32FC1[m] (sim)
+
+### Step 7 — launch / config / README (이번 세션)
+- `launch/line_tracer.launch.py` (sim:=true / false 분기, realsense2_camera include)
+- `config/params.yaml` (Kp들, Hough/Canny, dr_dt 등)
+- `README.md` — 토픽/파라미터 표 + frame 약속 + FC 핸드오프 가이드
+
+### Step 8 — 빌드 / 테스트 / 통합 검증 (이번 세션)
+- `colcon build --packages-select line_tracer_msgs line_tracer world` 통과
+- `pytest test/` 71/71 통과 (geom 10 + dr 22 + perception 22 + sm 17)
+- world sim + line_tracer 동시 실행 (headless): TAKEOFF 가 alt=2.0 m 까지 climb 후 hover
+- LINE_FOLLOW + `/line_tracer/pixel_error` 80, -100, 0.1 sustained →
+  `[LINE_FOLLOW/external] vx=+0.34 vy=-0.28 vz=-0.00 wz=+0.10` (계산식 일치)
+
 ### Docker / 빌드 환경
-- `Dockerfile` numpy 1.x↔2.x ABI 충돌 해결 (`pip install --ignore-installed numpy`)
+- `Dockerfile` 핀: `numpy<2` + `opencv-contrib-python<4.13` (apt scipy/trimesh ABI 보존)
 - 컨테이너 이름: `uav-aruco`
-- `colcon build --packages-select line_tracer_msgs line_tracer` 통과
 - `ros2 interface show line_tracer_msgs/srv/SetState` OK
 - `ros2 pkg executables line_tracer` → `line_tracer_node` 등록됨
 
-## Pending in `line_tracer/`
-
-| Step | 산출물 | 비고 |
-|---|---|---|
-| 4 | `perception.py` | Canny+HoughLinesP 격자선, ArUco DICT_6X6_250, 디버그 오버레이. **카메라→body 회전 정의 필요 (world 패키지와 합의 후)** |
-| 5 | `state_machine.py` | TAKEOFF/LINE_FOLLOW/LAND 실작동, WAYPOINT_VISIT/ARRANGE_BY_ID/RETURN_PATH는 stub |
-| 6 | `line_tracer_node.py` | rclpy 노드, image cb + DR timer + set_state 서비스 |
-| 7 | `launch/line_tracer.launch.py` + `config/params.yaml` + README | realsense2_camera include |
-| 8 | docker 안에서 통합 빌드/테스트 | colcon test 전체 통과 |
+## ~~Pending in `line_tracer/`~~ — 모두 완료 (이 세션)
 
 ## Future Work (line_tracer 외부)
 
@@ -106,7 +134,7 @@
 | 1 | `set_state` srv 타입 | `line_tracer_msgs/SetState`로 결정 ✓ |
 | 2 | line_tracer 1차 범위 | TAKEOFF/LINE_FOLLOW/LAND 실작동, 나머지 stub ✓ |
 | 3 | `/cmd_vel` 프레임 | FLU(REP-103) ✓ — 변경 시 `dead_reckoning.py` 부호 검토 필요 |
-| 4 | 카메라 마운트 yaw offset | world 패키지에서 드론 모델 확정 후 결정 |
+| 4 | 카메라 마운트 yaw offset | yaw=0 (드론 forward = 이미지 v 위쪽) ✓ — `260429_world.md` / `report_260429_line_tracer.md` |
 | 5 | companion 컴퓨터 | 미정 (Jetson/RPi/노트북) |
 | 6 | companion ↔ STM32 프로토콜 | 미정 (MAVLink/자체) |
 | 7 | Gazebo world가 본 repo에 포함? | 예 (계획) — `src/world/` 확장 |

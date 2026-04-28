@@ -1,3 +1,7 @@
 build
 build/*
 *.pdf
+__pycache__/
+*.pyc
+install/
+log/

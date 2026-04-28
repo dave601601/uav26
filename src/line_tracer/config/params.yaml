@@ -1,0 +1,25 @@
+/line_tracer_node:
+  ros__parameters:
+    # ---- DR / control ----
+    target_altitude: 2.0      # [m] cruise altitude during LINE_FOLLOW etc.
+    kp_xy: 0.8                # P gain on body-x / body-y position offsets
+    kp_yaw: 1.0               # P gain on heading error
+    kp_z: 0.6                 # P gain on altitude error
+    max_vxy: 1.0              # [m/s] clamp on linear body velocity
+    max_wz: 1.0               # [rad/s] clamp on yaw rate
+    dr_dt: 0.05               # [s] DR integration period (20 Hz)
+    external_override_ttl: 0.5  # [s] /line_tracer/pixel_error stale threshold
+    publish_debug_image: true
+
+    # ---- Perception (Canny + Hough) ----
+    canny_low: 60
+    canny_high: 180
+    hough_threshold: 60
+    hough_min_line_length: 40
+    hough_max_line_gap: 20
+
+    # ---- ArUco ----
+    marker_size: 0.5          # [m]; reserved for future PnP-based pose
+
+    # ---- Initial conditions ----
+    default_altitude: 0.0
