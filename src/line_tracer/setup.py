@@ -19,7 +19,7 @@ setup(
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Dongha Gwak',
-    maintainer_email='',
+    maintainer_email='noreply@todo.todo',
     description='Indoor line-tracing + dead-reckoning controller using a downward-facing RealSense D435.',
     license='Apache-2.0',
     tests_require=['pytest'],

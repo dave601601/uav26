@@ -4,7 +4,7 @@
   <name>line_tracer_msgs</name>
   <version>0.1.0</version>
   <description>Service/message definitions for the line_tracer package.</description>
-  <maintainer email="">Dongha Gwak</maintainer>
+  <maintainer email="noreply@todo.todo">Dongha Gwak</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

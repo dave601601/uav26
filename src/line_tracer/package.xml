@@ -4,7 +4,7 @@
   <name>line_tracer</name>
   <version>0.1.0</version>
   <description>Indoor line-tracing + dead-reckoning controller using a downward-facing RealSense D435.</description>
-  <maintainer email="">Dongha Gwak</maintainer>
+  <maintainer email="noreply@todo.todo">Dongha Gwak</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
