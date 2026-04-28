@@ -1,0 +1,6 @@
+# Request: target FSM state name (case-insensitive).
+# Valid: TAKEOFF, LINE_FOLLOW, WAYPOINT_VISIT, ARRANGE_BY_ID, RETURN_PATH, LAND
+string state
+---
+bool success
+string message
