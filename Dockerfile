@@ -52,13 +52,12 @@ RUN apt update && apt install -y \
 RUN rosdep update
 
 # Python: opencv-contrib (aruco 포함) + trimesh + transforms3d
-# numpy 1.x로 빌드된 cv2 다 날리고 numpy 2.x 호환 wheel로 재설치
-RUN pip uninstall --break-system-packages -y \
-        opencv-python opencv-contrib-python opencv-python-headless || true && \
-    pip install --break-system-packages --no-cache-dir \
-        opencv-contrib-python \
-        trimesh \
-        transforms3d
+# numpy 는 <2 로 핀 — apt 의 scipy / trimesh 가 numpy 1.x ABI 로 빌드돼 있어
+# numpy 2.x 를 깔면 깨짐 (ImportError: dtype size changed). opencv-contrib-python
+# 4.13+ 는 numpy>=2 를 요구하므로 같이 <4.13 으로 핀 (4.12 까지 numpy 1.x 호환).
+RUN pip install --break-system-packages --no-cache-dir --ignore-installed \
+        'numpy<2' 'opencv-contrib-python<4.13' \
+        trimesh transforms3d
 
 # 자동 source
 RUN echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc
