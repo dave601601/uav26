@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  px4-ros2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: px4-ros2
+
+    stdin_open: true
+    tty: true
+
+    volumes:
+      - ./src:/workspace/src
+      - ./build:/workspace/build
+      - ./ros:/workspace/ros
+
+    working_dir: /workspace
+
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+
+    network_mode: host
+    privileged: true
+
+    command: /bin/bash
