@@ -293,6 +293,12 @@ class LineTracerNode(Node):
         behavior = self._fsm.behavior()
         du, dv, psi_err, source = self._resolved_pixel_error()
 
+        # TODO(search-on-no-line): when behavior.use_lateral_error 등이 True 인데
+        # du/dv/psi_err 가 N 틱 (예: 1초 = 20틱) 연속으로 None 이면 slow yaw 나
+        # 작은 정사각 search 패턴을 주입해 perception 이 다시 line 을 잡을 때까지
+        # 휘젓는다. 지금은 None 이 들어오면 lateral/heading 보정만 0 이 되고
+        # cruise_vx 만 그대로 적용 → 그냥 직진하다 line 을 영영 못 잡는 상황 발생.
+
         # --- pixel-space → body-frame metric offsets ---
         z_hat = self._dr.state.z
         altitude = self._altitude_m if self._altitude_m is not None else max(z_hat, 0.05)

@@ -23,7 +23,7 @@ install(DIRECTORY models/world_assets
 #  설치 후엔 share/world/models/world_assets/{meshes,textures}/ 에 위치)
 install(DIRECTORY mesh/
         DESTINATION share/${PROJECT_NAME}/models/world_assets/meshes
-        FILES_MATCHING PATTERN "*.stl")
+        FILES_MATCHING PATTERN "*.stl" PATTERN "*.dae")
 
 install(DIRECTORY textures/
         DESTINATION share/${PROJECT_NAME}/models/world_assets/textures

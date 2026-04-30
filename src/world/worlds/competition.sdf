@@ -65,7 +65,9 @@
       <direction>0.5 0.5 -1</direction>
     </light>
 
-    <!-- ===== 바닥 (밝은 회색) ===== -->
+    <!-- ===== 무한 바닥 (균일 회색, collision 전용 + grid 영역 바깥 시각) =====
+         grid 영역(30×20 m)은 아래 textured_floor 가 덮으므로 collision 만 의미가 있고,
+         바깥(예: 드론이 잠깐 빠져나가도) 색이 너무 튀지 않게 같은 톤으로 둔다. -->
     <model name="ground_plane">
       <static>true</static>
       <link name="link">
@@ -85,31 +87,43 @@
             </plane>
           </geometry>
           <material>
-            <ambient>0.85 0.85 0.85 1</ambient>
-            <diffuse>0.85 0.85 0.85 1</diffuse>
-            <specular>0.2 0.2 0.2 1</specular>
+            <ambient>0.78 0.78 0.78 1</ambient>
+            <diffuse>0.80 0.80 0.80 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
           </material>
         </visual>
       </link>
     </model>
 
-    <!-- ===== 격자선 (짙은 회색 PBR) =====
-         시각만 — STL collision 은 dartsim 미지원이고, 0.5cm 두께 painted line
-         이 비행에 영향 줄 일도 없으므로 collision 생략. -->
-    <model name="grid_30x20">
+    <!-- ===== 격자 + 콘크리트 통합 바닥 (30×20 m, PBR albedo 한 장) =====
+         floor.png 한 장 안에:
+           - rough concrete 노이즈 배경
+           - 어두운 격자선 (4 m 셀, 폭 10 cm)
+           - 마커 50×50 cm 영역엔 격자선 없음 (= 마커가 격자에 가려지지 않음)
+         이 모델은 시각만 — 0 두께 plane 이라 collision 필요 없다 (위 ground_plane 이 받침).
+         z = 0.0005 로 ground_plane 보다 0.5 mm 위로 띄워 z-fight 방지.
+         pose = (15, 10, ...) 으로 plane 중심을 grid 중심에 맞춘다 (grid 는 [0,30]×[0,20]). -->
+    <model name="textured_floor">
       <static>true</static>
-      <pose>0 0 0 0 0 0</pose>
+      <pose>15 10 0.0005 0 0 0</pose>
       <link name="link">
         <visual name="visual">
           <geometry>
-            <mesh>
-              <uri>model://world_assets/meshes/grid_30x20_t0.10_cell4.stl</uri>
-            </mesh>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>30 20</size>
+            </plane>
           </geometry>
           <material>
-            <ambient>0.05 0.05 0.05 1</ambient>
-            <diffuse>0.10 0.10 0.10 1</diffuse>
-            <specular>0.05 0.05 0.05 1</specular>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <albedo_map>model://world_assets/textures/floor.png</albedo_map>
+                <metalness>0.0</metalness>
+                <roughness>0.95</roughness>
+              </metal>
+            </pbr>
           </material>
         </visual>
       </link>
@@ -117,8 +131,10 @@
 
     <!-- ===== ArUco 마커 (50×50 cm, DICT_6X6_250) =====
          pose 좌표는 src/world/config/aruco_layout.yaml 와 일치해야 함.
-         z = 0.001 = 1 mm (두께 0.002 의 절반) - 격자선(0.005) 보다 살짝 낮으나
-         바닥(z=0) 위에서 이격되어 z-fight 가 없도록 plane visual 을 z=0.0015 로 띄움.
+         z = 0.001 = 1 mm (두께 0.002 의 절반).
+         textured_floor (z=0.0005) 보다 위에 떠 있고, 격자선은 floor.png 안에서
+         이미 마커 영역을 비워 두므로 마커 면이 가려질 일이 없다.
+         visual 의 추가 z=0.001 offset 은 ground_plane 과의 z-fight 방지용.
     -->
     <model name="aruco_0">
       <static>true</static>
@@ -363,11 +379,15 @@
       </link>
     </model>
 
-    <!-- ===== 드론 ===== -->
+    <!-- ===== 드론 =====
+         spawn 위치 = (2, 4, 0.15) : y=4 가로 격자선 바로 위.
+         body +X(forward) 가 격자선 방향(+X world)과 같으므로 LINE_FOLLOW 의
+         cruise_vx 가 격자선을 따라 자연스럽게 진행한다.
+         이 경로상에 markers 0~3 (x=4,12,20,28; y=4) 도 차례로 카메라에 잡힌다. -->
     <include>
       <uri>model://uav26_quad</uri>
       <name>uav26_quad</name>
-      <pose>2.0 2.0 0.15 0 0 0</pose>
+      <pose>2.0 4.0 0.15 0 0 0</pose>
     </include>
 
   </world>

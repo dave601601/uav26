@@ -95,7 +95,22 @@
         </geometry>
       </collision>
 
-      <!-- ===== 하향 D435 카메라 (color + depth) =====
+      <!-- ===== 하향 D435 카메라 mesh (visual only) =====
+           realsense2_description 의 d435.dae 를 그대로 가져왔다.
+           DAE 내부 좌표는 URDF 의 (rpy = π/2, 0, π/2) 로 link X-forward 정렬되도록
+           설계됐고, 우리는 거기에 추가로 pitch=+π/2 (X-forward → Z-down) 를 합성해야
+           한다. Rz(π/2)·Ry(π/2)·Rx(π/2) 합성을 RPY 로 풀면 (π, 0, π/2) 이므로
+           아래 pose 의 rpy 로 이 한 번에 표현한다. -->
+      <visual name="d435_visual">
+        <pose>0 0 -0.05 3.141592653589793 0 1.5707963267948966</pose>
+        <geometry>
+          <mesh>
+            <uri>model://world_assets/meshes/d435.dae</uri>
+          </mesh>
+        </geometry>
+      </visual>
+
+      <!-- ===== 하향 D435 카메라 sensor (color + depth) =====
            pose pitch=+π/2 → Gazebo camera +X (view) 가 -Z_body (정확히 하향).
            Frame name 은 ROS optical 표준 (camera_color/depth_optical_frame)
            으로 명시 → ros_gz_bridge 가 image header.frame_id 를 그대로 노출. -->
