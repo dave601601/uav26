@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["tqdm"]
+# ///
 """Parallel attitude-gain sweep for the fc_sim controller.
 
 Spawns N docker compose run --rm containers in parallel, each running
@@ -33,6 +37,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:
+    from tqdm import tqdm
+except ImportError:                                            # pragma: no cover
+    tqdm = None                                                # type: ignore[assignment]
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -205,34 +214,69 @@ def main() -> int:
 
     n_remaining = len(runs)
     print(f"To run: {n_remaining} (skipping {total_runs - n_remaining} already done)")
-    t_start = time.time()
-    n_done = 0
+    print("Ctrl-C will kill running containers cleanly and preserve CSV + logs.")
+    print()
 
-    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = {pool.submit(execute, r, args.duration): r for r in runs}
-        for fut in as_completed(futures):
-            r = fut.result()
-            n_done += 1
-            elapsed = time.time() - t_start
-            avg_per_run = elapsed / n_done
-            eta_s = avg_per_run * (n_remaining - n_done)
-            print(
-                f"[{n_done:>4d}/{n_remaining}] "
-                f"cell={r.cell_idx:>3d} rep={r.repeat_idx} "
-                f"rk={r.rate_kp:.2f} ak={r.atti_kp:.2f} ad={r.atti_kd:.2f}  "
-                f"score={r.score:7.3f} log10={fmt_log(r.score)}  "
-                f"ETA {eta_s / 60:.0f} min",
-                flush=True,
+    container_names = {f"uav-sweep-{r.cell_idx}-{r.repeat_idx}" for r in runs}
+
+    def cleanup_containers():
+        # Kill anything that's still running so we don't leave gz processes
+        # eating CPU/RAM after a kill. `docker rm -f` is no-op for stopped
+        # ones, so blasting them all is safe.
+        for name in container_names:
+            subprocess.run(
+                ["docker", "rm", "-f", name],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
-            csv_w.writerow([
-                r.cell_idx, r.repeat_idx,
-                f"{r.rate_kp:.4f}", f"{r.atti_kp:.4f}", f"{r.atti_kd:.4f}",
-                f"{r.score:.4f}", fmt_log(r.score),
-                len(r.z_samples), f"{r.elapsed_s:.1f}",
-            ])
-            csv_fp.flush()
 
-    csv_fp.close()
+    use_bar = tqdm is not None and sys.stderr.isatty()
+    pbar = tqdm(total=n_remaining, unit="run", smoothing=0.1,
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} "
+                           "[{elapsed}<{remaining}, {rate_fmt}]") if use_bar else None
+
+    def emit(msg: str) -> None:
+        if pbar is not None:
+            pbar.write(msg)
+        else:
+            print(msg, flush=True)
+
+    t_start = time.time()
+
+    try:
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futures = {pool.submit(execute, r, args.duration): r for r in runs}
+            for fut in as_completed(futures):
+                r = fut.result()
+                csv_w.writerow([
+                    r.cell_idx, r.repeat_idx,
+                    f"{r.rate_kp:.4f}", f"{r.atti_kp:.4f}", f"{r.atti_kd:.4f}",
+                    f"{r.score:.4f}", fmt_log(r.score),
+                    len(r.z_samples), f"{r.elapsed_s:.1f}",
+                ])
+                csv_fp.flush()
+                os.fsync(csv_fp.fileno())   # actually hit the disk
+
+                emit(
+                    f"cell={r.cell_idx:>3d} rep={r.repeat_idx} "
+                    f"rk={r.rate_kp:.2f} ak={r.atti_kp:.2f} ad={r.atti_kd:.2f}  "
+                    f"score={r.score:7.3f} log10={fmt_log(r.score)}"
+                )
+                if pbar is not None:
+                    pbar.update(1)
+    except KeyboardInterrupt:
+        emit("\nInterrupted. Killing live containers... (CSV + logs preserved)")
+        cleanup_containers()
+        if pbar is not None:
+            pbar.close()
+        csv_fp.close()
+        return 130
+    finally:
+        if pbar is not None and pbar.n > 0:
+            pbar.close()
+        csv_fp.close()
+        cleanup_containers()
 
     # Summarize: median score per cell, sorted, top 20.
     rows: dict[int, list[Run]] = {}
