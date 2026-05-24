@@ -1,13 +1,9 @@
-"""Open-loop hover demo: brings up the full sim + auto-publishes a hover
-setpoint so the drone lifts off on its own.
+"""Closed-loop hover demo. Brings up gz + bridge + fc_sim_node, then
+spawns hover_pub.py which P-controls thrust_norm against /odom_truth.z
+so the drone holds a target altitude instead of climbing forever.
 
-Equivalent to running these two commands in separate terminals:
-    ros2 launch world sim.launch.py
-    ros2 topic pub --rate 100 /fc/setpoint fc_sim_msgs/msg/Setpoint '{...}'
-
-Single command:
     ros2 launch fc_sim hover_demo.launch.py
-    ros2 launch fc_sim hover_demo.launch.py thrust_norm:=0.55
+    ros2 launch fc_sim hover_demo.launch.py target_altitude:=3.0
 """
 from __future__ import annotations
 
@@ -17,53 +13,31 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    ExecuteProcess,
     IncludeLaunchDescription,
-    OpaqueFunction,
     TimerAction,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-
-
-def _launch_setup(context, *args, **kwargs):
-    thrust = LaunchConfiguration("thrust_norm").perform(context)
-    delay = float(LaunchConfiguration("settle_delay").perform(context))
-
-    setpoint_yaml = (
-        "{"
-        "mode: 1, arm: true, "
-        "roll_sp: 0.0, pitch_sp: 0.0, yawrate_sp: 0.0, "
-        "vz_sp: 0.0, "
-        f"thrust_norm: {thrust}"
-        "}"
-    )
-
-    return [
-        TimerAction(
-            period=delay,
-            actions=[
-                ExecuteProcess(
-                    cmd=[
-                        "ros2", "topic", "pub", "--rate", "100",
-                        "/fc/setpoint",
-                        "fc_sim_msgs/msg/Setpoint",
-                        setpoint_yaml,
-                    ],
-                    output="screen",
-                ),
-            ],
-        ),
-    ]
+from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
     pkg_world = get_package_share_directory("world")
 
-    thrust_arg = DeclareLaunchArgument(
-        "thrust_norm",
-        default_value="0.51",
-        description="Hover thrust_norm (0..1). ~0.50 is hover in sim.",
+    target_alt_arg = DeclareLaunchArgument(
+        "target_altitude",
+        default_value="2.0",
+        description="Altitude the closed-loop hover_pub holds [m].",
+    )
+    hover_thrust_arg = DeclareLaunchArgument(
+        "hover_thrust_norm",
+        default_value="0.500",
+        description="Feed-forward hover thrust_norm (0..1).",
+    )
+    kp_alt_arg = DeclareLaunchArgument(
+        "kp_alt",
+        default_value="0.04",
+        description="P gain on altitude error (thrust_norm per metre).",
     )
     delay_arg = DeclareLaunchArgument(
         "settle_delay",
@@ -71,15 +45,35 @@ def generate_launch_description() -> LaunchDescription:
         description="Seconds to wait for gz to come up before publishing.",
     )
 
-    # Bring up gz + bridge + fc_sim_node + marker_randomize.
     sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_world, "launch", "sim.launch.py")
         ),
     )
 
-    # ros2 topic pub stays alive until the launch is killed, so Ctrl-C
-    # tears down both gz and the publisher.
-    hover = OpaqueFunction(function=_launch_setup)
+    hover_node = TimerAction(
+        period=LaunchConfiguration("settle_delay"),
+        actions=[
+            Node(
+                package="fc_sim",
+                executable="hover_pub.py",
+                name="hover_pub",
+                output="screen",
+                parameters=[{
+                    "use_sim_time": True,
+                    "target_altitude": LaunchConfiguration("target_altitude"),
+                    "hover_thrust_norm": LaunchConfiguration("hover_thrust_norm"),
+                    "kp_alt": LaunchConfiguration("kp_alt"),
+                }],
+            ),
+        ],
+    )
 
-    return LaunchDescription([thrust_arg, delay_arg, sim, hover])
+    return LaunchDescription([
+        target_alt_arg,
+        hover_thrust_arg,
+        kp_alt_arg,
+        delay_arg,
+        sim,
+        hover_node,
+    ])

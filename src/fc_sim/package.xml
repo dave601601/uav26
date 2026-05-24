@@ -24,6 +24,8 @@
   <depend>fc_core</depend>
   <depend>fc_sim_msgs</depend>
 
+  <exec_depend>rclpy</exec_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
   </export>
