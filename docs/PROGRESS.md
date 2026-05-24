@@ -12,9 +12,9 @@ Index. Each topic file holds the actual work log. Entries go newest-first inside
 
 ## Open
 
-- [ ] Tier B: retune controller gains against Gazebo dynamics. Current sim launches and the control loop runs end-to-end, but hover is unstable (drone flips within ~25 s of commanding a flat setpoint). Probable cause is rate-PID integral wind-up under IMU noise; first attempt should set ki=0 on the rate axes and revisit. See [fc_sim](progress/fc_sim.md) Open for details.
-- [ ] Tier C: line_tracer end-to-end (TAKEOFF -> LINE_FOLLOW reaches a marker). Blocked on Tier B hover stability.
-- [ ] Empirical hover thrust calibration. At thrust_norm=0.49 (theoretical hover) the drone is glued to the ground; need to find the lift-off thrust empirically and update line_tracer's `hover_thrust_norm` parameter accordingly.
+- [ ] Tier C: line_tracer end-to-end smoke (TAKEOFF -> LINE_FOLLOW reaches a marker). Hover stability landed in `56fe60c`; the integration test is the next step.
+- [ ] Tighten attitude step-response damping. Hover holds cleanly but a 0.1 rad step overshoots 3-5x. Acceptable for line_tracer (continuous setpoints) but worth tuning further. See [fc_sim](progress/fc_sim.md) Open.
+- [ ] Update line_tracer's `hover_thrust_norm` default from 0.49 to ~0.50 to match the empirical sim hover point.
 
 ## Conventions
 

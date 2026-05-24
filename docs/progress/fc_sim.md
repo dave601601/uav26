@@ -4,11 +4,32 @@ ROS2 C++ wrapper around `fc_core` that flies the simulated drone in Gazebo Harmo
 
 ## Planned (Open)
 
-- **Gazebo gain retune.** The firmware gains in `controller.c` are tuned for the real-airframe inertia. In sim, hover is unstable: at thrust_norm just below hover the drone is glued to the ground; once it breaks loose, even small IMU noise drives the cascade into a full flip within ~25 s. Either the rate-PID integrator winds up or the deadband interaction with low-amplitude noise pumps the controller. First investigation should disable the rate-PID integral term (set ki=0), then either reduce kp or widen the deadband. Without retuning, sim is launchable but the drone can't sustain attitude.
-- Verify the FLU↔NED shim against a +10° pitch step once hover is stable — positive pitch in FLU should produce -X body motion. Currently can't run this test because the drone doesn't hold attitude.
-- Tier C: end-to-end line_tracer in Gazebo (TAKEOFF -> LINE_FOLLOW reaches a marker). Blocked on stable hover.
+- Tighten step-response damping. Hover is stable but a 0.1 rad attitude step overshoots ~3-5x before settling. line_tracer feeds small smoothly-varying setpoints so this is acceptable for integration tests; tuning further means trading some hover stiffness for damping (lower kp_atti or higher kd_atti).
+- Tier C: end-to-end line_tracer in Gazebo (TAKEOFF -> LINE_FOLLOW reaches a marker).
+
+## Decisions
+
+- Sim retune happens at the node level, not by editing firmware-source gains. `fc_sim_node` zeros `pid_rate.ki` and lowers the rate/atti deadband factors after `ControllerInit()`. The firmware build keeps the original 0.04 ki and 0.04 deadband.
+- The gz-sim multicopter motor model produces clean equal-thrust hover, but `rotorDragCoefficient` and `rollingMomentCoefficient` are set to zero in the SDF — they introduced asymmetric attitude perturbation under tilt that doesn't match the firmware's IMU model.
+- Empirical hover thrust_norm in sim is ~0.500-0.510 (the firmware's `-4 * 0.6 * g * thrust_norm` mapping intersects gz physics at this point). line_tracer's altitude-hold P-controller closes around this value.
+- FLU↔NED Euler shim: pitch and yaw both flipped on entry. The firmware's `quat_to_euler` has `eul.y = -asin(sinp)`, and gz odom appears to produce an NED-like quaternion for multicopter models, so the double-flip lands on the firmware-expected sign.
 
 ## Done
+
+### Stable hover + axis-correct attitude tracking (commit `56fe60c`, 2026-05-25)
+
+After Phase A-D landed, the first sim flights showed the drone flipping within ~25 s of a flat setpoint. Investigation isolated three issues, fixed in a single commit:
+
+1. `pid_rate.ki = 0.04` was winding up against Gazebo's IMU noise — exposed `pid_rate / pid_euler / pid_vel` from `controller.c` (removed `static`) so `fc_sim_node` can zero ki at boot.
+2. The 0.04 rad/s rate-command deadband (designed for SBUS stick-center noise) suppressed companion setpoints below ~5°. Added `fc_rate_deadband_factor` / `fc_atti_deadband_factor` globals; sim collapses them to 0.001.
+3. `rotorDragCoefficient=8.06e-5` + `rollingMomentCoefficient=1e-6` on each rotor perturbed body attitude under motion. Set both to zero in the SDF.
+
+Also moved drone spawn from z=0.15 to z=2.0 so ground-contact friction doesn't mask hover dynamics.
+
+Verification:
+- Hover with `thrust_norm=0.51` for 8 s: qx, qy stay at 1e-12 (effectively zero). z climbs ~12 m at constant 0.4 m/s² (slight excess over weight).
+- Pitch +0.1 rad step: drone tips and moves +X (forward in FLU). Overshoots to ~28° before damping back. Direction correct.
+- Roll +0.1 rad step: drone slides -Y in world (right in FLU). Direction correct.
 
 ### Package + node + Tier-A integration with world (commits `773f8af`, `0f5f036`, predecessors, 2026-05-25)
 
