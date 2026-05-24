@@ -146,14 +146,15 @@
     <!-- MARKER_BLOCK_INJECTION_POINT -->
 
     <!-- ===== 드론 =====
-         spawn 위치 = (2, 4, 0.15) : y=4 가로 격자선 바로 위.
+         spawn 위치 = (2, 4, 2.0) : 공중에 띄워서 ground contact 다이나믹스
+         (정적 마찰 + collision normal force) 가 attitude tuning 을 흐리지 않도록.
          body +X(forward) 가 격자선 방향(+X world)과 같으므로 LINE_FOLLOW 의
          cruise_vx 가 격자선을 따라 자연스럽게 진행한다.
          이 경로상에 markers 0~3 (x=4,12,20,28; y=4) 도 차례로 카메라에 잡힌다. -->
     <include>
       <uri>model://uav26_quad</uri>
       <name>uav26_quad</name>
-      <pose>2.0 4.0 0.15 0 0 0</pose>
+      <pose>2.0 4.0 2.0 0 0 0</pose>
     </include>
 
   </world>

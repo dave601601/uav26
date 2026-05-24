@@ -43,6 +43,19 @@ typedef struct{
 PID pidInit(float kp, float ki, float kd, float integral_sat);
 PIDvec pidvecInit(vec3d kp, vec3d ki, vec3d kd, vec3d integral_sat);
 
+/* PID state structs (defined in controller.c). Exposed for sim-side
+ * retuning; the firmware uses the values set by ControllerInit. */
+extern PIDvec pid_rate;
+extern PIDvec pid_euler;
+extern PIDvec pid_vel;
+
+/* Deadband factors applied to RATEControl / ATTIControl (units of
+ * maxratecmd / maxatticmd). Default 0.04 matches the firmware's SBUS
+ * stick-center deadzone; fc_sim_node lowers this to ~0 to pass the
+ * companion's precise setpoints through. */
+extern float fc_rate_deadband_factor;
+extern float fc_atti_deadband_factor;
+
 enum MODE{
     pqrthrmode = 0,
     attithrmode,

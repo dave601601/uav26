@@ -42,9 +42,12 @@ PIDvec pidvecInit(vec3d kp, vec3d ki, vec3d kd, vec3d integral_sat){
     return pid;
 }
 
-static PIDvec pid_rate;
-static PIDvec pid_euler;
-static PIDvec pid_vel;
+/* Exposed (non-static) so a sim-side node can retune for Gazebo dynamics
+ * after ControllerInit() — the hand-tuned firmware values match the real
+ * airframe, not the gz-sim motor model. */
+PIDvec pid_rate;
+PIDvec pid_euler;
+PIDvec pid_vel;
 
 /* Companion-setpoint state used by the source mux below. The owner
  * (sim node or STM32 USART2 ISR) updates fc_now_ms each control tick
@@ -79,6 +82,13 @@ void ControllerInit(void){
 
 static float maxratecmd = 1.0f;                       /* rad/s */
 static float maxatticmd = 30.0f * PI / 180.0f;        /* rad   */
+
+/* Deadband thresholds, multiplied by maxratecmd / maxatticmd. The 0.04
+ * factor exists to reject SBUS stick centering noise on hardware. In sim
+ * the companion sends precise setpoints and the deadband prevents small
+ * attitude errors from getting through; fc_sim_node lowers this. */
+float fc_rate_deadband_factor = 0.04f;
+float fc_atti_deadband_factor = 0.04f;
 static float maxvelXYcmd = 2.0f;
 static float maxvelDcmd = 1.0f;
 
@@ -163,7 +173,7 @@ thrvec Control(vec3d NED, vec3d vel, vec3d Euler, vec3d pqr, sbus_t sbus){
 
 vec3d RATEControl(vec3d pqrdes, vec3d pqr, float dt){
     vec3d _LMN;
-    vec3d pqr_des = deadbandvec(pqrdes, mulf(maxratecmd, vec(0.04f, 0.04f, 0.04f)));
+    vec3d pqr_des = deadbandvec(pqrdes, mulf(maxratecmd * fc_rate_deadband_factor, vec(1.0f, 1.0f, 1.0f)));
     vec3d pqr_err = subv(pqr_des, pqr);
     pid_rate.integral = clampvec(addv(pid_rate.integral, mulf(dt, pqr_err)), pid_rate.integral_sat_neg, pid_rate.integral_sat_pos);
     _LMN = addv(mulv(pid_rate.kp, pqr_err), mulv(pid_rate.ki, pid_rate.integral));
@@ -172,7 +182,7 @@ vec3d RATEControl(vec3d pqrdes, vec3d pqr, float dt){
 
 vec3d ATTIControl(vec3d attides, vec3d atti, vec3d pqr){
     vec3d pqr_des;
-    vec3d att_des = deadbandvec(attides, mulf(maxatticmd, vec(0.04f, 0.04f, 0.04f)));
+    vec3d att_des = deadbandvec(attides, mulf(maxatticmd * fc_atti_deadband_factor, vec(1.0f, 1.0f, 1.0f)));
     vec3d att_err = subv(att_des, atti);
     pqr_des = subv(mulv(pid_euler.kp, att_err), mulv(pid_euler.kd, pqr));
     return pqr_des;

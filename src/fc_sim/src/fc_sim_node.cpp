@@ -37,9 +37,16 @@ namespace {
 constexpr double kDefaultMotorConstant = 8.54858e-06;
 
 // Conversion from sensor_msgs/Imu (FLU body, ENU world) to the
-// firmware's NED body frame. Body rates: p stays, q and r flip.
-// Acceleration: ax stays, ay and az flip. Euler angles derived from the
-// orientation quaternion get pitch/yaw sign-flipped to match NED.
+// firmware's NED body frame.
+//
+// Body rates: p stays, q and r flip.
+// Acceleration: ax stays, ay and az flip.
+//
+// Conversion from gz odom orientation (empirically NED-ish for the
+// multicopter plugins) into the firmware's NED Euler convention.
+// quat_to_euler returns eul.y = -asin(sinp); when fed the gz quaternion
+// it produces a sign that is the negative of the NED pitch the firmware
+// expects. We flip it back. Yaw needs the same flip.
 struct EulerNed {
     float roll;
     float pitch;
@@ -48,11 +55,11 @@ struct EulerNed {
 
 EulerNed flu_quat_to_ned_euler(double w, double x, double y, double z) {
     quaternion q{(float)w, {(float)x, (float)y, (float)z}};
-    vec3d e = quat_to_euler(q);  // firmware convention: roll, -pitch_std, yaw_std (close to FLU XYZ intrinsic)
+    vec3d e = quat_to_euler(q);
     EulerNed out;
     out.roll  = e.x;
-    out.pitch = -e.y;  // FLU -> NED pitch sign flip
-    out.yaw   = -e.z;  // FLU -> NED yaw sign flip
+    out.pitch = -e.y;
+    out.yaw   = -e.z;
     return out;
 }
 
@@ -106,6 +113,41 @@ public:
             [this]() { publishTelemetry(); });
 
         ControllerInit();
+
+        // Sim retune: the firmware gains were hand-tuned for the real
+        // airframe. In gz the integral term winds up against IMU noise
+        // and flips the drone within ~25 s. Disable rate integrators
+        // and dial the rate kp down somewhat. The attitude PID is left
+        // alone — it has no integrator and its kp damps tilt.
+        const bool sim_retune = this->declare_parameter<bool>("sim_retune", true);
+        if (sim_retune) {
+            pid_rate.ki = vec(0.0f, 0.0f, 0.0f);
+            // Firmware-default kp values; only the rate-axis ki is
+            // zeroed for sim (was 0.04, causes wind-up against gz IMU).
+            pid_rate.kp = vec(
+                (float)this->declare_parameter<double>("rate_kp_p", 0.40),
+                (float)this->declare_parameter<double>("rate_kp_q", 0.40),
+                (float)this->declare_parameter<double>("rate_kp_r", 0.80));
+            pid_euler.kp = vec(
+                (float)this->declare_parameter<double>("atti_kp_roll",  0.80),
+                (float)this->declare_parameter<double>("atti_kp_pitch", 0.80),
+                0.0f);
+            pid_euler.kd = vec(
+                (float)this->declare_parameter<double>("atti_kd_roll",  0.10),
+                (float)this->declare_parameter<double>("atti_kd_pitch", 0.10),
+                0.0f);
+            // Squash the firmware's SBUS-centering deadband so the
+            // companion's precise setpoints reach the rate loop. 0.001
+            // = 1 mrad/s of rate deadband.
+            fc_rate_deadband_factor = (float)this->declare_parameter<double>("rate_deadband", 0.001);
+            fc_atti_deadband_factor = (float)this->declare_parameter<double>("atti_deadband", 0.001);
+            RCLCPP_INFO(get_logger(),
+                "sim retune: pid_rate.kp=(%.2f,%.2f,%.2f) ki=0; "
+                "pid_euler.kp=(%.2f,%.2f,0) kd=(%.2f,%.2f,0)",
+                pid_rate.kp.x, pid_rate.kp.y, pid_rate.kp.z,
+                pid_euler.kp.x, pid_euler.kp.y,
+                pid_euler.kd.x, pid_euler.kd.y);
+        }
 
         RCLCPP_INFO(get_logger(),
             "fc_sim_node up. motor_constant=%.3e max_omega=%.1f rad/s telem=%.0f Hz",
