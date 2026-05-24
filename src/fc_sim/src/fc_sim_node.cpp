@@ -141,19 +141,24 @@ public:
         const bool sim_retune = this->declare_parameter<bool>("sim_retune", true);
         if (sim_retune) {
             pid_rate.ki = vec(0.0f, 0.0f, 0.0f);
-            // Firmware-default kp values; only the rate-axis ki is
-            // zeroed for sim (was 0.04, causes wind-up against gz IMU).
+            // Sim retune: firmware gains were tuned for the real
+            // airframe, but the gz motor plant produces 1.3-1.6x more
+            // thrust per ω than the SDF motorConstant says, so every
+            // torque command is amplified and the drone over-rotates.
+            // Halve kp_atti, double kd_atti — the loop becomes gentler
+            // but the gz plant gain compensates back to roughly the
+            // intended bandwidth.
             pid_rate.kp = vec(
-                (float)this->declare_parameter<double>("rate_kp_p", 0.40),
-                (float)this->declare_parameter<double>("rate_kp_q", 0.40),
-                (float)this->declare_parameter<double>("rate_kp_r", 0.80));
+                (float)this->declare_parameter<double>("rate_kp_p", 0.20),
+                (float)this->declare_parameter<double>("rate_kp_q", 0.20),
+                (float)this->declare_parameter<double>("rate_kp_r", 0.40));
             pid_euler.kp = vec(
-                (float)this->declare_parameter<double>("atti_kp_roll",  0.80),
-                (float)this->declare_parameter<double>("atti_kp_pitch", 0.80),
+                (float)this->declare_parameter<double>("atti_kp_roll",  0.40),
+                (float)this->declare_parameter<double>("atti_kp_pitch", 0.40),
                 0.0f);
             pid_euler.kd = vec(
-                (float)this->declare_parameter<double>("atti_kd_roll",  0.10),
-                (float)this->declare_parameter<double>("atti_kd_pitch", 0.10),
+                (float)this->declare_parameter<double>("atti_kd_roll",  0.20),
+                (float)this->declare_parameter<double>("atti_kd_pitch", 0.20),
                 0.0f);
             // Squash the firmware's SBUS-centering deadband so the
             // companion's precise setpoints reach the rate loop. 0.001

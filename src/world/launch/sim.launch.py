@@ -161,6 +161,16 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
+    # Optional fc_sim_node gain overrides exposed as launch args so the
+    # caller can dial down responsiveness without rebuilding.
+    rate_kp_p_arg     = DeclareLaunchArgument("rate_kp_p",     default_value="0.20")
+    rate_kp_q_arg     = DeclareLaunchArgument("rate_kp_q",     default_value="0.20")
+    rate_kp_r_arg     = DeclareLaunchArgument("rate_kp_r",     default_value="0.40")
+    atti_kp_roll_arg  = DeclareLaunchArgument("atti_kp_roll",  default_value="0.40")
+    atti_kp_pitch_arg = DeclareLaunchArgument("atti_kp_pitch", default_value="0.40")
+    atti_kd_roll_arg  = DeclareLaunchArgument("atti_kd_roll",  default_value="0.20")
+    atti_kd_pitch_arg = DeclareLaunchArgument("atti_kd_pitch", default_value="0.20")
+
     # The simulated FC: fc_core control loop ticked from /clock, publishing
     # actuator_msgs/Actuators back through the bridge into Gazebo.
     fc_sim_node = Node(
@@ -168,7 +178,16 @@ def generate_launch_description() -> LaunchDescription:
         executable="fc_sim_node",
         name="fc_sim_node",
         output="screen",
-        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
+        parameters=[{
+            "use_sim_time":    LaunchConfiguration("use_sim_time"),
+            "rate_kp_p":       LaunchConfiguration("rate_kp_p"),
+            "rate_kp_q":       LaunchConfiguration("rate_kp_q"),
+            "rate_kp_r":       LaunchConfiguration("rate_kp_r"),
+            "atti_kp_roll":    LaunchConfiguration("atti_kp_roll"),
+            "atti_kp_pitch":   LaunchConfiguration("atti_kp_pitch"),
+            "atti_kd_roll":    LaunchConfiguration("atti_kd_roll"),
+            "atti_kd_pitch":   LaunchConfiguration("atti_kd_pitch"),
+        }],
     )
 
     return LaunchDescription(
@@ -178,6 +197,9 @@ def generate_launch_description() -> LaunchDescription:
             headless_arg,
             use_sim_time_arg,
             marker_seed_arg,
+            rate_kp_p_arg, rate_kp_q_arg, rate_kp_r_arg,
+            atti_kp_roll_arg, atti_kp_pitch_arg,
+            atti_kd_roll_arg, atti_kd_pitch_arg,
             set_resource_path,
             set_resource_path_parent,
             marker_randomize,
