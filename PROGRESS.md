@@ -1,8 +1,47 @@
 # UAV26 Progress
 
-마지막 업데이트: 2026-04-29
+마지막 업데이트: 2026-05-25
 
 ## Done
+
+### `fc_core/` — STM32 firmware port to a pure C library (2026-05-25)
+
+Teammate delivered the actual STM32G431 flight-controller firmware (`Core (1).zip`).
+Goal: share the same controller source between sim (Gazebo) and real hardware, so
+tuning, dynamics, and the companion link converge on one code path.
+
+산출물:
+- `src/fc_core/package.xml`, `CMakeLists.txt` — ament_cmake C library, no ROS deps.
+- `include/fc_core/{linalg,controller,filter,planner,sbus,imu,lidar,protocol}.h` —
+  HAL-less ports of the firmware headers (planner.h drops `stm32g4xx_hal.h`,
+  filter.h drops `main.h`).
+- `src/{linalg,controller,filter,planner}.c` — verbatim from firmware
+  (`/tmp/uav26_core_fw/Core/lib/{src,inc}`).
+- `src/{imu_parse,sbus_parse,lidar_parse}.c` — pure parse halves of the firmware
+  drivers; HAL UART/DMA init dropped, caller supplies a pre-aligned frame buffer.
+- `src/protocol.c` — companion ↔ FC binary codec. 24-byte downlink (mode + arm +
+  roll/pitch/yawrate/vz setpoints in Q14 + thrust_norm in Q15 + timestamp + flags
+  + CRC16-CCITT), 40-byte uplink (state + RPY + body rates + alt + battery + CRC).
+- `controller.c` — single deliberate patch on top of the firmware copy: an
+  input-source mux at the top of `Control()`. SBUS ch4 (SWR) selects manual
+  (SBUS sticks) vs autonomous (COMP struct). 50 ms companion stale-link
+  detection falls back to level attitude + slight-below-hover thrust. The same
+  patched file is intended to compile into the real STM32 build too.
+- `test/test_{allocation,rate_pid,atti_pid,quat,protocol}.cpp` — gtest suite
+  validating mixer hover symmetry, rate-PID step response, attitude cascade
+  step convergence within 25%, quaternion-Euler roundtrip, and 200-frame
+  protocol roundtrip + CRC tampering rejection.
+
+검증 (Tier A):
+- Standalone smoke harness (host gcc/g++): 35/35 checks pass — same logic as
+  the gtest suite, runs without ROS/colcon while the dev container is
+  unavailable.
+- gtest suite designed to run under `colcon test --packages-select fc_core`
+  once `uav-aruco:latest` is rebuilt.
+
+기존 가짜 FC (`MulticopterVelocityControl` in `world/`) will be replaced in
+Phase B by an `fc_sim` ROS2 node that links against this library and ticks
+`Control()` on each `/clock` callback.
 
 ### `world/` 패키지 — Gazebo Harmonic 시뮬 (instruction `260429_world.md`)
 산출물 (이번 세션):
