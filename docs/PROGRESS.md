@@ -12,11 +12,9 @@ Index. Each topic file holds the actual work log. Entries go newest-first inside
 
 ## Open
 
-- [ ] world: update model.sdf to firmware geometry (mass 1.182 kg, arms dx=0.183 dy=0.168), drop MulticopterVelocityControl, add downward range sensor
-- [ ] world: marker_randomize.py + competition.sdf `<include>` reorganization (4 markers, `--seed`)
-- [ ] line_tracer: switch the Twist publisher to fc_sim_msgs/Setpoint on `/fc/setpoint` plus an altitude-hold P-controller for thrust_norm
-- [ ] Tier B verification: Gazebo hover + pitch step response with the ported controller
-- [ ] Tier C verification: line_tracer end-to-end smoke (TAKEOFF -> LINE_FOLLOW reaches a marker)
+- [ ] Tier B: retune controller gains against Gazebo dynamics. Current sim launches and the control loop runs end-to-end, but hover is unstable (drone flips within ~25 s of commanding a flat setpoint). Probable cause is rate-PID integral wind-up under IMU noise; first attempt should set ki=0 on the rate axes and revisit. See [fc_sim](progress/fc_sim.md) Open for details.
+- [ ] Tier C: line_tracer end-to-end (TAKEOFF -> LINE_FOLLOW reaches a marker). Blocked on Tier B hover stability.
+- [ ] Empirical hover thrust calibration. At thrust_norm=0.49 (theoretical hover) the drone is glued to the ground; need to find the lift-off thrust empirically and update line_tracer's `hover_thrust_norm` parameter accordingly.
 
 ## Conventions
 
