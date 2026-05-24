@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>fc_sim</name>
+  <version>0.1.0</version>
+  <description>
+    ROS2 wrapper around fc_core that drives a simulated quadrotor in
+    Gazebo Harmonic. Ticks Control() at the sim clock rate, applies a
+    FLU/NED frame shim to ROS IMU and odometry, and publishes per-motor
+    angular velocities to MulticopterMotorModel. Designed so the same
+    controller code path runs against the real STM32 firmware over UART.
+  </description>
+  <maintainer email="noreply@todo.todo">Dongha Gwak</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rosgraph_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>actuator_msgs</depend>
+  <depend>fc_core</depend>
+  <depend>fc_sim_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
