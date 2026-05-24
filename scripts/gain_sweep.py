@@ -33,21 +33,33 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = REPO_ROOT / "sweep_logs"
 
 
-# Gain grids. Add or trim columns as you like.
+def _logspace(lo: float, hi: float, n: int) -> list[float]:
+    """n points geometrically spaced between lo and hi (inclusive)."""
+    if n == 1:
+        return [lo]
+    r = (hi / lo) ** (1.0 / (n - 1))
+    return [round(lo * (r ** i), 3) for i in range(n)]
+
+
+# Gain grids. Log-spaced (each step is the same multiplicative ratio)
+# because attitude gains are multiplicative in effect — kp 0.10 -> 0.20
+# matters the same as 0.20 -> 0.40, not as 0.20 -> 0.30.
 GRIDS = {
     "small": [
         (0.20, 0.20),
-        (0.30, 0.20),
+        (0.30, 0.30),
         (0.40, 0.20),
-        (0.40, 0.30),
+        (0.40, 0.40),
     ],
-    "coarse": [
-        (kp, kd) for kp in (0.15, 0.30, 0.50) for kd in (0.15, 0.30, 0.50)
-    ],
-    "fine": [
+    "coarse": [                       # 3x3 = 9 cells, span 4x
         (kp, kd)
-        for kp in (0.10, 0.20, 0.30, 0.40, 0.55)
-        for kd in (0.10, 0.20, 0.30, 0.40, 0.55)
+        for kp in _logspace(0.15, 0.60, 3)
+        for kd in _logspace(0.10, 0.40, 3)
+    ],
+    "fine": [                         # 5x5 = 25 cells, span 8x
+        (kp, kd)
+        for kp in _logspace(0.10, 0.80, 5)
+        for kd in _logspace(0.08, 0.50, 5)
     ],
 }
 
@@ -133,6 +145,9 @@ def main() -> int:
             log_path=LOG_DIR / f"run_{i:02d}_kp{kp:.2f}_kd{kd:.2f}.log",
         ))
 
+    def fmt_log(s: float) -> str:
+        return f"{math.log10(max(s, 1e-6)):+.2f}"
+
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = {pool.submit(execute, r, args.duration): r for r in runs}
@@ -140,17 +155,24 @@ def main() -> int:
             r = fut.result()
             print(
                 f"  [{r.idx:02d}] kp={r.kp_atti:.2f} kd={r.kd_atti:.2f} "
-                f"samples={len(r.z_samples)} score={r.score:.3f}"
+                f"samples={len(r.z_samples)} "
+                f"score={r.score:.3f} log10={fmt_log(r.score)}"
             )
 
     elapsed = time.time() - t0
-    print(f"\n== Results (sorted by score, lower is better, elapsed {elapsed:.0f} s) ==")
+    print(f"\n== Results (sorted by log10(score), elapsed {elapsed:.0f} s) ==")
+    print("   log10(score) bracket guide:")
+    print("     < -1.3   (score < 0.05)  : excellent")
+    print("     -1.3 to -0.7 (0.05-0.20) : good — pick from here")
+    print("     -0.7 to -0.3 (0.20-0.50) : usable, noisy")
+    print("     > -0.3   (score > 0.50)  : oscillating or broken")
     runs.sort(key=lambda r: r.score)
-    print(f"{'rank':>4}  {'kp_atti':>8}  {'kd_atti':>8}  {'score':>8}  log")
+    print(f"\n{'rank':>4}  {'kp_atti':>8}  {'kd_atti':>8}  {'score':>8}  {'log10':>6}  log")
     for rank, r in enumerate(runs, start=1):
         print(
             f"{rank:>4}  {r.kp_atti:>8.2f}  {r.kd_atti:>8.2f}  "
-            f"{r.score:>8.3f}  {r.log_path.relative_to(REPO_ROOT)}"
+            f"{r.score:>8.3f}  {fmt_log(r.score):>6}  "
+            f"{r.log_path.relative_to(REPO_ROOT)}"
         )
     return 0
 
