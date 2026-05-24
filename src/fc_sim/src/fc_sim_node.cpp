@@ -238,14 +238,40 @@ private:
     void controlTick() {
         if (!have_imu_) return;
 
+        // Sanity gate. At sim startup gz's OdometryPublisher and IMU
+        // sometimes report a 180°-tilted orientation before physics has
+        // settled; the firmware reads this as "drone upside-down" and
+        // commands a violent righting torque, which spins the drone on
+        // the ground into a wedged state. Suppress motor output until
+        // the IMU shows the drone within ~45° of level for a few
+        // consecutive ticks.
+        const float max_tilt_rad = 0.7854f;  // 45 deg
+        bool level = std::fabs(euler_ned_.x) < max_tilt_rad
+                  && std::fabs(euler_ned_.y) < max_tilt_rad;
+        if (level) {
+            level_streak_ = std::min<int>(level_streak_ + 1, 1000);
+        } else {
+            level_streak_ = 0;
+        }
+        const bool sanity_ok = level_streak_ > 20;   // ~40 ms at 500 Hz
+
+        if (!sanity_ok) {
+            // Publish zero motor speeds. Drone free-falls / sits;
+            // critically, the firmware controller is NOT engaged so it
+            // can't fight bad sensor data.
+            actuator_msgs::msg::Actuators out;
+            out.header.stamp = get_clock()->now();
+            out.velocity.assign(4, 0.0);
+            pub_actuators_->publish(out);
+            return;
+        }
+
         // Synthetic SBUS so the source mux in Control() routes to COMP
         // whenever the line_tracer (companion) has arm=true.
         sbus_t sbus{};
         sbus.armingflag = COMP.arm;
         sbus.RS = 0;        // autonomous source
         sbus.LS = (char)COMP.arm;
-        // thr/roll/pitch/yaw_norm left at zero — Control()'s mux will
-        // override them when comp is fresh.
 
         thrvec T = Control(ned_pos_, vec(0, 0, 0), euler_ned_, pqr_ned_, sbus);
 
@@ -316,6 +342,7 @@ private:
     bool got_external_setpoint_ = false;
     bool auto_hover_init_ = false;
     double auto_hover_thrust_ = 0.50;
+    int level_streak_ = 0;
 
     uint32_t setpoint_seq_ = 0;
 };

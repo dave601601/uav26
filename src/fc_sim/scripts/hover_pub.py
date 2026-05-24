@@ -30,7 +30,12 @@ class HoverPub(Node):
         self.declare_parameter("kd_alt", 0.10)
         self.declare_parameter("publish_hz", 100.0)
         self.declare_parameter("thrust_min", 0.40)
-        self.declare_parameter("thrust_max", 0.60)
+        self.declare_parameter("thrust_max", 0.75)
+        # Takeoff burst: when the drone is below this altitude AND
+        # almost stationary, command a stronger thrust to break static
+        # ground contact friction. Once airborne, normal PD takes over.
+        self.declare_parameter("takeoff_thrust_norm", 0.85)
+        self.declare_parameter("takeoff_z_threshold", 0.30)
 
         self._target_alt = float(self.get_parameter("target_altitude").value)
         self._hover = float(self.get_parameter("hover_thrust_norm").value)
@@ -38,6 +43,8 @@ class HoverPub(Node):
         self._kd = float(self.get_parameter("kd_alt").value)
         self._thrust_min = float(self.get_parameter("thrust_min").value)
         self._thrust_max = float(self.get_parameter("thrust_max").value)
+        self._takeoff_thrust = float(self.get_parameter("takeoff_thrust_norm").value)
+        self._takeoff_z = float(self.get_parameter("takeoff_z_threshold").value)
 
         self._z: float = 0.0
         self._vz: float = 0.0
@@ -70,8 +77,18 @@ class HoverPub(Node):
             return
 
         err_z = self._target_alt - self._z
-        # PD: positive err -> boost thrust; positive vz -> brake.
-        thrust = self._hover + self._kp * err_z - self._kd * self._vz
+
+        # Takeoff burst breaks ground friction when the drone is sitting
+        # on the floor. Plain PD with kp=0.03 at err=2 only gives
+        # thrust=0.56 which gz physics holds against the ground; the
+        # burst gives the rotors a chance to lift before the closed
+        # loop pulls thrust back down.
+        if self._z < self._takeoff_z and abs(self._vz) < 0.2 and err_z > 0.5:
+            thrust = self._takeoff_thrust
+        else:
+            # PD: positive err -> boost thrust; positive vz -> brake.
+            thrust = self._hover + self._kp * err_z - self._kd * self._vz
+
         thrust = max(self._thrust_min, min(self._thrust_max, thrust))
 
         sp = Setpoint()

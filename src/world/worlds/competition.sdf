@@ -155,12 +155,13 @@
     <include>
       <uri>model://uav26_quad</uri>
       <name>uav26_quad</name>
-      <!-- Spawn slightly above ground (z=0.15 puts body bottom 0.12 m
-           clear). Higher spawns let the drone bounce/tumble during the
-           gz multi-plugin settle and the firmware can't recover from
-           upside-down; lower spawns interpenetrate the ground plane
-           and get ejected with random rotation. 0.15 is the sweet spot. -->
-      <pose>2.0 4.0 0.15 0 0 0</pose>
+      <!-- Spawn airborne at 1.5 m. The fc_sim_node sanity gate keeps
+           motors off (drone in free-fall, stays level) until the IMU
+           confirms attitude is sane; then motors engage and catch the
+           drone before it hits the ground. Avoids the ground-contact
+           constraint problem in DartSim where drones resting on the
+           floor refuse to lift even with excess thrust. -->
+      <pose>2.0 4.0 1.5 0 0 0</pose>
     </include>
 
   </world>
