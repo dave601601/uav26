@@ -16,6 +16,7 @@
   <depend>cv_bridge</depend>
   <depend>tf2_ros</depend>
   <depend>line_tracer_msgs</depend>
+  <depend>fc_sim_msgs</depend>
 
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>ros2launch</exec_depend>

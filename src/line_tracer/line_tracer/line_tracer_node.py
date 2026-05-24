@@ -37,6 +37,11 @@ import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Quaternion, Twist, Vector3
 from nav_msgs.msg import Odometry
+
+try:
+    from fc_sim_msgs.msg import Setpoint
+except ImportError:                       # pragma: no cover
+    Setpoint = None                       # type: ignore[assignment]
 from rclpy.node import Node
 from rclpy.qos import (
     QoSDurabilityPolicy,
@@ -114,6 +119,10 @@ class LineTracerNode(Node):
         self.declare_parameter("dr_dt", 0.05)            # 20 Hz integrator
         self.declare_parameter("external_override_ttl", 0.5)
         self.declare_parameter("publish_debug_image", True)
+        # FC setpoint shaping
+        self.declare_parameter("hover_thrust_norm", 0.49)   # m·g / (4 · 0.6 · g)
+        self.declare_parameter("kp_alt_thrust", 0.10)        # thrust_norm per metre
+        self.declare_parameter("max_atti_setpoint_rad", 0.20)   # ~11.5°
         # perception
         self.declare_parameter("canny_low", 60)
         self.declare_parameter("canny_high", 180)
@@ -155,8 +164,25 @@ class LineTracerNode(Node):
         self._external_pixel_error: Optional[Vector3] = None
         self._external_pixel_error_t: Optional[float] = None
 
+        # FC setpoint shaping constants (cached from params)
+        self._hover_thrust_norm = float(self.get_parameter("hover_thrust_norm").value)
+        self._kp_alt_thrust = float(self.get_parameter("kp_alt_thrust").value)
+        self._max_atti_sp = float(self.get_parameter("max_atti_setpoint_rad").value)
+
         # --- pubs/subs/srvs --------------------------------------------------
-        self._pub_cmd = self.create_publisher(Twist, "/cmd_vel", 10)
+        # The flight controller (fc_sim_node in sim, real STM32 over USART2
+        # later) consumes attitude/thrust setpoints, not body-frame Twist.
+        # _build_setpoint() maps the planner's body-velocity intent through
+        # a small-angle attitude map + altitude-hold P controller.
+        if Setpoint is None:
+            self.get_logger().warn(
+                "fc_sim_msgs not available; falling back to /cmd_vel Twist."
+            )
+            self._pub_cmd = self.create_publisher(Twist, "/cmd_vel", 10)
+            self._setpoint_pub = False
+        else:
+            self._pub_cmd = self.create_publisher(Setpoint, "/fc/setpoint", 10)
+            self._setpoint_pub = True
         self._pub_odom = self.create_publisher(Odometry, "/odom_dr", 10)
         self._pub_markers = self.create_publisher(
             MarkerArray, "/waypoints/aruco", 10
@@ -340,6 +366,8 @@ class LineTracerNode(Node):
 
         vel, _ = self._dr.step(dx_body, dy_body, psi, self._dr_dt)
 
+        # Always build a Twist for the /odom_dr debug message (DR state is
+        # easier to inspect with Twist than with Setpoint).
         twist = Twist()
         twist.linear.x = float(vel.vx)
         twist.linear.y = float(vel.vy)
@@ -347,7 +375,12 @@ class LineTracerNode(Node):
         twist.angular.x = 0.0
         twist.angular.y = 0.0
         twist.angular.z = float(vel.wz)
-        self._pub_cmd.publish(twist)
+
+        if self._setpoint_pub:
+            sp = self._build_setpoint(vel, behavior.target_altitude)
+            self._pub_cmd.publish(sp)
+        else:
+            self._pub_cmd.publish(twist)
 
         odom = Odometry()
         odom.header = Header()
@@ -371,6 +404,46 @@ class LineTracerNode(Node):
                 f"du={du} dv={dv} psi_err={psi_err} alt={altitude:.2f} "
                 f"vx={vel.vx:+.2f} vy={vel.vy:+.2f} vz={vel.vz:+.2f} wz={vel.wz:+.2f}"
             )
+
+    # ------------------------------------------------------------------
+    # Body-velocity intent -> FC attitude/thrust setpoint
+    # ------------------------------------------------------------------
+
+    def _build_setpoint(self, vel, target_altitude: float):
+        """Map dead-reckoning vel (body FLU) into an fc_sim_msgs/Setpoint.
+
+        Small-angle approximation:
+          pitch_sp = -vx / g       (positive pitch in FLU tips the nose up,
+                                    which decelerates +X motion; we want the
+                                    opposite, hence the minus sign)
+          roll_sp  = +vy / g       (positive roll tips the right wing down,
+                                    so the drone slides +Y in FLU)
+
+        thrust_norm = hover_thrust_norm + kp_alt * (target_altitude - alt).
+
+        Both attitude setpoints are clamped to max_atti_setpoint_rad.
+        """
+        g = 9.80665
+        pitch_sp = -float(vel.vx) / g
+        roll_sp  = +float(vel.vy) / g
+        # Clamp to keep within the firmware's maxatticmd (30°) with margin.
+        pitch_sp = max(-self._max_atti_sp, min(self._max_atti_sp, pitch_sp))
+        roll_sp  = max(-self._max_atti_sp, min(self._max_atti_sp, roll_sp))
+
+        alt = self._altitude_m if self._altitude_m is not None else 0.0
+        alt_err = float(target_altitude) - float(alt)
+        thrust = self._hover_thrust_norm + self._kp_alt_thrust * alt_err
+        thrust = max(0.0, min(1.0, thrust))
+
+        sp = Setpoint()
+        sp.mode = Setpoint.MODE_ATTITHR
+        sp.arm = True
+        sp.roll_sp = roll_sp
+        sp.pitch_sp = pitch_sp
+        sp.yawrate_sp = float(vel.wz)
+        sp.vz_sp = 0.0
+        sp.thrust_norm = thrust
+        return sp
 
     # ------------------------------------------------------------------
     # ArUco markers → world frame
