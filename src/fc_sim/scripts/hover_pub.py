@@ -20,21 +20,29 @@ class HoverPub(Node):
     def __init__(self) -> None:
         super().__init__("hover_pub")
 
+        # Closed-loop altitude hold: PD on z with vz feedback.
+        # Plant model derived empirically: d_thrust_force / d_thrust_norm
+        # ~ 24 N (per unit), m = 1.182 kg, so the loop's natural freq is
+        # omega_n = sqrt(24 * kp / m). Critical-damping kd ~ 2*sqrt(kp).
         self.declare_parameter("target_altitude", 2.0)
         self.declare_parameter("hover_thrust_norm", 0.500)
-        self.declare_parameter("kp_alt", 0.04)
+        self.declare_parameter("kp_alt", 0.03)
+        self.declare_parameter("kd_alt", 0.10)
         self.declare_parameter("publish_hz", 100.0)
-        self.declare_parameter("thrust_min", 0.45)
+        self.declare_parameter("thrust_min", 0.40)
         self.declare_parameter("thrust_max", 0.60)
 
         self._target_alt = float(self.get_parameter("target_altitude").value)
         self._hover = float(self.get_parameter("hover_thrust_norm").value)
         self._kp = float(self.get_parameter("kp_alt").value)
+        self._kd = float(self.get_parameter("kd_alt").value)
         self._thrust_min = float(self.get_parameter("thrust_min").value)
         self._thrust_max = float(self.get_parameter("thrust_max").value)
 
         self._z: float = 0.0
+        self._vz: float = 0.0
         self._have_odom = False
+        self._log_counter = 0
 
         self._sub = self.create_subscription(
             Odometry, "/odom_truth", self._on_odom, 10
@@ -46,19 +54,24 @@ class HoverPub(Node):
 
         self.get_logger().info(
             f"hover_pub: target_alt={self._target_alt:.2f} m "
-            f"hover_thrust={self._hover:.3f} kp_alt={self._kp:.3f}"
+            f"hover_thrust={self._hover:.3f} kp={self._kp:.3f} kd={self._kd:.3f}"
         )
 
     def _on_odom(self, msg: Odometry) -> None:
         self._z = float(msg.pose.pose.position.z)
+        # Odometry's twist is body-frame; for a level drone body z = world z.
+        # Once the drone tilts this is an approximation, but the hover demo
+        # commands roll/pitch=0 so the approximation holds.
+        self._vz = float(msg.twist.twist.linear.z)
         self._have_odom = True
 
     def _on_tick(self) -> None:
         if not self._have_odom:
             return
 
-        err = self._target_alt - self._z
-        thrust = self._hover + self._kp * err
+        err_z = self._target_alt - self._z
+        # PD: positive err -> boost thrust; positive vz -> brake.
+        thrust = self._hover + self._kp * err_z - self._kd * self._vz
         thrust = max(self._thrust_min, min(self._thrust_max, thrust))
 
         sp = Setpoint()
@@ -70,6 +83,14 @@ class HoverPub(Node):
         sp.vz_sp = 0.0
         sp.thrust_norm = float(thrust)
         self._pub.publish(sp)
+
+        self._log_counter += 1
+        if self._log_counter >= 100:                # ~1 Hz logging at 100 Hz
+            self._log_counter = 0
+            self.get_logger().info(
+                f"z={self._z:+.2f} vz={self._vz:+.2f} "
+                f"err={err_z:+.2f} thrust={thrust:.3f}"
+            )
 
 
 def main() -> None:
