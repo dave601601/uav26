@@ -2,15 +2,17 @@
 
 기능:
   1. GZ_SIM_RESOURCE_PATH 에 본 패키지 share/<pkg>/models 추가 → model:// 해석
-  2. ros_gz_sim 의 gz_sim.launch.py 를 include 해 Gazebo 서버+GUI 기동
-  3. ros_gz_bridge parameter_bridge 로 토픽 매핑 (config/bridge.yaml)
-  4. 가짜 FC 활성화 메시지 (gz topic /uav26_quad/enable=true) 1회 publish
+  2. marker_randomize.py 를 pre-launch 로 실행 (4 markers, --seed)
+  3. ros_gz_sim 의 gz_sim.launch.py 를 include 해 Gazebo 서버+GUI 기동
+  4. ros_gz_bridge parameter_bridge 로 토픽 매핑 (config/bridge.yaml)
+  5. fc_sim_node 노드 spawn (fc_core 기반 시뮬 FC)
 
 Launch arguments:
   world          : SDF 파일명 (기본 competition.sdf)
   gui            : true / false (기본 true)
   headless       : 'true' 면 -s (서버 only)
   use_sim_time   : ROS 노드들이 /clock 사용 (기본 true)
+  marker_seed    : marker_randomize.py 의 --seed (-1 = 시계 기반)
 """
 from __future__ import annotations
 
@@ -41,8 +43,11 @@ def generate_launch_description() -> LaunchDescription:
 
     world_arg = DeclareLaunchArgument(
         "world",
-        default_value="competition.sdf",
-        description="SDF world filename (under share/world/worlds)",
+        default_value="competition_runtime.sdf",
+        description=(
+            "SDF world filename (under share/world/worlds). The default is the "
+            "post-randomization SDF written by marker_randomize.py."
+        ),
     )
     gui_arg = DeclareLaunchArgument(
         "gui", default_value="true", description="Show Gazebo GUI"
@@ -54,6 +59,11 @@ def generate_launch_description() -> LaunchDescription:
     )
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time", default_value="true"
+    )
+    marker_seed_arg = DeclareLaunchArgument(
+        "marker_seed",
+        default_value="-1",
+        description="Seed for marker_randomize.py (-1 = clock-based)",
     )
 
     # gz-sim 이 model:// 을 찾을 수 있도록 본 패키지 모델 경로를 추가.
@@ -136,25 +146,29 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
-    # 가짜 FC enable: gz topic 으로 Boolean=true 1회 publish.
-    # MulticopterVelocityControl 는 enable=true 받기 전엔 hover 안 함.
-    enable_fc = TimerAction(
-        period=3.0,
-        actions=[
-            ExecuteProcess(
-                cmd=[
-                    "gz",
-                    "topic",
-                    "-t",
-                    "/uav26_quad/enable",
-                    "-m",
-                    "gz.msgs.Boolean",
-                    "-p",
-                    "data: true",
-                ],
-                output="screen",
-            )
+    # Pre-launch: randomize 4 markers across grid intersections. Writes
+    # models/world_assets/markers_runtime.sdf (gitignored) + overwrites
+    # config/aruco_layout.yaml so line_tracer reads the same coordinates.
+    marker_randomize = ExecuteProcess(
+        cmd=[
+            "python3",
+            os.path.join(pkg_world, "script", "marker_randomize.py"),
+            "--seed",
+            LaunchConfiguration("marker_seed"),
+            "--share-dir",
+            pkg_world,
         ],
+        output="screen",
+    )
+
+    # The simulated FC: fc_core control loop ticked from /clock, publishing
+    # actuator_msgs/Actuators back through the bridge into Gazebo.
+    fc_sim_node = Node(
+        package="fc_sim",
+        executable="fc_sim_node",
+        name="fc_sim_node",
+        output="screen",
+        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
     )
 
     return LaunchDescription(
@@ -163,12 +177,14 @@ def generate_launch_description() -> LaunchDescription:
             gui_arg,
             headless_arg,
             use_sim_time_arg,
+            marker_seed_arg,
             set_resource_path,
             set_resource_path_parent,
+            marker_randomize,
             gz_sim_gui,
             gz_sim_headless,
             gz_sim_server_only,
             bridge_node,
-            enable_fc,
+            fc_sim_node,
         ]
     )

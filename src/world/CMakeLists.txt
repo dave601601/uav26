@@ -8,6 +8,11 @@ install(DIRECTORY worlds DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 
+# marker_randomize.py runs at launch time; install as an executable.
+install(PROGRAMS
+  script/marker_randomize.py
+  DESTINATION share/${PROJECT_NAME}/script)
+
 # uav26_quad 모델: 그대로 복사
 install(DIRECTORY models/uav26_quad
         DESTINATION share/${PROJECT_NAME}/models)

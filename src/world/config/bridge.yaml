@@ -47,11 +47,16 @@
   gz_type_name: "gz.msgs.Odometry"
   direction: GZ_TO_ROS
 
-# === 명령 ===
-- ros_topic_name: "/cmd_vel"
-  gz_topic_name: "/uav26_quad/cmd_vel"
-  ros_type_name: "geometry_msgs/msg/Twist"
-  gz_type_name: "gz.msgs.Twist"
+# === Motor commands (fc_sim_node -> MulticopterMotorModel) ===
+# 4 actuator velocities in rad/s. Index mapping (firmware T_i -> SDF rotor):
+#   rotor_0 (FR) <- T4,  rotor_1 (BL) <- T2,
+#   rotor_2 (FL) <- T1,  rotor_3 (BR) <- T3.
+# The previous /cmd_vel Twist bridge is gone; line_tracer publishes
+# fc_sim_msgs/Setpoint on /fc/setpoint and fc_sim_node fans out to motors.
+- ros_topic_name: "/uav26_quad/command/motor_speed"
+  gz_topic_name: "/uav26_quad/command/motor_speed"
+  ros_type_name: "actuator_msgs/msg/Actuators"
+  gz_type_name: "gz.msgs.Actuators"
   direction: ROS_TO_GZ
 
 # === 시뮬 시계 ===
