@@ -146,15 +146,21 @@
     <!-- MARKER_BLOCK_INJECTION_POINT -->
 
     <!-- ===== 드론 =====
-         spawn 위치 = (2, 4, 2.0) : 공중에 띄워서 ground contact 다이나믹스
-         (정적 마찰 + collision normal force) 가 attitude tuning 을 흐리지 않도록.
+         spawn 위치 = (2, 4, 0.15) : ground 바로 위. 시뮬 시작 시 drone 이
+         즉시 안정적으로 ground 에 정착 (큰 fall + bounce 없음). z=2 m 같은
+         높은 spawn 은 settle 동안 tumbling 을 유발해 demo 초기 상태를 망친다.
          body +X(forward) 가 격자선 방향(+X world)과 같으므로 LINE_FOLLOW 의
          cruise_vx 가 격자선을 따라 자연스럽게 진행한다.
          이 경로상에 markers 0~3 (x=4,12,20,28; y=4) 도 차례로 카메라에 잡힌다. -->
     <include>
       <uri>model://uav26_quad</uri>
       <name>uav26_quad</name>
-      <pose>2.0 4.0 2.0 0 0 0</pose>
+      <!-- Spawn slightly above ground (z=0.15 puts body bottom 0.12 m
+           clear). Higher spawns let the drone bounce/tumble during the
+           gz multi-plugin settle and the firmware can't recover from
+           upside-down; lower spawns interpenetrate the ground plane
+           and get ejected with random rotation. 0.15 is the sweet spot. -->
+      <pose>2.0 4.0 0.15 0 0 0</pose>
     </include>
 
   </world>

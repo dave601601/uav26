@@ -31,7 +31,9 @@ ament_target_dependencies(fc_sim_node
 install(TARGETS fc_sim_node
   DESTINATION lib/${PROJECT_NAME})
 
-install(PROGRAMS scripts/hover_pub.py
+install(PROGRAMS
+  scripts/hover_pub.py
+  scripts/flight_demo_pub.py
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch

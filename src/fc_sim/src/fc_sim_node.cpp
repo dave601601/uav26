@@ -78,6 +78,14 @@ public:
             "max_motor_omega", 800.0);
         publish_telemetry_hz_ = this->declare_parameter<double>(
             "telemetry_hz", 100.0);
+        // Auto-prime the drone with a safe level-attitude hover thrust
+        // from t=0 so gz physics can't tumble it during the unmotored
+        // settle period. As soon as a real /fc/setpoint arrives, that
+        // overrides. Hover prime stays armed until an external
+        // unarmed setpoint disarms it.
+        auto_hover_init_ = this->declare_parameter<bool>("auto_hover_init", true);
+        auto_hover_thrust_ = this->declare_parameter<double>(
+            "auto_hover_thrust_norm", 0.50);
 
         // ---- Subscriptions ----
         rclcpp::QoS qos_sensors(rclcpp::KeepLast(10));
@@ -113,6 +121,17 @@ public:
             [this]() { publishTelemetry(); });
 
         ControllerInit();
+
+        if (auto_hover_init_) {
+            COMP.mode = 1;                             // attithrmode
+            COMP.arm = 1;
+            COMP.roll_sp = 0.0f;
+            COMP.pitch_sp = 0.0f;
+            COMP.yawrate_sp = 0.0f;
+            COMP.vz_sp = 0.0f;
+            COMP.thrust_norm = (float)auto_hover_thrust_;
+            COMP.last_ms = 0;       // will be refreshed each /clock tick below
+        }
 
         // Sim retune: the firmware gains were hand-tuned for the real
         // airframe. In gz the integral term winds up against IMU noise
@@ -197,6 +216,7 @@ private:
         down.seq         = (uint8_t)(setpoint_seq_++);
 
         fc_proto_apply_down(&down, fc_now_ms);
+        got_external_setpoint_ = true;
     }
 
     void onClock(const rosgraph_msgs::msg::Clock& msg) {
@@ -205,6 +225,12 @@ private:
         uint32_t now_ms = (uint32_t)(msg.clock.sec * 1000u
                                     + msg.clock.nanosec / 1000000u);
         fc_now_ms = now_ms;
+
+        // Auto-hover-init keeps COMP fresh until a real setpoint
+        // arrives (after which onSetpoint takes over COMP.last_ms).
+        if (auto_hover_init_ && !got_external_setpoint_) {
+            COMP.last_ms = now_ms;
+        }
 
         controlTick();
     }
@@ -287,6 +313,9 @@ private:
 
     bool have_imu_  = false;
     bool have_odom_ = false;
+    bool got_external_setpoint_ = false;
+    bool auto_hover_init_ = false;
+    double auto_hover_thrust_ = 0.50;
 
     uint32_t setpoint_seq_ = 0;
 };

@@ -6,6 +6,7 @@ ROS2 C++ wrapper around `fc_core` that flies the simulated drone in Gazebo Harmo
 
 - Tighten step-response damping. Hover is stable but a 0.1 rad attitude step overshoots ~3-5x before settling. line_tracer feeds small smoothly-varying setpoints so this is acceptable for integration tests; tuning further means trading some hover stiffness for damping (lower kp_atti or higher kd_atti).
 - Tier C: end-to-end line_tracer in Gazebo (TAKEOFF -> LINE_FOLLOW reaches a marker).
+- **Startup-tumble flake.** When the sim launches, gz Harmonic's OdometryPublisher reports the drone's orientation as `q=(0, 0, 1, 0)` (= 180° about Y) for the first few physics steps before the simulation has settled. The firmware controller reads this as "drone upside-down" and commands a big righting torque, which actually tumbles the drone on the ground into a wedged orientation it can't escape. Reproducible across spawn heights, settle delays, and the `auto_hover_init` early-engagement workaround. Fix likely lives at the SDF/plugin layer (suppress the OdometryPublisher first ~0.1 s, or seed the IMU with identity). Until that's fixed, `flight_demo.launch.py` is unreliable; `hover_demo.launch.py` works most of the time.
 
 ## Decisions
 

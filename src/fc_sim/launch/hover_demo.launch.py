@@ -41,7 +41,7 @@ def generate_launch_description() -> LaunchDescription:
     )
     delay_arg = DeclareLaunchArgument(
         "settle_delay",
-        default_value="3.0",
+        default_value="0.5",
         description="Seconds to wait for gz to come up before publishing.",
     )
 
