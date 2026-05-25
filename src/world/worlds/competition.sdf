@@ -155,13 +155,17 @@
     <include>
       <uri>model://uav26_quad</uri>
       <name>uav26_quad</name>
-      <!-- Spawn airborne at 1.5 m. The fc_sim_node sanity gate keeps
+      <!-- Spawn airborne at 3.0 m. The fc_sim_node sanity gate keeps
            motors off (drone in free-fall, stays level) until the IMU
            confirms attitude is sane; then motors engage and catch the
-           drone before it hits the ground. Avoids the ground-contact
-           constraint problem in DartSim where drones resting on the
-           floor refuse to lift even with excess thrust. -->
-      <pose>2.0 4.0 1.5 0 0 0</pose>
+           drone before it hits the ground. r17/r18 took off cleanly
+           from z=1.5 but r19/r20 (same code) didn't — the sanity-gate
+           release window vs. ground contact timing is borderline.
+           Spawning higher buys ~0.5 s more for level_streak to cross
+           the gate before contact, lifting reliability up. Avoids the
+           ground-contact constraint problem in DartSim where drones
+           resting on the floor refuse to lift even with excess thrust. -->
+      <pose>2.0 4.0 3.0 0 0 0</pose>
     </include>
 
   </world>

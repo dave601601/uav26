@@ -118,8 +118,16 @@ def body_vel_to_atti_thr(
                     -gains.max_atti_setpoint_rad,
                     +gains.max_atti_setpoint_rad)
     alt_err = target_alt - altitude
+    # Burst fires when drone is below threshold AND not already rising.
+    # The earlier `abs(vz_truth) < 0.2` guard worked when vz_truth was
+    # the (wrong-frame) gz twist value: small at startup so burst fired.
+    # After switching to a true world-Z derivative, |vz| during the
+    # initial spawn fall reads ~2 m/s and that guard blocks the burst —
+    # drone hits ground at thrust_min, stuck (r19/r20/r21). Allow burst
+    # while falling/stationary; only suppress it once vz > +0.2 m/s so
+    # the PD takes over after liftoff.
     if (altitude < gains.takeoff_z_threshold
-            and abs(vz_truth) < 0.2
+            and vz_truth < 0.2
             and alt_err > 0.5):
         thrust = gains.takeoff_thrust_norm
     else:

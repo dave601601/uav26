@@ -83,13 +83,19 @@ _DEFAULT_TARGET_ALT = 2.0
 
 _BEHAVIORS: Dict[StateName, Behavior] = {
     # Climb to altitude before engaging any line-tracking corrections.
+    # lock_yaw_to_initial intentionally OFF during TAKEOFF: while the
+    # drone is in ground contact, a saturated yawrate_sp from the lock
+    # interacts with the sphere body_collision and the firmware mixer
+    # in ways that prevent vertical liftoff (r19 spun in place on the
+    # ground at thrust_burst=0.85 with wz=-1.0). LINE_FOLLOW engages
+    # the lock once airborne.
     StateName.TAKEOFF: Behavior(
         target_altitude=_DEFAULT_TARGET_ALT,
         use_lateral_error=False,
         use_heading_error=False,
         use_forward_error=False,
         cruise_vx=0.0,
-        lock_yaw_to_initial=True,
+        lock_yaw_to_initial=False,
     ),
     # Active line tracing: lateral (du) + heading correction keep the drone
     # on the closest vertical line; forward error (dv) is intentionally OFF
