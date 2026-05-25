@@ -22,6 +22,22 @@ Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning
 
 ## Done
 
+### Test rewrite — closed-loop + edge cases (commits `5266c6f` `5880c3e` `228f4b4`, 2026-05-25)
+
+After r10 / r14 visualizations showed the 104 existing tests passing while the actual sim run left the drone 90 m outside the mission area, rewrote the test suite. Total: 96 → 124 tests (+28).
+
+What the old tests checked: "FSM transitions correctly given synthetic dr_state / perception / altitude inputs." What they missed: "the drone actually follows the intent the FSM expressed." The pitch-sign bug that crashed r09 lived in `LineTracerNode._build_setpoint` for two days because it was a Node method — no pure-function test.
+
+Refactor: extracted the sign / clamp / thrust-PD logic from `_build_setpoint` into `dead_reckoning.body_vel_to_atti_thr(vel, target_alt, altitude, vz_truth, gains) -> AttiThrCmd`. The Node method is now a thin rclpy wrapper.
+
+New tests:
+
+- **`TestAttiThrSign` (6 tests)**: `+vx -> +pitch_sp`, `+vy -> -roll_sp`, clamp behaviour, hover-thrust on target, descending-vz increases thrust. The pitch sign bug would have failed `test_positive_vx_yields_positive_pitch` immediately.
+- **`TestMissionClosedLoop` (6 tests)**: `MockDrone` (point-mass + linear drag) + `SyntheticCam` (radius-based ArUco visibility) + a 40 Hz mock control loop. Drives one synthetic mission (4 markers on the y=4 line) end-to-end, asserts FSM reaches LAND, all 4 markers recorded within `snap_max_err`, state sequence is in order, drone lands near spawn.
+- **`TestMissionTickEdgeCases` (8 tests)**: altitude streak reset on dip, snap refusal beyond `max_err`, same-id repeat during WAYPOINT_VISIT not resetting the timer, perception drop mid-hover not breaking the timer, `records_full` with `grid=None` staying safe, `target_xy_world` only in retrieval phases, LAND terminal, `set_state` override + tick re-application.
+
+The closed-loop tests still don't replace a real sim run — they assume instantaneous attitude tracking and don't simulate gz/DartSim's contact constraint. But "FSM produces a self-consistent set of intents that converge on a sim drone" is now a unit test, not a hope.
+
 ### M-A end-to-end FSM scaffolding (commits `de77a04` `1fd79a5` `f970604` `9876c18` `c7385e7` `b17a25d` `f161c42` `810ef36`, 2026-05-25)
 
 Single-shot launch (`world/sim.launch.py` then `line_tracer.launch.py`)
