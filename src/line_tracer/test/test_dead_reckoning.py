@@ -11,8 +11,10 @@ from line_tracer.dead_reckoning import (
     clamp,
     compute_body_velocity,
     integrate,
+    snap_to_intersection,
     wrap_angle,
 )
+from line_tracer.grid import Grid
 
 
 @pytest.fixture
@@ -168,3 +170,39 @@ def test_dr_reset(gains):
     assert dr.state == State()
     dr.reset(State(x=1.0))
     assert dr.state.x == 1.0
+
+
+# ---------- snap_to_intersection ----------
+
+
+@pytest.fixture
+def default_grid():
+    # 30 x 20 m floor, 4 m cells -> xs at 0,4,8,...,28,30; ys at 0,4,...,16,20
+    return Grid.from_extents(width=30.0, depth=20.0, cell=4.0)
+
+
+def test_snap_within_max_err_pulls_to_intersection(default_grid):
+    s = State(x=4.3, y=7.7, z=2.0, yaw=0.5)
+    out = snap_to_intersection(s, default_grid, max_err=2.0)
+    assert out.x == 4.0 and out.y == 8.0
+    assert out.z == 2.0 and out.yaw == 0.5     # preserved
+
+
+def test_snap_outside_max_err_leaves_state_unchanged(default_grid):
+    # (2, 2) is 2*sqrt(2)=2.83 m from (0,0) or (4,4); both > max_err=2.0
+    s = State(x=2.0, y=2.0, z=2.0, yaw=0.0)
+    out = snap_to_intersection(s, default_grid, max_err=2.0)
+    assert out is s or (out.x == s.x and out.y == s.y)
+
+
+def test_snap_exact_intersection_is_idempotent(default_grid):
+    s = State(x=12.0, y=16.0, z=2.0, yaw=0.0)
+    out = snap_to_intersection(s, default_grid, max_err=0.1)
+    assert out.x == 12.0 and out.y == 16.0
+
+
+def test_snap_preserves_z_and_yaw(default_grid):
+    s = State(x=8.1, y=4.05, z=1.85, yaw=-1.3)
+    out = snap_to_intersection(s, default_grid, max_err=1.0)
+    assert isclose(out.x, 8.0) and isclose(out.y, 4.0)
+    assert isclose(out.z, 1.85) and isclose(out.yaw, -1.3)

@@ -17,8 +17,11 @@ outside this module).
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from math import cos, pi, sin
-from typing import Tuple
+from math import cos, hypot, pi, sin
+from typing import TYPE_CHECKING, Tuple
+
+if TYPE_CHECKING:
+    from .grid import Grid
 
 
 def clamp(x: float, lo: float, hi: float) -> float:
@@ -120,3 +123,35 @@ class DeadReckoning:
         )
         self.state = integrate(self.state, vel, dt)
         return vel, self.state
+
+
+def world_to_body(err_x_world: float, err_y_world: float, yaw: float) -> Tuple[float, float]:
+    """Rotate a world-frame XY error into the body FLU frame.
+
+    Inverse of the rotation in :func:`integrate`: body forward (+x_body)
+    points along world yaw, so to project a world delta onto body axes:
+
+        dx_body =  cos(yaw) * dx_world + sin(yaw) * dy_world
+        dy_body = -sin(yaw) * dx_world + cos(yaw) * dy_world
+    """
+    c, s = cos(yaw), sin(yaw)
+    return c * err_x_world + s * err_y_world, -s * err_x_world + c * err_y_world
+
+
+def snap_to_intersection(
+    state: State, grid: "Grid", max_err: float = 2.0
+) -> State:
+    """Snap (x, y) to the nearest grid intersection if within ``max_err`` m.
+
+    Used during WAYPOINT_VISIT when an ArUco marker is centered in the
+    downward camera: the marker is known to sit on a grid intersection, so
+    the sighting is an absolute XY fix. Returns a new ``State`` with z and
+    yaw preserved; if the nearest intersection is farther than ``max_err``
+    the original state is returned unchanged (refuses to snap when we have
+    no reason to believe we're actually over an intersection).
+    """
+    node = grid.nearest_node(state.x, state.y)
+    nx, ny = grid.world(node)
+    if hypot(nx - state.x, ny - state.y) > max_err:
+        return state
+    return State(x=nx, y=ny, z=state.z, yaw=state.yaw)
