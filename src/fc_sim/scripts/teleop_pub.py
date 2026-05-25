@@ -81,18 +81,37 @@ class Teleop(Node):
 
         # Put stdin in cbreak mode so single keystrokes arrive without
         # waiting for Enter, while leaving signals (Ctrl-C) intact.
+        # If stdin is not a TTY (e.g. piped through ros2 launch) the
+        # termios calls fail and key input simply won't work — log it
+        # loudly instead of silently swallowing keys.
         self._fd = sys.stdin.fileno()
-        self._term_saved = termios.tcgetattr(self._fd)
-        tty.setcbreak(self._fd)
+        self._term_saved = None
+        self._stdin_ok = False
+        if sys.stdin.isatty():
+            try:
+                self._term_saved = termios.tcgetattr(self._fd)
+                tty.setcbreak(self._fd)
+                self._stdin_ok = True
+            except (termios.error, OSError) as e:
+                self.get_logger().error(f"cbreak setup failed: {e}")
+        else:
+            self.get_logger().error(
+                "stdin is NOT a TTY — keyboard input will not work. "
+                "Run `ros2 run fc_sim teleop_pub.py` from an interactive "
+                "shell inside the container (docker compose run uav-aruco "
+                "bash, then ros2 run), not through `bash -lc \"...\"`."
+            )
 
         self.get_logger().info(
             "teleop_pub ready. WASD=pitch/roll, QE=yaw, RF=altitude, "
             "space=hover-level, x=arm toggle, z or Ctrl-C to quit. "
-            f"target_alt={self._target_alt:.2f} m, arm={self._arm}"
+            f"target_alt={self._target_alt:.2f} m, arm={self._arm}, "
+            f"stdin_ok={self._stdin_ok}"
         )
 
     def restore_term(self) -> None:
-        termios.tcsetattr(self._fd, termios.TCSADRAIN, self._term_saved)
+        if self._term_saved is not None:
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._term_saved)
 
     def _on_odom(self, msg: Odometry) -> None:
         self._z = msg.pose.pose.position.z
@@ -100,8 +119,12 @@ class Teleop(Node):
         self._have_odom = True
 
     def _read_key(self) -> str | None:
+        if not self._stdin_ok:
+            return None
         if select.select([sys.stdin], [], [], 0)[0]:
-            return sys.stdin.read(1)
+            ch = sys.stdin.read(1)
+            self.get_logger().debug(f"key={ch!r}")
+            return ch
         return None
 
     def _apply_key(self, ch: str) -> None:
@@ -135,10 +158,9 @@ class Teleop(Node):
             self._arm = not self._arm
             self.get_logger().info(f"arm -> {self._arm}")
             return
-        elif ch == "z":
+        elif ch == "z" or ch == "\x03":   # z or Ctrl-C as a raw char
             self.get_logger().info("quit")
-            rclpy.shutdown()
-            return
+            raise SystemExit(0)
         else:
             return
         self._last_cmd_ns = self.get_clock().now().nanoseconds
@@ -188,7 +210,7 @@ def main() -> None:
     node = Teleop()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
     finally:
         node.restore_term()
