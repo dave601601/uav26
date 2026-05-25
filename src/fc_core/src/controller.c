@@ -110,8 +110,11 @@ static float mass = 0.0f;
 static enum MODE mode = attithrmode;
 
 /* Companion link stale threshold (ms). Below this, COMP is trusted.
- * Above, the mux falls back to a level descent. */
-#define COMP_STALE_MS 50u
+ * Above, the mux falls back to a level descent. 200 ms tolerates a
+ * companion publishing at 20-30 Hz with normal jitter; below ~50 the
+ * boundary races with periodic publishers and produces phantom
+ * fall-back-to-descent ticks even when the link is healthy. */
+#define COMP_STALE_MS 200u
 
 /* Descent thrust reference used when companion goes stale in
  * autonomous mode. Slightly below hover so the drone settles gently. */
