@@ -4,12 +4,79 @@ Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning
 
 ## Planned (Open)
 
-- Replace the Twist publisher (`/cmd_vel`) with a `fc_sim_msgs/Setpoint` publisher on `/fc/setpoint`. Map the existing body-velocity command into roll/pitch setpoints via the small-angle approximation (`pitch_sp = -vx/g`, `roll_sp = +vy/g`, clamped ±0.2 rad). Add an altitude-hold P controller for `thrust_norm` against the `/uav26_quad/range` topic.
-- Update Twist-asserting unit tests to assert on Setpoint fields instead.
-- FSM transitions stay manual via `/line_tracer/set_state`. The Setpoint plumbing does not change the existing state machine.
-- The 3-layer planning stack continues from here: `path_executor` (step 2) consuming the planned node list and emitting per-tick intersection actions on top of LINE_FOLLOW. ArUco-PnP localization will land alongside the executor.
+- **M-A demo polish (still rough).** End-to-end headless run goes
+  TAKEOFF -> LINE_FOLLOW cleanly with the post-2026-05-25 fixes, but
+  the drone often drifts at takeoff (drone sits on the sphere body
+  collision during the few-second window before line_tracer engages,
+  small contact perturbations push it laterally before the takeoff
+  burst reaches 1.8 m). DartSim's ODE collision detector also still
+  aborts occasionally with the firmware-native 0.40 / 0.80 gains —
+  the demo currently runs on the halved 0.20 / 0.40 sim.launch
+  defaults to dodge it.
+- ArUco detection-during-flight not yet verified in end-to-end mode.
+  The FSM transition path (LINE_FOLLOW -> WAYPOINT_VISIT -> ...) is
+  unit-tested but has not yet caught a marker during a real run.
+- M-B (XY accuracy < 0.5 m) + M-C (retrieval order + Z) + M-D (time)
+  + M-E (robustness) remain as listed in the M-A plan; none are
+  blocking for the smoke-test demo.
 
 ## Done
+
+### M-A end-to-end FSM scaffolding (commits `de77a04` `1fd79a5` `f970604` `9876c18` `c7385e7` `b17a25d` `f161c42` `810ef36`, 2026-05-25)
+
+Single-shot launch (`world/sim.launch.py` then `line_tracer.launch.py`)
+now drives the FSM from TAKEOFF through LAND without manual
+`set_state` calls. Pieces:
+
+- **`dead_reckoning.snap_to_intersection(state, grid, max_err)`** —
+  pure helper. Every ArUco sighting is an absolute XY fix because the
+  rules place markers on grid intersections; the FSM snaps the DR
+  pose to the nearest intersection during WAYPOINT_VISIT.
+- **`dead_reckoning.world_to_body(err_x, err_y, yaw)`** — inverse of
+  `integrate()`'s rotation, used during ARRANGE_BY_ID / RETURN_PATH
+  so the node can consume the FSM's world-frame target.
+- **`state_machine.MissionContext` + `tick(now, dr_state, perception,
+  altitude)` + `TickResult`** — drives the automaton
+  `TAKEOFF -> LINE_FOLLOW <-> WAYPOINT_VISIT -> ... -> ARRANGE_BY_ID
+  -> RETURN_PATH -> LAND`. `set_state` stays as a manual override
+  hook but `tick` overwrites it next call. 104/104 unit tests pass.
+- **`line_tracer_node` rewiring** — calls `_fsm.tick(...)` every
+  control tick, logs `>> FSM:` / `>> RECORD` events so headless runs
+  can be grep'd. When `tick` emits `target_xy_world`, the node
+  bypasses perception and feeds world-to-body deltas to DR. Truth-
+  frame xy/alt/vz from `/odom_truth` are logged 1 Hz for downstream
+  plotting.
+- **Altitude controller hardening** — `/odom_truth` subscriber under
+  `use_odom_truth_altitude=true` is the sim stand-in for the
+  proposal's LIDAR + 2-state KF (item I1). Thrust formula gains a
+  `kd_alt_thrust` term, a `[0.42, 0.70]` clamp, and a depth-camera
+  short-circuit when truth is the source. `dr_dt` 50 ms -> 25 ms so
+  the publisher stays well inside fc_core's freshness window.
+- **`fc_core/COMP_STALE_MS` 50 -> 200** — a 20 Hz companion racing
+  with the old 50 ms threshold was triggering periodic
+  fall-back-to-descent ticks at the FC. 200 ms tolerates the same
+  publish rate with realistic jitter.
+- **LINE_FOLLOW behaviour** — `use_forward_error=False`, dv is the
+  grid line *crossed* on every cell, not a target to snap back to;
+  cruise_vx 0.4 -> 0.5 to scan faster.
+- **Pitch / roll sign** — `pitch_sp = +vx/g`, `roll_sp = -vy/g`
+  (matches the empirical sim convention after the 2026-05-25
+  pitch-shim fix). Previous `-vx/g` made vx body commands map to -X
+  world; visible in `r10_tracer.log` where the drone consistently
+  flew backwards.
+- **`sim.launch.py` gain defaults reverted** to half (0.20 rate /
+  0.40 atti) — the firmware-native 0.40 / 0.80 destabilised DartSim
+  at takeoff. C++ defaults stay at 0.40 / 0.80 for the eventual
+  hardware path.
+- **`scripts/plot_mission.py`** — reads a headless mission log,
+  produces a 3-panel PNG (top-down trajectory coloured by state,
+  altitude vs time with state bands, state strip) plus a text diff
+  of recorded markers vs `aruco_layout.yaml` ground truth.
+
+Open follow-ups documented above; M-B / M-C / M-D / M-E milestones
+defined in the M-A plan still apply.
+
+
 
 ### Planning step 1 — grid + BFS (2026-04-30, committed in the housekeeping pass)
 

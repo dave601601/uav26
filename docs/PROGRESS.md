@@ -13,10 +13,10 @@ Index. Each topic file holds the actual work log. Entries go newest-first inside
 
 ## Open
 
-- [ ] Tier C: line_tracer end-to-end smoke (TAKEOFF → LINE_FOLLOW reaches a marker). Now unblocked — sphere collision + pitch sign fix landed 2026-05-25.
+- [ ] M-A demo polish: end-to-end FSM TAKEOFF → LAND scaffolding is in (8 commits 2026-05-25), but the drone often drifts laterally at takeoff while sitting on the sphere body collision, and the firmware-native attitude gains crash DartSim's ODE collision detector — runs currently use halved sim.launch defaults. ArUco detection during real flight not yet verified.
+- [ ] M-B XY accuracy (<0.5 m on recorded markers), M-C retrieval order + Z bracket, M-D mission time, M-E robustness — all queued behind the M-A polish.
 - [ ] Mixer `Allocation()` swaps `a`=1/(4·dx) and `b`=1/(4·dy) between roll and pitch terms — ~9 % asymmetry. Firmware-source change deferred until paired with hardware re-test.
 - [ ] `quat_to_euler` in `linalg.c` returns `eul.y = -asinf(sinp)` (sign-flipped). Sim shim compensates explicitly. Cleanup needs coordinated firmware + shim change paired with hardware re-test.
-- [ ] Update `line_tracer`'s default `hover_thrust_norm` from 0.49 to 0.50 once the sim hover point is finalized.
 
 ## Conventions
 
