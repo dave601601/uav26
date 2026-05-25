@@ -163,6 +163,12 @@ def generate_launch_description() -> LaunchDescription:
 
     # Optional fc_sim_node gain overrides exposed as launch args so the
     # caller can dial down responsiveness without rebuilding.
+    # Half-gain defaults: with the sphere body collision the drone can
+    # actually rotate on the ground at takeoff, and the firmware-native
+    # 0.80 atti gain over-corrects on every contact perturbation which
+    # makes DartSim's ODE collision detector explode. The halved gains
+    # (0.20 rate / 0.40 atti / 0.20 kd) match what flight_demo +
+    # waypoint_demo verified stable in earlier runs.
     rate_kp_p_arg     = DeclareLaunchArgument("rate_kp_p",     default_value="0.20")
     rate_kp_q_arg     = DeclareLaunchArgument("rate_kp_q",     default_value="0.20")
     rate_kp_r_arg     = DeclareLaunchArgument("rate_kp_r",     default_value="0.40")
