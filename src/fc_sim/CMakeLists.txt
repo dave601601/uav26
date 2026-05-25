@@ -35,6 +35,7 @@ install(PROGRAMS
   scripts/hover_pub.py
   scripts/flight_demo_pub.py
   scripts/teleop_pub.py
+  scripts/waypoint_demo_pub.py
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch

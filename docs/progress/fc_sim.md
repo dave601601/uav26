@@ -22,6 +22,16 @@ ROS2 C++ wrapper around `fc_core` that flies the simulated drone in Gazebo Harmo
 
 ## Done
 
+### Waypoint follower node (2026-05-25)
+
+`scripts/waypoint_demo_pub.py` + `launch/waypoint_demo.launch.py`. Cascaded controller — outer P maps `(target − pos)` into a velocity setpoint, capped at `v_max`; inner P maps `(v_tgt − vel)` into pitch/roll setpoints, capped at `max_tilt`. Altitude held by the same PD pattern as `hover_pub.py`. Walks a list of waypoints in order, advancing when `dist < reach_threshold` AND `speed < stable_speed`, or after `wp_timeout` seconds. Patterns: `hover`, `forward_back`, `box`, `altitude` (defined in the script).
+
+Tuning (after one round of fixing P-only overshoot): `kp_pos=0.70 1/s, v_max=0.5 m/s, kv=0.5 s/m, max_tilt=0.12 rad`. With these:
+
+- `forward_back` (spawn → +3 m x → spawn): WP0 reached in 1.3 s @ dist 0.40, WP1 reached in 5.7 s @ dist 0.40 ending at `(4.60, 4.00, 1.97)`. WP2 (return-to-spawn) gets as close as `0.06 m` but then oscillates ±~2 m around the target — attitude inner-loop's ~80 % tracking + ~0.3 s lag leaves the velocity loop without enough authority to settle exactly on the setpoint without a feedforward term. Acceptable for "drone reaches waypoint" verification; needs feedforward or position-velocity profile to settle cleanly.
+
+Headless-friendly: prints `>> WP N` on advance and a 1 Hz `WP N tgt=… pos=… v=… sp=…` status line, so GUI is not required to verify motion.
+
 ### Keyboard teleop node (2026-05-25)
 
 `scripts/teleop_pub.py` + `launch/teleop.launch.py`. Drives `/fc/setpoint` from WASD/QE keys; altitude is held by the same inline PD `hover_pub.py` uses. Each key asserts its setpoint for 0.3 s then auto-decays to zero, so a forgotten finger can't run the drone away. Runs in two terminals on the same `ROS_DOMAIN_ID` (sim launch in A, teleop_pub in B) because cbreak-mode stdin can't be cleanly piped through `ros2 launch`. Useful for eyeballing attitude tracking interactively — `flight_demo` only verifies attitude; positional drift in HOLD phases is real (no position feedback, drag coeffs are zero) and most easily felt on a keyboard.
