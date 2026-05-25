@@ -16,17 +16,29 @@ Pure-function decomposition that lets the algorithm be tested without rclpy:
 - `state_machine.StateMachine.tick()` — automaton + MissionContext.
 - `planner.arrange_by_id()` — BFS retrieval path.
 
-### Integration: ❌ blocked
+### Integration: ⚠ partial
 
-Headless `ros2 launch world sim.launch.py` + `ros2 launch line_tracer line_tracer.launch.py` does not yet produce a clean mission run. Three failure modes observed in `sweep_logs/mission/r10..r14`:
+`sweep_logs/mission/r15` is the first run where the drone actually takes
+off. TAKEOFF -> LINE_FOLLOW -> WAYPOINT_VISIT all fire, alt reaches
+2.26 m, one ArUco gets recorded (XY wrong — see below). Two of the
+three pre-r15 failure modes are now resolved; two new (smaller) ones
+are visible.
+
+Resolved (r15):
+
+| Symptom | Fix |
+|---|---|
+| Drone parks at alt=0.05 m; thrust=0.70 (clamp) doesn't lift | Takeoff-burst path in `body_vel_to_atti_thr`: when alt < 0.30 m and |vz| < 0.2 and alt_err > 0.5, output `takeoff_thrust_norm=0.85` (mirrors `hover_pub.py:86`) |
+| `kd_alt_thrust * vz_truth` blows up when DartSim spits garbage odom frames | Sanity gate in `_on_odom_truth`: reject |z| > 50 m or |vz| > 30 m/s frames, keep last-good values |
+
+Still open in r15:
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
-| Drone parks at alt=0.05 m on the sphere collision; thrust=0.62 doesn't lift | DartSim contact constraint absorbs upward force | `world/models/uav26_quad/model.sdf` body_collision; consider takeoff-burst pattern from `flight_demo_pub.py` |
-| `/odom_truth` spews (-70 000, 7 000, alt -2.6e6) frames mid-run | DartSim ODE collision detector aborts under firmware-native 0.80 atti gain | `world/launch/sim.launch.py` rate/atti defaults; current workaround = halved 0.20 / 0.40 |
-| Drone yaw drifts at startup, cruise_vx sends it in -X instead of +X | Sanity gate releases at non-identity yaw after a brief ground spin | `fc_sim/src/fc_sim_node.cpp` sanity gate (motors-off-until-level); add yaw-rate check |
+| Drone yaw drifts ~20° during takeoff; cruise_vx (body +X) becomes a (+X, -Y) world track that flies the drone off-grid | Sanity gate releases at non-identity yaw; no active yaw-lock to initial heading during TAKEOFF / LINE_FOLLOW | `state_machine.py` Behavior — add `lock_yaw_to_initial`; line_tracer_node sets psi_err = -dr_state.yaw under that flag |
+| After takeoff overshoot to 2.26 m, drone descends back to 0.05 m over ~5 s and skids on ground | PD authority too weak vs. takeoff overshoot + horizontal cruise tilt | `dead_reckoning.body_vel_to_atti_thr` — raise kp_alt_thrust or smooth burst release |
 
-Best evidence is in `sweep_logs/mission/r10_tracer.png` and `r14_tracer.png` (plot_mission.py PNGs).
+Best evidence is `sweep_logs/mission/r15_tracer.png` (takeoff + skid) vs. `r14_tracer.png` (pre-fix, never leaves ground).
 
 ### Resume guide
 
@@ -61,6 +73,40 @@ Best evidence is in `sweep_logs/mission/r10_tracer.png` and `r14_tracer.png` (pl
   blocking for the smoke-test demo.
 
 ## Done
+
+### Takeoff burst + odom-truth garbage gate (2026-05-25, r14 -> r15)
+
+Two minimum-change fixes that unstuck the M-A integration:
+
+- `body_vel_to_atti_thr` gained an open-loop takeoff branch
+  (`takeoff_thrust_norm=0.85`) for the {alt < 0.30, |vz| < 0.2, alt_err
+  > 0.5} corner. Mirrors the proven pattern in `hover_pub.py:86`.
+  Plain PD with thrust_max=0.70 (calibrated for in-flight hold) wasn't
+  enough to break the sphere/ground contact in DartSim — even though
+  the implied thrust force (15 N) safely exceeds the drone's weight
+  (11.6 N).
+- `_on_odom_truth` rejects frames with |z| > 50 m or |vz| > 30 m/s.
+  DartSim's ODE collision detector occasionally publishes nonsense
+  odom contact frames (alt = -2.6e6, vz = ±5000). Before the gate,
+  those poisoned `kd_alt_thrust * vz_truth` and the thrust setpoint
+  oscillated between thrust_min and thrust_max, slamming the motors
+  and feeding back into more DartSim instability.
+
+Four new tests in `TestTakeoffBurst` pin the new branch (burst when
+on ground, no burst when airborne / already rising / target below
+self). Plus one existing PD-clamp test was nudged above the burst
+threshold so it actually exercises the clamp path. Total: 128/128
+pytest pass.
+
+Why both fixes together: the failure modes were a cascade
+(ground-stick -> sanity gate cycles -> motor slam -> ODE garbage ->
+vz spikes -> thrust oscillation -> more ground impact), so neither
+fix alone would land a clean takeoff.
+
+What r15 shows: drone reaches 2.26 m and the FSM walks through
+TAKEOFF -> LINE_FOLLOW -> WAYPOINT_VISIT -> LINE_FOLLOW. The
+remaining yaw-drift + altitude-droop issues are scoped above under
+the new Open section.
 
 ### Test rewrite — closed-loop + edge cases (commits `5266c6f` `5880c3e` `228f4b4`, 2026-05-25)
 

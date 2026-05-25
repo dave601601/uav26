@@ -80,6 +80,14 @@ class SetpointGains:
     max_atti_setpoint_rad: float = 0.15  # roll / pitch clamp (~8.6°)
     thrust_min: float = 0.42
     thrust_max: float = 0.70
+    # Takeoff burst — mirrors fc_sim/scripts/hover_pub.py. Plain PD at
+    # thrust_max=0.70 turned out to be insufficient to break the sphere
+    # body_collision contact against the ground_plane in DartSim. When
+    # the drone is on the floor and barely moving, we open-loop a
+    # stronger thrust until vz indicates liftoff; the PD takes over once
+    # the drone is rising or above takeoff_z_threshold.
+    takeoff_z_threshold: float = 0.30
+    takeoff_thrust_norm: float = 0.85
 
 
 def body_vel_to_atti_thr(
@@ -95,7 +103,10 @@ def body_vel_to_atti_thr(
     fix (`pitch_sp=+0.1` -> drone slides +X in FLU, `roll_sp=+0.1` ->
     drone slides -Y in FLU). The thrust formula is a PD on the world-Z
     error, clamped to [thrust_min, thrust_max] so a start-up alt error
-    doesn't slam the FC's attitude loop into oscillation.
+    doesn't slam the FC's attitude loop into oscillation. The takeoff
+    burst is the one path that bypasses the clamp — without it the PD
+    saturates at thrust_max which is calibrated for in-flight altitude
+    hold, not for breaking ground contact (see hover_pub.py:86).
     """
     g = 9.80665
     pitch_sp = +vel.vx / g
@@ -107,10 +118,15 @@ def body_vel_to_atti_thr(
                     -gains.max_atti_setpoint_rad,
                     +gains.max_atti_setpoint_rad)
     alt_err = target_alt - altitude
-    thrust = (gains.hover_thrust_norm
-              + gains.kp_alt_thrust * alt_err
-              - gains.kd_alt_thrust * vz_truth)
-    thrust = clamp(thrust, gains.thrust_min, gains.thrust_max)
+    if (altitude < gains.takeoff_z_threshold
+            and abs(vz_truth) < 0.2
+            and alt_err > 0.5):
+        thrust = gains.takeoff_thrust_norm
+    else:
+        thrust = (gains.hover_thrust_norm
+                  + gains.kp_alt_thrust * alt_err
+                  - gains.kd_alt_thrust * vz_truth)
+        thrust = clamp(thrust, gains.thrust_min, gains.thrust_max)
     return AttiThrCmd(
         pitch_sp=pitch_sp,
         roll_sp=roll_sp,

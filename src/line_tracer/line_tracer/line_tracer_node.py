@@ -141,6 +141,17 @@ class LineTracerNode(Node):
         self.declare_parameter("thrust_min", 0.42)
         self.declare_parameter("thrust_max", 0.70)
         self.declare_parameter("max_atti_setpoint_rad", 0.15)   # ~8.6°
+        # Takeoff burst: open-loop thrust to break ground contact when
+        # the drone is sitting on the floor. Mirrors hover_pub.py.
+        self.declare_parameter("takeoff_z_threshold", 0.30)
+        self.declare_parameter("takeoff_thrust_norm", 0.85)
+        # /odom_truth sanity gates: DartSim occasionally spits garbage
+        # contact frames (|z| in the millions, |vz| in the thousands).
+        # If those frames are accepted, the kd_alt_thrust term blows up
+        # and thrust oscillates between thrust_min and thrust_max — the
+        # primary cascade behind the 2026-05-25 ground-stick failure.
+        self.declare_parameter("odom_truth_max_alt", 50.0)
+        self.declare_parameter("odom_truth_max_vz", 30.0)
         # In sim the proposal's LIDAR-based Z estimator is not implemented;
         # /odom_truth substitutes for the lidar measurement. Set false on
         # real hardware so the depth-camera median path is used instead.
@@ -235,6 +246,18 @@ class LineTracerNode(Node):
         self._thrust_min = float(self.get_parameter("thrust_min").value)
         self._thrust_max = float(self.get_parameter("thrust_max").value)
         self._max_atti_sp = float(self.get_parameter("max_atti_setpoint_rad").value)
+        self._takeoff_z_threshold = float(
+            self.get_parameter("takeoff_z_threshold").value
+        )
+        self._takeoff_thrust_norm = float(
+            self.get_parameter("takeoff_thrust_norm").value
+        )
+        self._odom_truth_max_alt = float(
+            self.get_parameter("odom_truth_max_alt").value
+        )
+        self._odom_truth_max_vz = float(
+            self.get_parameter("odom_truth_max_vz").value
+        )
         self._use_odom_truth_altitude = bool(
             self.get_parameter("use_odom_truth_altitude").value
         )
@@ -377,12 +400,21 @@ class LineTracerNode(Node):
         camera; the proposal's eventual LIDAR-based KF will plug into the
         same `_altitude_m` / `_latest_vz` slot.
 
-        The xyz pose is also captured for the throttled status log; the
-        controllers don't read it (DR integrates from perception), only
-        plot_mission.py downstream does.
+        Garbage-frame gate: DartSim's ODE collision detector occasionally
+        emits |z| in the millions and |vz| in the thousands during
+        contact instability. Letting those poison `_latest_vz` makes the
+        kd_alt_thrust term in body_vel_to_atti_thr swing wildly and the
+        thrust oscillates between thrust_min and thrust_max. Refuse the
+        frame instead — we keep the last-good values until the next
+        clean update.
         """
-        self._altitude_m = float(msg.pose.pose.position.z)
-        self._latest_vz = float(msg.twist.twist.linear.z)
+        z = float(msg.pose.pose.position.z)
+        vz = float(msg.twist.twist.linear.z)
+        if (abs(z) > self._odom_truth_max_alt
+                or abs(vz) > self._odom_truth_max_vz):
+            return
+        self._altitude_m = z
+        self._latest_vz = vz
         self._truth_x = float(msg.pose.pose.position.x)
         self._truth_y = float(msg.pose.pose.position.y)
 
@@ -552,6 +584,8 @@ class LineTracerNode(Node):
             max_atti_setpoint_rad=self._max_atti_sp,
             thrust_min=self._thrust_min,
             thrust_max=self._thrust_max,
+            takeoff_z_threshold=self._takeoff_z_threshold,
+            takeoff_thrust_norm=self._takeoff_thrust_norm,
         )
         cmd = body_vel_to_atti_thr(
             vel=vel,

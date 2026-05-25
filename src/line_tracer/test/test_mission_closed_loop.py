@@ -383,10 +383,11 @@ class TestAttiThrSign:
 
     def test_thrust_clamped_to_band(self):
         g = self._gains()
-        # Wildly off altitude shouldn't push thrust past thrust_max.
+        # Above takeoff_z_threshold (no burst path): a far-above-target
+        # altitude error must clamp at thrust_max.
         hi = body_vel_to_atti_thr(
             vel=BodyVelocity(vx=0.0, vy=0.0, vz=0.0, wz=0.0),
-            target_alt=20.0, altitude=0.0, vz_truth=0.0, gains=g,
+            target_alt=20.0, altitude=1.5, vz_truth=0.0, gains=g,
         )
         assert math.isclose(hi.thrust_norm, g.thrust_max)
         lo = body_vel_to_atti_thr(
@@ -412,3 +413,59 @@ class TestAttiThrSign:
             target_alt=2.0, altitude=2.0, vz_truth=-0.5, gains=g,
         )
         assert cmd.thrust_norm > g.hover_thrust_norm
+
+
+class TestTakeoffBurst:
+    """Pin the open-loop takeoff branch in body_vel_to_atti_thr — the
+    PD-clamped 0.70 thrust_max isn't enough to break sphere/ground
+    contact in DartSim (see hover_pub.py:86 and the 2026-05-25
+    ground-stick failure analysis)."""
+
+    def _gains(self) -> SetpointGains:
+        return SetpointGains()
+
+    def test_burst_when_on_ground_and_below_target(self):
+        g = self._gains()
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.0, vy=0.0, vz=0.0, wz=0.0),
+            target_alt=2.0, altitude=0.05, vz_truth=0.0, gains=g,
+        )
+        assert math.isclose(cmd.thrust_norm, g.takeoff_thrust_norm), (
+            f"on-ground takeoff must emit {g.takeoff_thrust_norm}, "
+            f"got {cmd.thrust_norm}"
+        )
+        assert cmd.thrust_norm > g.thrust_max, (
+            "burst must exceed thrust_max — the whole point is bypassing "
+            "the PD clamp to break ground contact"
+        )
+
+    def test_no_burst_when_airborne(self):
+        g = self._gains()
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.0, vy=0.0, vz=0.0, wz=0.0),
+            target_alt=2.0, altitude=1.5, vz_truth=0.0, gains=g,
+        )
+        assert cmd.thrust_norm <= g.thrust_max, (
+            "above takeoff_z_threshold the PD clamp must apply"
+        )
+
+    def test_no_burst_when_already_rising(self):
+        """Once vz_truth indicates liftoff the PD takes over so the
+        drone doesn't continue accelerating after it's airborne."""
+        g = self._gains()
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.0, vy=0.0, vz=0.0, wz=0.0),
+            target_alt=2.0, altitude=0.10, vz_truth=0.5, gains=g,
+        )
+        assert cmd.thrust_norm <= g.thrust_max
+
+    def test_no_burst_when_target_below_self(self):
+        """Negative alt_err (e.g. LAND state, target_alt=0, drone in
+        air) must never trigger the burst — burst is a TAKEOFF-only
+        artefact."""
+        g = self._gains()
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.0, vy=0.0, vz=0.0, wz=0.0),
+            target_alt=0.0, altitude=0.10, vz_truth=0.0, gains=g,
+        )
+        assert cmd.thrust_norm <= g.thrust_max
