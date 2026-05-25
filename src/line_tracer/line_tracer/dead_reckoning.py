@@ -62,6 +62,63 @@ class BodyVelocity:
     wz: float
 
 
+@dataclass(frozen=True)
+class AttiThrCmd:
+    """Attitude + thrust setpoint, in the FC's reference frame. The
+    rclpy node copies these fields into an fc_sim_msgs/Setpoint."""
+    pitch_sp: float
+    roll_sp: float
+    yawrate_sp: float
+    thrust_norm: float
+
+
+@dataclass(frozen=True)
+class SetpointGains:
+    hover_thrust_norm: float = 0.50      # sim hover point
+    kp_alt_thrust: float = 0.25          # thrust_norm per metre of alt_err
+    kd_alt_thrust: float = 0.30          # thrust_norm per (m/s) of vz
+    max_atti_setpoint_rad: float = 0.15  # roll / pitch clamp (~8.6°)
+    thrust_min: float = 0.42
+    thrust_max: float = 0.70
+
+
+def body_vel_to_atti_thr(
+    vel: BodyVelocity,
+    target_alt: float,
+    altitude: float,
+    vz_truth: float,
+    gains: SetpointGains,
+) -> AttiThrCmd:
+    """Map a body-frame velocity intent to (pitch, roll, yawrate, thrust).
+
+    Sign convention matches the sim's empirical 2026-05-25 pitch-shim
+    fix (`pitch_sp=+0.1` -> drone slides +X in FLU, `roll_sp=+0.1` ->
+    drone slides -Y in FLU). The thrust formula is a PD on the world-Z
+    error, clamped to [thrust_min, thrust_max] so a start-up alt error
+    doesn't slam the FC's attitude loop into oscillation.
+    """
+    g = 9.80665
+    pitch_sp = +vel.vx / g
+    roll_sp = -vel.vy / g
+    pitch_sp = clamp(pitch_sp,
+                     -gains.max_atti_setpoint_rad,
+                     +gains.max_atti_setpoint_rad)
+    roll_sp = clamp(roll_sp,
+                    -gains.max_atti_setpoint_rad,
+                    +gains.max_atti_setpoint_rad)
+    alt_err = target_alt - altitude
+    thrust = (gains.hover_thrust_norm
+              + gains.kp_alt_thrust * alt_err
+              - gains.kd_alt_thrust * vz_truth)
+    thrust = clamp(thrust, gains.thrust_min, gains.thrust_max)
+    return AttiThrCmd(
+        pitch_sp=pitch_sp,
+        roll_sp=roll_sp,
+        yawrate_sp=vel.wz,
+        thrust_norm=thrust,
+    )
+
+
 def compute_body_velocity(
     dx_body_m: float,
     dy_body_m: float,

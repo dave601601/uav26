@@ -59,7 +59,14 @@ try:
 except ImportError:                       # pragma: no cover
     SetState = None                       # type: ignore[assignment]
 
-from .dead_reckoning import DeadReckoning, Gains, State, world_to_body
+from .dead_reckoning import (
+    DeadReckoning,
+    Gains,
+    SetpointGains,
+    State,
+    body_vel_to_atti_thr,
+    world_to_body,
+)
 from .geom import CameraIntrinsics
 from .grid import Grid
 from .perception import PerceptionConfig, PerceptionResult, process_image, draw_debug_overlay
@@ -535,46 +542,32 @@ class LineTracerNode(Node):
     # ------------------------------------------------------------------
 
     def _build_setpoint(self, vel, target_altitude: float):
-        """Map dead-reckoning vel (body FLU) into an fc_sim_msgs/Setpoint.
-
-        Small-angle map matching the sim's empirical sign convention
-        (verified in fc_sim progress notes after the 2026-05-25 pitch
-        sign fix):
-
-          pitch_sp = +vx / g    (pitch_sp=+0.1 → drone slides +X in FLU)
-          roll_sp  = -vy / g    (roll_sp=+0.1 → drone slides -Y in FLU,
-                                 i.e. right in FLU; to command +y_body the
-                                 roll must be negative)
-
-        thrust_norm = hover + kp_alt*(target_alt - alt) - kd_alt*vz_truth,
-        clamped to [thrust_min, thrust_max] so a fresh start-up alt error
-        can't push the firmware's attitude loop into oscillation by
-        commanding full-throttle.
-        """
-        g = 9.80665
-        pitch_sp = +float(vel.vx) / g
-        roll_sp  = -float(vel.vy) / g
-        # Clamp to keep within the firmware's maxatticmd (30°) with margin.
-        pitch_sp = max(-self._max_atti_sp, min(self._max_atti_sp, pitch_sp))
-        roll_sp  = max(-self._max_atti_sp, min(self._max_atti_sp, roll_sp))
-
-        alt = self._altitude_m if self._altitude_m is not None else 0.0
-        alt_err = float(target_altitude) - float(alt)
-        thrust = (
-            self._hover_thrust_norm
-            + self._kp_alt_thrust * alt_err
-            - self._kd_alt_thrust * float(self._latest_vz)
+        """Thin rclpy wrapper around :func:`body_vel_to_atti_thr` — the
+        actual sign / clamp / thrust-PD logic lives there so it can be
+        unit-tested without rclpy or the fc_sim_msgs message class."""
+        gains = SetpointGains(
+            hover_thrust_norm=self._hover_thrust_norm,
+            kp_alt_thrust=self._kp_alt_thrust,
+            kd_alt_thrust=self._kd_alt_thrust,
+            max_atti_setpoint_rad=self._max_atti_sp,
+            thrust_min=self._thrust_min,
+            thrust_max=self._thrust_max,
         )
-        thrust = max(self._thrust_min, min(self._thrust_max, thrust))
-
+        cmd = body_vel_to_atti_thr(
+            vel=vel,
+            target_alt=float(target_altitude),
+            altitude=float(self._altitude_m if self._altitude_m is not None else 0.0),
+            vz_truth=float(self._latest_vz),
+            gains=gains,
+        )
         sp = Setpoint()
         sp.mode = Setpoint.MODE_ATTITHR
         sp.arm = True
-        sp.roll_sp = roll_sp
-        sp.pitch_sp = pitch_sp
-        sp.yawrate_sp = float(vel.wz)
+        sp.roll_sp = cmd.roll_sp
+        sp.pitch_sp = cmd.pitch_sp
+        sp.yawrate_sp = cmd.yawrate_sp
         sp.vz_sp = 0.0
-        sp.thrust_norm = thrust
+        sp.thrust_norm = cmd.thrust_norm
         return sp
 
     # ------------------------------------------------------------------
