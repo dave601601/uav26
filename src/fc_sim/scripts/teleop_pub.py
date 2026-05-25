@@ -127,41 +127,58 @@ class Teleop(Node):
             return ch
         return None
 
+    def _log_event(self, label: str) -> None:
+        """Single-line event log shown on every recognized key press, the
+        SPACE/X/Z action keys, and auto-decay. Always reflects the current
+        full setpoint so the user sees what the drone is being told to do."""
+        self.get_logger().info(
+            f"{label:<14s} | sp r={self._roll_sp:+.2f} p={self._pitch_sp:+.2f} "
+            f"yawr={self._yawrate_sp:+.2f} | alt_tgt={self._target_alt:.2f} "
+            f"arm={int(self._arm)}"
+        )
+
     def _apply_key(self, ch: str) -> None:
         if ch == "w":
             self._pitch_sp = +PITCH_STEP
+            self._log_event("W pitch+")
         elif ch == "s":
             self._pitch_sp = -PITCH_STEP
+            self._log_event("S pitch-")
         elif ch == "a":
             self._roll_sp = -ROLL_STEP
+            self._log_event("A roll-")
         elif ch == "d":
             self._roll_sp = +ROLL_STEP
+            self._log_event("D roll+")
         elif ch == "q":
             self._yawrate_sp = -YAWRATE_STEP
+            self._log_event("Q yaw-")
         elif ch == "e":
             self._yawrate_sp = +YAWRATE_STEP
+            self._log_event("E yaw+")
         elif ch == "r":
             self._target_alt += ALT_STEP
-            self.get_logger().info(f"target_alt -> {self._target_alt:.2f} m")
+            self._log_event("R alt+")
             return
         elif ch == "f":
             self._target_alt = max(0.5, self._target_alt - ALT_STEP)
-            self.get_logger().info(f"target_alt -> {self._target_alt:.2f} m")
+            self._log_event("F alt-")
             return
         elif ch == " ":
             self._roll_sp = 0.0
             self._pitch_sp = 0.0
             self._yawrate_sp = 0.0
-            self.get_logger().info("level + zero rates")
+            self._log_event("SPACE level")
             return
         elif ch == "x":
             self._arm = not self._arm
-            self.get_logger().info(f"arm -> {self._arm}")
+            self._log_event("X arm toggle")
             return
         elif ch == "z" or ch == "\x03":   # z or Ctrl-C as a raw char
-            self.get_logger().info("quit")
+            self._log_event("Z quit")
             raise SystemExit(0)
         else:
+            self.get_logger().info(f"unknown key: {ch!r}")
             return
         self._last_cmd_ns = self.get_clock().now().nanoseconds
 
@@ -173,9 +190,15 @@ class Teleop(Node):
         if self._last_cmd_ns is not None:
             age_s = (self.get_clock().now().nanoseconds - self._last_cmd_ns) * 1e-9
             if age_s > COMMAND_HOLD_S:
+                had_setpoint = (self._roll_sp != 0.0
+                                or self._pitch_sp != 0.0
+                                or self._yawrate_sp != 0.0)
                 self._roll_sp = 0.0
                 self._pitch_sp = 0.0
                 self._yawrate_sp = 0.0
+                self._last_cmd_ns = None
+                if had_setpoint:
+                    self._log_event("auto-decay")
 
         if self._have_odom:
             err_z = self._target_alt - self._z
