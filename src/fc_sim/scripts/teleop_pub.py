@@ -24,9 +24,10 @@ Usage:
 """
 from __future__ import annotations
 
-import select
+import queue
 import sys
 import termios
+import threading
 import tty
 
 import rclpy
@@ -34,6 +35,13 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 
 from fc_sim_msgs.msg import Setpoint
+
+
+def echo(*args) -> None:
+    """Force-flushed plain print, bypasses rclpy logger (which can route to
+    stderr or get buffered by ros2 run's pipe). The teleop terminal only
+    has one job — show key feedback immediately."""
+    print(*args, flush=True)
 
 
 PITCH_STEP = 0.10        # rad
@@ -80,34 +88,39 @@ class Teleop(Node):
         self._timer = self.create_timer(1.0 / TICK_HZ, self._tick)
 
         # Put stdin in cbreak mode so single keystrokes arrive without
-        # waiting for Enter, while leaving signals (Ctrl-C) intact.
-        # If stdin is not a TTY (e.g. piped through ros2 launch) the
-        # termios calls fail and key input simply won't work — log it
-        # loudly instead of silently swallowing keys.
+        # waiting for Enter. A background daemon thread does the blocking
+        # sys.stdin.read(1) and pushes chars into a queue, decoupling the
+        # main rclpy spin thread from terminal I/O entirely.
         self._fd = sys.stdin.fileno()
         self._term_saved = None
         self._stdin_ok = False
+        self._key_q: queue.Queue[str] = queue.Queue()
         if sys.stdin.isatty():
             try:
                 self._term_saved = termios.tcgetattr(self._fd)
                 tty.setcbreak(self._fd)
                 self._stdin_ok = True
+                self._reader = threading.Thread(
+                    target=self._reader_loop, daemon=True
+                )
+                self._reader.start()
             except (termios.error, OSError) as e:
-                self.get_logger().error(f"cbreak setup failed: {e}")
+                echo(f"[teleop] cbreak setup failed: {e}")
         else:
-            self.get_logger().error(
-                "stdin is NOT a TTY — keyboard input will not work. "
-                "Run `ros2 run fc_sim teleop_pub.py` from an interactive "
-                "shell inside the container (docker compose run uav-aruco "
-                "bash, then ros2 run), not through `bash -lc \"...\"`."
+            echo(
+                "[teleop] stdin is NOT a TTY -- keyboard input will not work. "
+                "Drop into the container with `docker compose run uav-aruco bash` "
+                "first, then run `ros2 run fc_sim teleop_pub.py` inside the shell."
             )
 
-        self.get_logger().info(
-            "teleop_pub ready. WASD=pitch/roll, QE=yaw, RF=altitude, "
-            "space=hover-level, x=arm toggle, z or Ctrl-C to quit. "
-            f"target_alt={self._target_alt:.2f} m, arm={self._arm}, "
-            f"stdin_ok={self._stdin_ok}"
+        echo(
+            f"[teleop] ready. stdin_ok={self._stdin_ok}. "
+            "WASD=pitch/roll, QE=yaw, RF=altitude, "
+            "space=level+hover, x=arm toggle, z or Ctrl-C to quit. "
+            f"target_alt={self._target_alt:.2f} m, arm={self._arm}."
         )
+        if self._stdin_ok:
+            echo("[teleop] press any key now -- you should see a recv line.")
 
     def restore_term(self) -> None:
         if self._term_saved is not None:
@@ -118,23 +131,37 @@ class Teleop(Node):
         self._vz = msg.twist.twist.linear.z
         self._have_odom = True
 
+    def _reader_loop(self) -> None:
+        """Blocking sys.stdin.read in a daemon thread. Each byte is echoed
+        and queued for the main tick to consume. Exits when EOF (stdin
+        closed) or on any exception."""
+        try:
+            while True:
+                ch = sys.stdin.read(1)
+                if not ch:
+                    echo("[teleop] stdin EOF -- exiting reader")
+                    return
+                echo(f"[teleop] recv {ch!r}")
+                self._key_q.put(ch)
+        except Exception as e:
+            echo(f"[teleop] reader thread died: {e}")
+
     def _read_key(self) -> str | None:
-        if not self._stdin_ok:
+        try:
+            return self._key_q.get_nowait()
+        except queue.Empty:
             return None
-        if select.select([sys.stdin], [], [], 0)[0]:
-            ch = sys.stdin.read(1)
-            self.get_logger().debug(f"key={ch!r}")
-            return ch
-        return None
 
     def _log_event(self, label: str) -> None:
-        """Single-line event log shown on every recognized key press, the
+        """Single-line event echo shown on every recognized key press, the
         SPACE/X/Z action keys, and auto-decay. Always reflects the current
-        full setpoint so the user sees what the drone is being told to do."""
-        self.get_logger().info(
-            f"{label:<14s} | sp r={self._roll_sp:+.2f} p={self._pitch_sp:+.2f} "
-            f"yawr={self._yawrate_sp:+.2f} | alt_tgt={self._target_alt:.2f} "
-            f"arm={int(self._arm)}"
+        full setpoint so the user sees what the drone is being told to do.
+        Uses raw print so it's visible even when rclpy logger output is
+        routed somewhere else."""
+        echo(
+            f"[teleop] {label:<14s} | sp r={self._roll_sp:+.2f} "
+            f"p={self._pitch_sp:+.2f} yawr={self._yawrate_sp:+.2f} | "
+            f"alt_tgt={self._target_alt:.2f} arm={int(self._arm)}"
         )
 
     def _apply_key(self, ch: str) -> None:
@@ -178,7 +205,7 @@ class Teleop(Node):
             self._log_event("Z quit")
             raise SystemExit(0)
         else:
-            self.get_logger().info(f"unknown key: {ch!r}")
+            echo(f"[teleop] unknown key: {ch!r}")
             return
         self._last_cmd_ns = self.get_clock().now().nanoseconds
 
@@ -220,8 +247,9 @@ class Teleop(Node):
         self._log_counter += 1
         if self._log_counter >= int(TICK_HZ):  # 1 Hz
             self._log_counter = 0
-            self.get_logger().info(
-                f"z={self._z:+.2f} target={self._target_alt:.2f} "
+            echo(
+                f"[teleop] status        | z={self._z:+.2f} "
+                f"target={self._target_alt:.2f} "
                 f"sp=(r={self._roll_sp:+.2f},p={self._pitch_sp:+.2f},"
                 f"yawr={self._yawrate_sp:+.2f}) thr={thrust:.3f} "
                 f"arm={int(self._arm)}"
