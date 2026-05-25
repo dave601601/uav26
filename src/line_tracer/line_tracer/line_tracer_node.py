@@ -65,6 +65,7 @@ from .dead_reckoning import (
     SetpointGains,
     State,
     body_vel_to_atti_thr,
+    wrap_angle,
     world_to_body,
 )
 from .geom import CameraIntrinsics
@@ -264,6 +265,20 @@ class LineTracerNode(Node):
         self._latest_vz: float = 0.0    # for kd_alt damping
         self._truth_x: float = 0.0      # for the throttled status log + plot
         self._truth_y: float = 0.0
+        # Previous (alt, t) pair for the world-Z finite-difference that
+        # backs `_latest_vz`. Using a derivative of position keeps the
+        # damping in world frame regardless of how gz-sim tags
+        # twist.twist.linear.z.
+        self._odom_truth_prev_z: float = 0.0
+        self._odom_truth_prev_t: Optional[float] = None
+        # Sim-only yaw inject: the firmware's residual mixer asymmetry
+        # rotates the actual drone over a takeoff (~0.4 rad in r17), but
+        # line_tracer has no IMU subscription so DR.yaw never sees it.
+        # The yaw lock can't fight a drift it can't observe. /odom_truth
+        # orientation is the sim stand-in for the proposal's eventual
+        # IMU-derived heading. Real-flight builds set
+        # use_odom_truth_altitude=false and this path is bypassed.
+        self._odom_truth_yaw: Optional[float] = None
 
         # --- pubs/subs/srvs --------------------------------------------------
         # The flight controller (fc_sim_node in sim, real STM32 over USART2
@@ -401,22 +416,44 @@ class LineTracerNode(Node):
         same `_altitude_m` / `_latest_vz` slot.
 
         Garbage-frame gate: DartSim's ODE collision detector occasionally
-        emits |z| in the millions and |vz| in the thousands during
-        contact instability. Letting those poison `_latest_vz` makes the
-        kd_alt_thrust term in body_vel_to_atti_thr swing wildly and the
-        thrust oscillates between thrust_min and thrust_max. Refuse the
-        frame instead — we keep the last-good values until the next
-        clean update.
+        emits |z| in the millions during contact instability. Letting it
+        through pollutes both the altitude reading and the derived vz.
+        Refuse those frames and keep the last-good values.
+
+        vz is derived from finite-differencing the altitude in world frame
+        rather than reading msg.twist.twist.linear.z directly — the
+        latter's frame convention in gz-sim's OdometryPublisher is body /
+        z-flipped in ways that didn't fit the PD damping sign (r16
+        showed positive `linear.z` while altitude was decreasing).
         """
         z = float(msg.pose.pose.position.z)
-        vz = float(msg.twist.twist.linear.z)
-        if (abs(z) > self._odom_truth_max_alt
-                or abs(vz) > self._odom_truth_max_vz):
+        if abs(z) > self._odom_truth_max_alt:
             return
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if self._odom_truth_prev_t is not None:
+            dt = now - self._odom_truth_prev_t
+            if 1e-3 < dt < 0.5:    # ignore unphysical timestep skips
+                vz = (z - self._odom_truth_prev_z) / dt
+                if abs(vz) <= self._odom_truth_max_vz:
+                    self._latest_vz = vz
+        self._odom_truth_prev_t = now
+        self._odom_truth_prev_z = z
         self._altitude_m = z
-        self._latest_vz = vz
         self._truth_x = float(msg.pose.pose.position.x)
         self._truth_y = float(msg.pose.pose.position.y)
+        # Yaw from the orientation quaternion (ENU): standard formula
+        # for yaw from (w, x, y, z). The result lives in `_odom_truth_yaw`
+        # and is injected into DR.yaw at the top of _on_dr_tick — the
+        # yaw lock can then drive wz against the actual drift instead of
+        # against zero.
+        qw = float(msg.pose.pose.orientation.w)
+        qx = float(msg.pose.pose.orientation.x)
+        qy = float(msg.pose.pose.orientation.y)
+        qz = float(msg.pose.pose.orientation.z)
+        self._odom_truth_yaw = math.atan2(
+            2.0 * (qw * qz + qx * qy),
+            1.0 - 2.0 * (qy * qy + qz * qz),
+        )
 
     def _handle_set_state(self, request, response):
         try:
@@ -455,6 +492,14 @@ class LineTracerNode(Node):
 
     def _on_dr_tick(self) -> None:
         du, dv, psi_err, source = self._resolved_pixel_error()
+
+        # Sim-only yaw inject. /odom_truth orientation -> DR.yaw so the
+        # yaw lock and the world_to_body rotation see the same heading
+        # the simulated drone actually has. Real-flight builds set
+        # use_odom_truth_altitude=false and never enter this branch.
+        if (self._use_odom_truth_altitude
+                and self._odom_truth_yaw is not None):
+            self._dr.state.yaw = self._odom_truth_yaw
 
         # --- altitude resolution + FSM tick ---
         z_hat = self._dr.state.z
@@ -506,6 +551,17 @@ class LineTracerNode(Node):
                 # Coerce a constant cruise into the P-controller by feeding
                 # an offset that, after the kp gain, equals the requested vx.
                 dx_body = behavior.cruise_vx / self._gains.kp_xy
+
+        # Yaw lock fallback: if the behavior demands an initial-heading
+        # lock and perception didn't supply a fresh psi_err on this tick,
+        # drive yaw back toward MissionContext.start_yaw. Without this
+        # the firmware's residual mixer/quat-sign asymmetry steadily
+        # yaws the drone (~20° per takeoff in r15) and cruise_vx in
+        # body +X ends up sending the drone diagonally off-grid.
+        if (behavior.lock_yaw_to_initial
+                and psi == 0.0
+                and self._fsm.context.start_yaw is not None):
+            psi = wrap_angle(self._fsm.context.start_yaw - self._dr.state.yaw)
 
         # --- target altitude per FSM ---
         gains_now = self._gains

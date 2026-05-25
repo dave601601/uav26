@@ -42,6 +42,7 @@ from line_tracer.dead_reckoning import (
     body_vel_to_atti_thr,
     compute_body_velocity,
     Gains,
+    wrap_angle,
     world_to_body,
 )
 from line_tracer.grid import Grid
@@ -166,6 +167,8 @@ def run_mission(
     *,
     start_xy: tuple[float, float] = (2.0, 4.0),
     start_z: float = 1.5,
+    start_yaw: float = 0.0,
+    yaw_drift_per_s: float = 0.0,    # synthetic firmware-side yaw drift
     dt: float = 0.025,
     max_seconds: float = 200.0,
     grid: Optional[Grid] = None,
@@ -176,7 +179,7 @@ def run_mission(
     if grid is None:
         grid = Grid.from_extents(width=30.0, depth=20.0, cell=4.0)
 
-    drone = MockDrone(x=start_xy[0], y=start_xy[1], z=start_z)
+    drone = MockDrone(x=start_xy[0], y=start_xy[1], z=start_z, yaw=start_yaw)
     cam = SyntheticCam(markers=markers)
 
     # Default: the FSM waits for as many records as we planted. Caller
@@ -230,13 +233,19 @@ def run_mission(
                       else behavior.cruise_vx)
             dx_body = cruise / gains.kp_xy
 
+        # Yaw-lock fallback (mirrors line_tracer_node._on_dr_tick).
+        psi = 0.0
+        if (behavior.lock_yaw_to_initial
+                and ctx.start_yaw is not None):
+            psi = wrap_angle(ctx.start_yaw - drone.yaw)
+
         # vel + atti / thrust
         gains_now = Gains(
             kp_xy=gains.kp_xy, kp_yaw=gains.kp_yaw, kp_z=gains.kp_z,
             max_vxy=gains.max_vxy, max_wz=gains.max_wz,
             target_altitude=behavior.target_altitude,
         )
-        vel = compute_body_velocity(dx_body, dy_body, 0.0, drone.z, gains_now)
+        vel = compute_body_velocity(dx_body, dy_body, psi, drone.z, gains_now)
         cmd = body_vel_to_atti_thr(
             vel=vel,
             target_alt=behavior.target_altitude,
@@ -245,6 +254,10 @@ def run_mission(
             gains=sp_gains,
         )
         drone.step(cmd, dt)
+        # Synthetic firmware-side yaw drift, applied AFTER the
+        # controller acted so the lock has something to fight.
+        if yaw_drift_per_s != 0.0:
+            drone.yaw += yaw_drift_per_s * dt
         now += dt
 
         if tick_res.state is StateName.LAND and drone.z < 0.1:
@@ -469,3 +482,87 @@ class TestTakeoffBurst:
             target_alt=0.0, altitude=0.10, vz_truth=0.0, gains=g,
         )
         assert cmd.thrust_norm <= g.thrust_max
+
+
+class TestYawLock:
+    """The mission FSM marks TAKEOFF / LINE_FOLLOW / WAYPOINT_VISIT /
+    ARRANGE_BY_ID / RETURN_PATH with ``lock_yaw_to_initial=True`` so a
+    firmware-side yaw drift doesn't twist the cruise heading off-axis
+    (r15 showed ~20° drift sending the drone to (148, -57))."""
+
+    def _markers_on_x_axis(self) -> dict[int, tuple[float, float]]:
+        return {0: (8.0, 4.0), 1: (12.0, 4.0), 2: (16.0, 4.0), 3: (20.0, 4.0)}
+
+    def test_yaw_stays_near_initial_with_constant_drift(self):
+        """With a constant 0.10 rad/s firmware drift, the closed loop
+        should hold yaw within ~0.2 rad (~11°) of the start heading
+        across the whole takeoff + line follow + visit cycle."""
+        result = run_mission(
+            self._markers_on_x_axis(),
+            yaw_drift_per_s=0.10,
+            max_seconds=30.0,
+            max_records=99,    # stay in LINE_FOLLOW, don't trigger ARRANGE
+        )
+        # Sample yaw at the final tick; the lock loop is P-only so the
+        # steady-state error = drift / (kp_yaw / 1) = 0.10 / 1.0 = 0.10.
+        # Allow 2x headroom for transients + integration noise.
+        assert abs(result.drone.yaw) < 0.2, (
+            f"yaw locked to {result.drone.yaw:+.3f} rad after 30 s of "
+            f"0.10 rad/s drift; expected within ±0.2"
+        )
+
+    def test_cruise_track_stays_in_x_direction(self):
+        """With yaw locked, cruise_vx in body +X should produce a
+        trajectory close to a +X straight line in world frame."""
+        result = run_mission(
+            self._markers_on_x_axis(),
+            yaw_drift_per_s=0.10,
+            max_seconds=30.0,
+            max_records=99,
+        )
+        # Trajectory should be predominantly +X. |y - start_y| should
+        # stay small (the lock can't be perfect, but the y deviation
+        # has to be much smaller than the x progress).
+        x_progress = result.drone.x - 2.0     # start_xy[0]
+        y_deviation = abs(result.drone.y - 4.0)
+        assert x_progress > 5.0, (
+            f"drone barely moved in +X: only {x_progress:.2f} m progress"
+        )
+        assert y_deviation < x_progress * 0.5, (
+            f"y deviation {y_deviation:.2f} too large vs. x progress "
+            f"{x_progress:.2f} — yaw lock isn't holding"
+        )
+
+    def test_no_lock_means_drift_compounds(self):
+        """Sanity check: disabling the lock on LINE_FOLLOW lets the
+        synthetic drift turn the cruise track sideways."""
+        from line_tracer import state_machine as sm
+
+        # Monkey-patch the LINE_FOLLOW behavior for this test only.
+        original = sm._BEHAVIORS[sm.StateName.LINE_FOLLOW]
+        sm._BEHAVIORS[sm.StateName.LINE_FOLLOW] = replace_behavior(
+            original, lock_yaw_to_initial=False,
+        )
+        try:
+            result = run_mission(
+                self._markers_on_x_axis(),
+                yaw_drift_per_s=0.10,
+                max_seconds=30.0,
+                max_records=99,
+            )
+        finally:
+            sm._BEHAVIORS[sm.StateName.LINE_FOLLOW] = original
+
+        # Drift integrates uncontested -> yaw should be far off zero.
+        assert abs(result.drone.yaw) > 0.5, (
+            f"with the lock disabled, yaw should compound past 0.5 rad; "
+            f"saw {result.drone.yaw:+.3f}"
+        )
+
+
+def replace_behavior(b, **overrides):
+    """Helper: produce a new frozen Behavior with the given fields
+    overridden. Used by the no-lock sanity test to monkey-patch the
+    LINE_FOLLOW behavior without rewriting the whole dict."""
+    from dataclasses import replace
+    return replace(b, **overrides)

@@ -69,6 +69,13 @@ class Behavior:
     use_heading_error: bool          # honor psi_err from perception
     use_forward_error: bool          # honor dv from perception
     cruise_vx: float = 0.0           # body +x demand when no forward error in use
+    # When True the node drives yaw back to MissionContext.start_yaw if
+    # perception is not providing a fresh psi_err. Without this the
+    # firmware's residual mixer/quat-sign asymmetry steadily yaws the
+    # drone during cruise (see r15: ~20° drift -> cruise_vx in body +X
+    # becomes (+X, -Y) in world). use_heading_error from perception
+    # takes precedence when active.
+    lock_yaw_to_initial: bool = False
 
 
 _DEFAULT_TARGET_ALT = 2.0
@@ -82,6 +89,7 @@ _BEHAVIORS: Dict[StateName, Behavior] = {
         use_heading_error=False,
         use_forward_error=False,
         cruise_vx=0.0,
+        lock_yaw_to_initial=True,
     ),
     # Active line tracing: lateral (du) + heading correction keep the drone
     # on the closest vertical line; forward error (dv) is intentionally OFF
@@ -93,6 +101,7 @@ _BEHAVIORS: Dict[StateName, Behavior] = {
         use_heading_error=True,
         use_forward_error=False,
         cruise_vx=0.5,
+        lock_yaw_to_initial=True,
     ),
     # Hover above a marker for the snap recording; no forward cruise so the
     # drone doesn't drift off the intersection while we read it.
@@ -102,6 +111,7 @@ _BEHAVIORS: Dict[StateName, Behavior] = {
         use_heading_error=True,
         use_forward_error=False,
         cruise_vx=0.0,
+        lock_yaw_to_initial=True,
     ),
     # Walk a precomputed grid path. Perception is ignored — the node
     # consumes the FSM's target_xy_world instead.
@@ -111,6 +121,7 @@ _BEHAVIORS: Dict[StateName, Behavior] = {
         use_heading_error=False,
         use_forward_error=False,
         cruise_vx=0.0,
+        lock_yaw_to_initial=True,
     ),
     # Final leg back to the start coordinates; same handling as ARRANGE.
     StateName.RETURN_PATH: Behavior(
@@ -119,6 +130,7 @@ _BEHAVIORS: Dict[StateName, Behavior] = {
         use_heading_error=False,
         use_forward_error=False,
         cruise_vx=0.0,
+        lock_yaw_to_initial=True,
     ),
     # Descend; ignore perception (don't chase a line on the way down).
     StateName.LAND: Behavior(
@@ -153,6 +165,7 @@ class MissionContext:
     retrieval_path: List["Node"] = field(default_factory=list)
     retrieval_idx: int = 0
     start_xy: Optional[Tuple[float, float]] = None
+    start_yaw: Optional[float] = None     # captured on first tick for yaw-lock
 
     # Transition counters
     takeoff_alt_streak: int = 0
@@ -227,6 +240,8 @@ class StateMachine:
 
         if ctx.start_xy is None:
             ctx.start_xy = (dr_state.x, dr_state.y)
+        if ctx.start_yaw is None:
+            ctx.start_yaw = dr_state.yaw
 
         if self._state is StateName.TAKEOFF:
             self._tick_takeoff(altitude)
