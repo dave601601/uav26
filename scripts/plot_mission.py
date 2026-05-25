@@ -123,10 +123,17 @@ def parse(path: Path) -> Run:
 
             m = SAMPLE_RE.search(line)
             if m and t is not None:
+                x = float(m.group(2))
+                y = float(m.group(3))
+                alt = float(m.group(4))
+                # DartSim occasionally explodes mid-run and /odom_truth
+                # spews multi-thousand-metre values for a few frames.
+                # Drop those so they don't dominate the plot.
+                if abs(x) > 200 or abs(y) > 200 or alt < -10 or alt > 50:
+                    continue
                 run.samples.append(Sample(
-                    t=t, state=m.group(1),
-                    x=float(m.group(2)), y=float(m.group(3)),
-                    alt=float(m.group(4)), vz_truth=float(m.group(5)),
+                    t=t, state=m.group(1), x=x, y=y, alt=alt,
+                    vz_truth=float(m.group(5)),
                 ))
                 if run.t0 is None:
                     run.t0 = t
@@ -153,9 +160,15 @@ def load_layout(path: Path | None) -> dict[int, tuple[float, float]]:
     with open(path) as fp:
         data = yaml.safe_load(fp)
     out: dict[int, tuple[float, float]] = {}
-    # Format from marker_randomize.py: {"markers": [{"id": N, "x": X, "y": Y}, ...]}
+    # marker_randomize.py emits one of two shapes; tolerate both:
+    #   - {"markers": [{"id": N, "pose": [x, y, z, rx, ry, rz]}, ...]}
+    #   - {"markers": [{"id": N, "x": X, "y": Y}, ...]}
     for entry in data.get("markers", []):
-        out[int(entry["id"])] = (float(entry["x"]), float(entry["y"]))
+        if "pose" in entry:
+            pose = entry["pose"]
+            out[int(entry["id"])] = (float(pose[0]), float(pose[1]))
+        else:
+            out[int(entry["id"])] = (float(entry["x"]), float(entry["y"]))
     return out
 
 
