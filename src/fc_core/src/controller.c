@@ -80,14 +80,27 @@ void ControllerInit(void){
                 vec(0.5f, 0.5f, 0.3f * 9.81f));
 }
 
-static float maxratecmd = 1.0f;                       /* rad/s */
+/* maxratecmd was 1.0 rad/s — calibrated for SBUS stick travel on the
+ * hand-held drone the firmware originally targeted. In sim the
+ * line_tracer companion needs more authority to fight the residual
+ * yaw torque DartSim introduces during the takeoff transient
+ * (kp_yaw=3 with max_wz=2.5 was clipped by this limit, leaving
+ * ~0.2 rad/s steady-state yaw drift that curled the cruise track
+ * off-axis — r30..r34). 3.0 rad/s lets the companion's ±2.5
+ * yawrate_sp pass through unchanged. Re-tune on real hardware once
+ * mixer/motor asymmetries are characterized. */
+static float maxratecmd = 3.0f;                       /* rad/s */
 static float maxatticmd = 30.0f * PI / 180.0f;        /* rad   */
 
-/* Deadband thresholds, multiplied by maxratecmd / maxatticmd. The 0.04
- * factor exists to reject SBUS stick centering noise on hardware. In sim
- * the companion sends precise setpoints and the deadband prevents small
- * attitude errors from getting through; fc_sim_node lowers this. */
-float fc_rate_deadband_factor = 0.04f;
+/* Deadband thresholds, multiplied by maxratecmd / maxatticmd. The
+ * absolute deadband used to be 0.04 rad/s (= 0.04 * maxratecmd_old=1.0).
+ * After bumping maxratecmd to 3.0 the factor is scaled 1/3 to keep the
+ * same absolute deadband — without this the rate deadband would widen
+ * to 0.12 rad/s and small rate commands would get zeroed (test_atti_pid
+ * failed because pqr_cmd at the steady state was below the deadband
+ * floor). fc_sim_node overrides both to 0.001 for sim where setpoints
+ * are precise. */
+float fc_rate_deadband_factor = 0.0133f;
 float fc_atti_deadband_factor = 0.04f;
 static float maxvelXYcmd = 2.0f;
 static float maxvelDcmd = 1.0f;

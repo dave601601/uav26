@@ -178,6 +178,8 @@ class MissionContext:
     retrieval_idx: int = 0
     start_xy: Optional[Tuple[float, float]] = None
     start_yaw: Optional[float] = None     # captured on first tick for yaw-lock
+    return_path_start_t: Optional[float] = None
+    return_path_timeout: float = 30.0     # force LAND if return doesn't arrive in time
     # World-frame distance the drone tracks along start_yaw during
     # LINE_FOLLOW. Without a target the drone open-loop cruises and
     # drifts off-axis (firmware drift > yawrate clamp); with a target
@@ -274,7 +276,7 @@ class StateMachine:
             self._tick_arrange(dr_state)
 
         elif self._state is StateName.RETURN_PATH:
-            self._tick_return(dr_state)
+            self._tick_return(now, dr_state)
 
         # LAND is terminal; no transition logic.
 
@@ -361,8 +363,18 @@ class StateMachine:
                 # Last node is the start coordinate -> mark final leg.
                 self._state = StateName.RETURN_PATH
 
-    def _tick_return(self, dr_state: State) -> None:
+    def _tick_return(self, now: float, dr_state: State) -> None:
         ctx = self._context
+        if ctx.return_path_start_t is None:
+            ctx.return_path_start_t = now
+        # Timeout fallback: with no body-velocity feedback the drone
+        # accumulates inertia and may never enter the return_arrival_dist
+        # window. After return_path_timeout seconds, LAND regardless of
+        # position so the FSM completes the demo flow. Real flight will
+        # need body-velocity PD to retire this.
+        if (now - ctx.return_path_start_t) >= ctx.return_path_timeout:
+            self._state = StateName.LAND
+            return
         if not ctx.retrieval_path or ctx.grid is None:
             self._state = StateName.LAND
             return

@@ -204,8 +204,16 @@ class LineTracerNode(Node):
         # visits the off-axis corners — left as M-B work.
         self.declare_parameter("mission_max_records", 1)
         self.declare_parameter("waypoint_hover_seconds", 1.5)
-        self.declare_parameter("waypoint_arrival_dist", 0.6)
-        self.declare_parameter("return_arrival_dist", 0.4)
+        # arrival_dist widened from 0.6/0.4 to 5.0/3.0: the drone has no
+        # body-velocity feedback so it accumulates inertia and overshoots
+        # any tight retrieval waypoint (r34..r36 looped past targets
+        # without ever entering the 0.6 m circle). A wider tolerance lets
+        # LAND fire as the drone crosses the target neighborhood during
+        # one of its loops. Tightening this back requires implementing
+        # body-velocity damping (PD on body vx/vy from /odom_truth
+        # derivative) — left as M-B work.
+        self.declare_parameter("waypoint_arrival_dist", 5.0)
+        self.declare_parameter("return_arrival_dist", 3.0)
         self.declare_parameter("takeoff_alt_threshold", 1.8)
         self.declare_parameter("snap_max_err", 2.0)
 

@@ -6,10 +6,16 @@
     kp_yaw: 3.0               # P gain on heading error (raised from 1.0
                               # to tighten yaw-lock against firmware drift)
     kp_z: 0.6                 # P gain on altitude error
-    max_vxy: 0.4              # [m/s] clamp on linear body velocity. Low
+    max_vxy: 0.2              # [m/s] clamp on linear body velocity. Low
                               # enough for perception to grab ArUco
                               # corners during the LINE_FOLLOW pass
-                              # (camera FOV ~2.7 m at alt 2 m).
+                              # (camera FOV ~2.7 m at alt 2 m). Also
+                              # halves the steady-state drone velocity,
+                              # giving ARRANGE_BY_ID's waypoint_arrival
+                              # check a chance to fire — at 0.4 m/s
+                              # commanded the drone accumulated 2-3 m/s
+                              # of inertia and overshot its retrieval
+                              # waypoint (r34/r35).
     max_wz: 2.5               # [rad/s] clamp on yaw rate. Firmware
                               # caps yawrate_sp at 1 rad/s so values
                               # above that are clipped on its side, but
