@@ -263,3 +263,136 @@ class TestMissionTick:
             (0.0, 4.0), (4.0, 4.0), (8.0, 4.0), (12.0, 8.0),
             (20.0, 8.0), (24.0, 16.0),
         }
+
+
+class TestMissionTickEdgeCases:
+    """Tests for the if/else branches the happy-path closed-loop misses.
+
+    Each one pokes at a specific failure mode the M-A integration runs
+    actually exhibited (or could plausibly exhibit on real hardware)."""
+
+    def _grid(self) -> Grid:
+        return Grid.from_extents(width=30.0, depth=20.0, cell=4.0)
+
+    def test_takeoff_streak_resets_on_altitude_dip(self):
+        """If altitude bounces back below threshold mid-streak, the FSM
+        must not promote to LINE_FOLLOW prematurely (sim physics noise
+        regularly does this)."""
+        ctx = MissionContext(grid=self._grid(),
+                             takeoff_alt_threshold=1.8,
+                             takeoff_streak_required=10)
+        sm = StateMachine(initial=StateName.TAKEOFF, context=ctx)
+        # 8 ticks above threshold...
+        for _ in range(8):
+            sm.tick(0.0, State(z=1.9), _empty_perception(), 1.9)
+        assert sm.state is StateName.TAKEOFF
+        # ...then a dip below the threshold should zero the streak.
+        sm.tick(0.0, State(z=1.5), _empty_perception(), 1.5)
+        assert sm.context.takeoff_alt_streak == 0
+        assert sm.state is StateName.TAKEOFF
+        # Need a full streak again to promote.
+        for _ in range(10):
+            sm.tick(0.0, State(z=1.9), _empty_perception(), 1.9)
+        assert sm.state is StateName.LINE_FOLLOW
+
+    def test_waypoint_visit_refuses_to_snap_beyond_max_err(self):
+        """If the drone sees a marker but is too far from the nearest
+        intersection (e.g. perception detected it through a wide-angle
+        glance), snap should refuse — record raw DR pose, not a wildly
+        wrong intersection."""
+        ctx = MissionContext(grid=self._grid(),
+                             snap_max_err=0.5,    # tight
+                             waypoint_hover_seconds=0.1)
+        sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
+        # Drone at (10, 6) — nearest intersection (12, 8) is 2.83 m away,
+        # way outside snap_max_err=0.5.
+        sm.tick(0.0, State(x=10.0, y=6.0, z=2.0), _seen(0), 2.0)
+        assert sm.state is StateName.WAYPOINT_VISIT
+        sm.tick(0.2, State(x=10.0, y=6.0, z=2.0), _empty_perception(), 2.0)
+        assert 0 in sm.context.records
+        # Recorded value is the raw DR pose, not snapped.
+        assert sm.context.records[0] == (10.0, 6.0)
+
+    def test_same_id_inside_waypoint_visit_does_not_reset_timer(self):
+        """If the same id keeps showing up while we're already in
+        WAYPOINT_VISIT, we should NOT bounce back to LINE_FOLLOW and
+        re-enter — that would never release the hover timer."""
+        ctx = MissionContext(grid=self._grid(), waypoint_hover_seconds=1.0)
+        sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
+        sm.tick(0.0, State(x=8.0, y=4.0, z=2.0), _seen(0), 2.0)
+        assert sm.state is StateName.WAYPOINT_VISIT
+        # Marker still in view at t=0.5; timer should keep running.
+        sm.tick(0.5, State(x=8.0, y=4.0, z=2.0), _seen(0), 2.0)
+        assert sm.state is StateName.WAYPOINT_VISIT
+        assert sm.context.waypoint_visit_start_t == 0.0    # not reset
+        # Hover window expires at t=1.05, transitions back.
+        sm.tick(1.05, State(x=8.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        assert sm.state is StateName.LINE_FOLLOW
+
+    def test_perception_dropping_mid_waypoint_visit_does_not_break(self):
+        """The hover timer should run on FSM time, not on whether the
+        marker is still visible (camera occasionally loses lock)."""
+        ctx = MissionContext(grid=self._grid(), waypoint_hover_seconds=0.5)
+        sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
+        sm.tick(0.0, State(x=8.0, y=4.0, z=2.0), _seen(0), 2.0)
+        assert sm.state is StateName.WAYPOINT_VISIT
+        # 0.3 s later perception drops; should not transition yet.
+        sm.tick(0.3, State(x=8.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        assert sm.state is StateName.WAYPOINT_VISIT
+        # 0.6 s later (> hover window) we transition out.
+        sm.tick(0.6, State(x=8.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        assert sm.state is StateName.LINE_FOLLOW
+
+    def test_records_full_without_grid_stays_in_line_follow(self):
+        """If somehow the FSM has no Grid (mis-configured node), it can
+        still capture markers but should NOT crash trying to plan a
+        retrieval path; the safe behaviour is to stay put."""
+        ctx = MissionContext(grid=None, max_records=2,
+                             waypoint_hover_seconds=0.05)
+        sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
+        sm.context.records[0] = (4.0, 4.0)
+        sm.context.records[1] = (8.0, 4.0)
+        sm.context.start_xy = (2.0, 4.0)
+        r = sm.tick(0.0, State(x=4.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        # No crash; FSM stays in LINE_FOLLOW (planner needs the grid).
+        assert r.state is StateName.LINE_FOLLOW
+        assert r.target_xy_world is None
+
+    def test_no_target_xy_in_takeoff_or_line_follow_or_waypoint(self):
+        """Only ARRANGE_BY_ID / RETURN_PATH may emit world-frame targets.
+        Other states must return None so the node falls back to the
+        perception / cruise paths."""
+        ctx = MissionContext(grid=self._grid())
+        sm = StateMachine(initial=StateName.TAKEOFF, context=ctx)
+        r = sm.tick(0.0, State(z=0.5), _empty_perception(), 0.5)
+        assert r.target_xy_world is None
+        sm._state = StateName.LINE_FOLLOW    # type: ignore[attr-defined]
+        r = sm.tick(0.0, State(z=2.0), _empty_perception(), 2.0)
+        assert r.target_xy_world is None
+        sm._state = StateName.WAYPOINT_VISIT
+        sm.context.waypoint_visit_id = 99
+        sm.context.waypoint_visit_start_t = 0.0
+        r = sm.tick(0.0, State(z=2.0), _empty_perception(), 2.0)
+        assert r.target_xy_world is None
+
+    def test_land_is_terminal(self):
+        """Once LAND, no further state changes regardless of input."""
+        ctx = MissionContext(grid=self._grid())
+        sm = StateMachine(initial=StateName.LAND, context=ctx)
+        for t in (0.0, 0.5, 1.0, 5.0):
+            r = sm.tick(t, State(x=2.0, y=4.0, z=2.0), _seen(0), 2.0)
+            assert r.state is StateName.LAND
+            assert not r.state_changed
+
+    def test_set_state_override_works_but_tick_can_overwrite(self):
+        """set_state is the documented external hook (test handle +
+        /line_tracer/set_state service). It must work, but the next
+        tick re-applies the automaton — manual ARRANGE_BY_ID with no
+        retrieval_path falls back to LAND on the next tick."""
+        ctx = MissionContext(grid=self._grid())
+        sm = StateMachine(initial=StateName.TAKEOFF, context=ctx)
+        sm.set_state("ARRANGE_BY_ID")
+        assert sm.state is StateName.ARRANGE_BY_ID
+        # tick: ARRANGE_BY_ID with no plan -> LAND.
+        r = sm.tick(0.0, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        assert r.state is StateName.LAND
