@@ -16,29 +16,52 @@ Pure-function decomposition that lets the algorithm be tested without rclpy:
 - `state_machine.StateMachine.tick()` — automaton + MissionContext.
 - `planner.arrange_by_id()` — BFS retrieval path.
 
-### Integration: ⚠ partial
+### Integration: ✅ happy path lands (2026-05-25 r23)
 
-`sweep_logs/mission/r15` is the first run where the drone actually takes
-off. TAKEOFF -> LINE_FOLLOW -> WAYPOINT_VISIT all fire, alt reaches
-2.26 m, one ArUco gets recorded (XY wrong — see below). Two of the
-three pre-r15 failure modes are now resolved; two new (smaller) ones
-are visible.
+`sweep_logs/mission/r23` is the first clean end-to-end run. Drone
+takes off (1.78 -> 2.08 m), holds altitude for 65 s at 2.08 ±0.01 m,
+flies +X, sees marker 2, hovers, records it, returns to LINE_FOLLOW.
+PNG: `r23_tracer.png`.
 
-Resolved (r15):
+What landed across `a71eae9`, `ed587ce`, `0d838f2`:
 
 | Symptom | Fix |
 |---|---|
-| Drone parks at alt=0.05 m; thrust=0.70 (clamp) doesn't lift | Takeoff-burst path in `body_vel_to_atti_thr`: when alt < 0.30 m and |vz| < 0.2 and alt_err > 0.5, output `takeoff_thrust_norm=0.85` (mirrors `hover_pub.py:86`) |
-| `kd_alt_thrust * vz_truth` blows up when DartSim spits garbage odom frames | Sanity gate in `_on_odom_truth`: reject |z| > 50 m or |vz| > 30 m/s frames, keep last-good values |
+| Drone parks at alt=0.05 m; thrust=0.70 doesn't break ground contact | Takeoff burst (alt < 0.30 + alt_err > 0.5 + vz_truth < 0.2 -> thrust=0.85). Mirrors `hover_pub.py:86`. The vz guard is one-sided so the burst fires while falling. |
+| `kd_alt_thrust * vz_truth` blows up on DartSim garbage frames | `_on_odom_truth` rejects |z| > 50 m frames |
+| `twist.linear.z` from gz OdometryPublisher had a frame mismatch with the PD damping sign (alt was decreasing while linear.z > 0) | vz is now finite-differenced from altitude itself, world frame by construction |
+| Sanity-gate release at non-identity Gazebo yaw made cruise_vx fly the drone off-axis | Behavior.lock_yaw_to_initial drives psi_err = start_yaw - dr_state.yaw when perception doesn't have a fresh psi_err |
+| Yaw lock had no signal in sim (DR.yaw was 0; Gazebo drone yaw was unobserved) | /odom_truth orientation -> DR.yaw at the top of `_on_dr_tick`. Sim-only path, gated by use_odom_truth_altitude. |
+| Yaw lock during TAKEOFF saturated wz, interacted with sphere ground contact, drone spun in place without lifting | TAKEOFF behavior lock_yaw_to_initial=False. LINE_FOLLOW and later still lock. |
+| Drone occasionally hits ground before sanity gate releases motors | Spawn altitude 1.5 -> 3.0 m. Buys ~0.5 s more free-fall to stabilize. |
 
-Still open in r15:
+Still open in r23 (not blocking for the visual demo):
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
-| Drone yaw drifts ~20° during takeoff; cruise_vx (body +X) becomes a (+X, -Y) world track that flies the drone off-grid | Sanity gate releases at non-identity yaw; no active yaw-lock to initial heading during TAKEOFF / LINE_FOLLOW | `state_machine.py` Behavior — add `lock_yaw_to_initial`; line_tracer_node sets psi_err = -dr_state.yaw under that flag |
-| After takeoff overshoot to 2.26 m, drone descends back to 0.05 m over ~5 s and skids on ground | PD authority too weak vs. takeoff overshoot + horizontal cruise tilt | `dead_reckoning.body_vel_to_atti_thr` — raise kp_alt_thrust or smooth burst release |
+| RECORD coord came out (+4.00, +0.00) when GT marker 2 is at (4.00, 4.00); the snap is off by one grid cell | DR.x/y isn't synced from /odom_truth pose — DR integrates body velocity from (0, 0). At WAYPOINT_VISIT the FSM snaps DR's drifted (x,y) to the wrong intersection. | `line_tracer_node._on_dr_tick` — extend the existing odom-yaw inject to also write `self._dr.state.x = msg.pose.pose.position.x` (sim-only) |
+| Long trajectory curls ~200 m off-axis over 60 s — yaw lock has steady-state error ~0.07 rad against firmware drift | kp_yaw too small to fully cancel drift | bump `kp_yaw` or add an integral term |
+| Garbage xy frames (|x| ~ 4700 m) pass the existing |z|>50 / |vz|>30 filter | `_on_odom_truth` only checks altitude/vz | add `|x|>200 \|\| |y|>200` reject in the same guard |
 
-Best evidence is `sweep_logs/mission/r15_tracer.png` (takeoff + skid) vs. `r14_tracer.png` (pre-fix, never leaves ground).
+### Operational pitfall — zombie containers
+
+r19/r20/r21/r22 all looked like algorithm regressions but the real
+cause was host CPU starvation. Each prior `docker compose run --rm`
+left a container alive: the inner `pkill -f 'gz sim'` killed the
+*processes inside the container*, but the bash wrapper that owned the
+`ros2 launch` PID was still alive, so the container itself never
+exited and `--rm` never reaped it. After ~10 runs the host had ~9
+parallel `gz sim` instances + `line_tracer_node` instances, load
+average 56. A fresh tracer launched into that environment couldn't
+get its 40 Hz timer to fire — log lines came out every 10 s instead
+of every 0.5 s.
+
+After `docker stop $(docker ps -q --filter name=uav)` + container
+prune, load fell to ~20 and r23 (same code as r22) ran cleanly.
+
+Future runs need either `pkill -9 -f 'ros2 launch'` in the cleanup
+chain or `docker stop $(name)` from the host once the inner kill is
+in flight.
 
 ### Resume guide
 
