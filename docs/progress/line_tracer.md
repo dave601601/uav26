@@ -2,6 +2,46 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Current state (2026-05-25 end-of-session)
+
+### Algorithm: ✅ done
+
+124/124 unit tests pass — closed-loop synthetic mission walks TAKEOFF → LINE_FOLLOW → WAYPOINT_VISIT (×4) → ARRANGE_BY_ID → RETURN_PATH → LAND, records 4 markers within 2 m of ground truth, lands within 3 m of spawn. See commits `de77a04` `1fd79a5` `f970604` `5266c6f` `5880c3e` `228f4b4`.
+
+Pure-function decomposition that lets the algorithm be tested without rclpy:
+- `dead_reckoning.compute_body_velocity()` — P on body offsets.
+- `dead_reckoning.snap_to_intersection()` — absolute fix on marker sighting.
+- `dead_reckoning.world_to_body()` — rotation for retrieval phase targets.
+- `dead_reckoning.body_vel_to_atti_thr()` — body vel + alt + vz → AttiThrCmd.
+- `state_machine.StateMachine.tick()` — automaton + MissionContext.
+- `planner.arrange_by_id()` — BFS retrieval path.
+
+### Integration: ❌ blocked
+
+Headless `ros2 launch world sim.launch.py` + `ros2 launch line_tracer line_tracer.launch.py` does not yet produce a clean mission run. Three failure modes observed in `sweep_logs/mission/r10..r14`:
+
+| Symptom | Likely cause | Where to look |
+|---|---|---|
+| Drone parks at alt=0.05 m on the sphere collision; thrust=0.62 doesn't lift | DartSim contact constraint absorbs upward force | `world/models/uav26_quad/model.sdf` body_collision; consider takeoff-burst pattern from `flight_demo_pub.py` |
+| `/odom_truth` spews (-70 000, 7 000, alt -2.6e6) frames mid-run | DartSim ODE collision detector aborts under firmware-native 0.80 atti gain | `world/launch/sim.launch.py` rate/atti defaults; current workaround = halved 0.20 / 0.40 |
+| Drone yaw drifts at startup, cruise_vx sends it in -X instead of +X | Sanity gate releases at non-identity yaw after a brief ground spin | `fc_sim/src/fc_sim_node.cpp` sanity gate (motors-off-until-level); add yaw-rate check |
+
+Best evidence is in `sweep_logs/mission/r10_tracer.png` and `r14_tracer.png` (plot_mission.py PNGs).
+
+### Resume guide
+
+1. Run the existing test suite to confirm nothing rotted:
+   ```
+   docker compose run --rm -T uav-aruco bash -lc "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && colcon test --packages-select line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs && colcon test-result --test-result-base build/line_tracer"
+   ```
+   Expect 124/124.
+2. Reproduce the sim issue:
+   ```
+   docker compose run --rm -T -v /home/dongha/uav26/sweep_logs:/sweep_logs uav-aruco bash -lc "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ( ros2 launch world sim.launch.py headless:=true marker_seed:=42 > /sweep_logs/mission/rN_sim.log 2>&1 & ) && sleep 5 && stdbuf -oL -eL ros2 launch line_tracer line_tracer.launch.py > /sweep_logs/mission/rN_tracer.log 2>&1 & TRACER_PID=\$!; sleep 90; kill -INT \$TRACER_PID; wait; echo done"
+   ```
+3. Visualize: `scripts/plot_mission.py sweep_logs/mission/rN_tracer.log`. PNG appears next to the log.
+4. Pick one of the three integration failure modes above and try a fix. The fixture in `test_mission_closed_loop.py` lets you A/B-test the algorithm-level change before re-running the sim.
+
 ## Planned (Open)
 
 - **M-A demo polish (still rough).** End-to-end headless run goes
