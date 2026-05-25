@@ -22,6 +22,12 @@ ROS2 C++ wrapper around `fc_core` that flies the simulated drone in Gazebo Harmo
 
 ## Done
 
+### Keyboard teleop node (2026-05-25)
+
+`scripts/teleop_pub.py` + `launch/teleop.launch.py`. Drives `/fc/setpoint` from WASD/QE keys; altitude is held by the same inline PD `hover_pub.py` uses. Each key asserts its setpoint for 0.3 s then auto-decays to zero, so a forgotten finger can't run the drone away. Runs in two terminals on the same `ROS_DOMAIN_ID` (sim launch in A, teleop_pub in B) because cbreak-mode stdin can't be cleanly piped through `ros2 launch`. Useful for eyeballing attitude tracking interactively — `flight_demo` only verifies attitude; positional drift in HOLD phases is real (no position feedback, drag coeffs are zero) and most easily felt on a keyboard.
+
+Key map: W/S pitch ±, A/D roll ±, Q/E yaw ±, R/F target altitude ±0.5 m, space = level + zero rates, X = arm/disarm, Z or Ctrl-C = quit.
+
 ### Pitch q.y sign fix + raise sim_retune defaults to firmware-native (2026-05-25)
 
 After the sphere collision change exposed the controller's actual closed-loop behavior, a 0.05 rad pitch step diverged within 1 s — drone flipped past 90° and crashed. Trace through the sign convention showed:
