@@ -44,11 +44,15 @@ class TestBehaviorMap:
         assert not b.use_heading_error
         assert not b.use_forward_error
 
-    def test_line_follow_uses_all_corrections(self):
+    def test_line_follow_uses_lateral_heading_and_cruise(self):
         sm = StateMachine(initial=StateName.LINE_FOLLOW)
         b = sm.behavior()
         assert b.target_altitude > 0
-        assert b.use_lateral_error and b.use_heading_error and b.use_forward_error
+        # du + psi_err keep the drone on the line; dv is intentionally off
+        # so the drone crosses horizontal grid lines instead of snapping
+        # back to them. Forward motion comes from cruise_vx only.
+        assert b.use_lateral_error and b.use_heading_error
+        assert not b.use_forward_error
         assert b.cruise_vx > 0
 
     def test_land_target_is_ground(self):

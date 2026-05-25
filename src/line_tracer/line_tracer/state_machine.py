@@ -83,13 +83,16 @@ _BEHAVIORS: Dict[StateName, Behavior] = {
         use_forward_error=False,
         cruise_vx=0.0,
     ),
-    # Active line tracing: lateral + heading corrections + a small cruise.
+    # Active line tracing: lateral (du) + heading correction keep the drone
+    # on the closest vertical line; forward error (dv) is intentionally OFF
+    # because grid lines are crossings to fly THROUGH, not align with — the
+    # drone advances at cruise_vx, not by snapping to the next horizontal.
     StateName.LINE_FOLLOW: Behavior(
         target_altitude=_DEFAULT_TARGET_ALT,
         use_lateral_error=True,
         use_heading_error=True,
-        use_forward_error=True,
-        cruise_vx=0.4,
+        use_forward_error=False,
+        cruise_vx=0.5,
     ),
     # Hover above a marker for the snap recording; no forward cruise so the
     # drone doesn't drift off the intersection while we read it.
