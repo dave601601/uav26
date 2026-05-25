@@ -1,18 +1,43 @@
 """Mission FSM for line_tracer (pure-Python, no rclpy).
 
-Holds the current high-level state and exposes a per-state ``Behavior``
-which the node consults each control tick.
+Holds the high-level state, exposes the per-state ``Behavior``, and runs an
+automaton that walks the 7-step competition mission:
 
-Active behaviors  : TAKEOFF, LINE_FOLLOW, LAND.
-Stub behaviors    : WAYPOINT_VISIT, ARRANGE_BY_ID, RETURN_PATH (treated
-                    identically to LINE_FOLLOW for now — the perception+DR
-                    loop runs, but no waypoint scheduling logic exists yet).
+  1. TAKEOFF       — climb open-loop to target altitude.
+  2. LINE_FOLLOW   — perception-driven grid-line tracking + ArUco capture.
+  3. WAYPOINT_VISIT — brief hover above a freshly-seen marker; record its
+                     XY by snapping the dead-reckoned position to the
+                     nearest grid intersection (markers are known to sit
+                     on intersections, so a sighting is an absolute fix).
+  4. ARRANGE_BY_ID — once all 4 markers are captured, plan a BFS path
+                     visiting them in ascending ID order, then walk it
+                     node-by-node.
+  5. RETURN_PATH   — final leg of that plan, heading back to the start
+                     coordinates captured at takeoff.
+  6. LAND          — descend in place.
+
+The 1-7 split is rules-aligned (시작 -> 라인트레이싱 -> 식별 -> 구조 경로 (역순)
+-> 자동 착륙). The proposal's particle-filter / vertiport / KF-z elements
+are deliberately *not* implemented here — see the M-A plan note in
+docs/progress/line_tracer.md.
+
+The ``tick()`` method is the heart of the automaton; ``set_state()`` is
+kept as an external override hook (test handle + /line_tracer/set_state
+service) but ``tick()`` will overwrite anything ``set_state`` did on the
+next call.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Dict, Optional
+from math import hypot
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+
+from .dead_reckoning import State, snap_to_intersection
+
+if TYPE_CHECKING:
+    from .grid import Grid, Node
+    from .perception import PerceptionResult
 
 
 class StateName(Enum):
@@ -66,27 +91,31 @@ _BEHAVIORS: Dict[StateName, Behavior] = {
         use_forward_error=True,
         cruise_vx=0.4,
     ),
-    # Stubs that behave like LINE_FOLLOW until their planners are written.
+    # Hover above a marker for the snap recording; no forward cruise so the
+    # drone doesn't drift off the intersection while we read it.
     StateName.WAYPOINT_VISIT: Behavior(
         target_altitude=_DEFAULT_TARGET_ALT,
         use_lateral_error=True,
         use_heading_error=True,
-        use_forward_error=True,
-        cruise_vx=0.4,
+        use_forward_error=False,
+        cruise_vx=0.0,
     ),
+    # Walk a precomputed grid path. Perception is ignored — the node
+    # consumes the FSM's target_xy_world instead.
     StateName.ARRANGE_BY_ID: Behavior(
         target_altitude=_DEFAULT_TARGET_ALT,
-        use_lateral_error=True,
-        use_heading_error=True,
-        use_forward_error=True,
-        cruise_vx=0.4,
+        use_lateral_error=False,
+        use_heading_error=False,
+        use_forward_error=False,
+        cruise_vx=0.0,
     ),
+    # Final leg back to the start coordinates; same handling as ARRANGE.
     StateName.RETURN_PATH: Behavior(
         target_altitude=_DEFAULT_TARGET_ALT,
-        use_lateral_error=True,
-        use_heading_error=True,
-        use_forward_error=True,
-        cruise_vx=0.4,
+        use_lateral_error=False,
+        use_heading_error=False,
+        use_forward_error=False,
+        cruise_vx=0.0,
     ),
     # Descend; ignore perception (don't chase a line on the way down).
     StateName.LAND: Behavior(
@@ -99,18 +128,58 @@ _BEHAVIORS: Dict[StateName, Behavior] = {
 }
 
 
-class StateMachine:
-    """Holds the current ``StateName`` and dispatches its ``Behavior``.
+@dataclass
+class MissionContext:
+    """Persistent state across tick() calls — what the automaton remembers.
 
-    Transitions are unrestricted by design: the FSM only validates that the
-    requested name is known. Operational guards (e.g. forbid LAND→TAKEOFF
-    while in flight) belong to the node layer once we have real telemetry.
+    All thresholds are tunable knobs the node may override at construction.
+    Counters / records mutate in place as the mission progresses.
+    """
+    # Static configuration / dependencies
+    grid: Optional["Grid"] = None
+    max_records: int = 4
+    takeoff_alt_threshold: float = 1.8     # m, altitude that counts as airborne
+    takeoff_streak_required: int = 10      # consecutive ticks above threshold
+    waypoint_hover_seconds: float = 1.5
+    waypoint_arrival_dist: float = 0.5     # m, distance to the current target node
+    return_arrival_dist: float = 0.3
+    snap_max_err: float = 2.0              # m, beyond this snap is refused
+
+    # Mission progress
+    records: Dict[int, Tuple[float, float]] = field(default_factory=dict)
+    retrieval_path: List["Node"] = field(default_factory=list)
+    retrieval_idx: int = 0
+    start_xy: Optional[Tuple[float, float]] = None
+
+    # Transition counters
+    takeoff_alt_streak: int = 0
+    waypoint_visit_id: Optional[int] = None
+    waypoint_visit_start_t: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class TickResult:
+    """Per-tick output the node consumes after calling :meth:`tick`."""
+    state: StateName
+    behavior: Behavior
+    target_xy_world: Optional[Tuple[float, float]] = None
+    state_changed: bool = False
+    snapped_record: Optional[Tuple[int, float, float]] = None
+
+
+class StateMachine:
+    """Owns the current ``StateName`` + ``MissionContext`` and runs ``tick``.
+
+    Transitions are guarded by ``tick(now, dr_state, perception, altitude)``;
+    ``set_state(raw)`` remains as an external override (test handle +
+    /line_tracer/set_state service) but the next ``tick`` may overwrite it.
     """
 
     def __init__(
         self,
         initial: StateName = StateName.TAKEOFF,
         target_altitude: Optional[float] = None,
+        context: Optional[MissionContext] = None,
     ) -> None:
         self._state = initial
         self._behaviors = dict(_BEHAVIORS)
@@ -119,10 +188,15 @@ class StateMachine:
                 if s is StateName.LAND:
                     continue
                 self._behaviors[s] = replace(b, target_altitude=target_altitude)
+        self._context = context if context is not None else MissionContext()
 
     @property
     def state(self) -> StateName:
         return self._state
+
+    @property
+    def context(self) -> MissionContext:
+        return self._context
 
     def behavior(self) -> Behavior:
         return self._behaviors[self._state]
@@ -132,3 +206,168 @@ class StateMachine:
         new_state = StateName.parse(raw)
         self._state = new_state
         return new_state
+
+    # ------------------------------------------------------------------
+    # Automaton tick
+    # ------------------------------------------------------------------
+
+    def tick(
+        self,
+        now: float,
+        dr_state: State,
+        perception: Optional["PerceptionResult"],
+        altitude: float,
+    ) -> TickResult:
+        ctx = self._context
+        prev_state = self._state
+        snapped_record: Optional[Tuple[int, float, float]] = None
+
+        if ctx.start_xy is None:
+            ctx.start_xy = (dr_state.x, dr_state.y)
+
+        if self._state is StateName.TAKEOFF:
+            self._tick_takeoff(altitude)
+
+        elif self._state is StateName.LINE_FOLLOW:
+            self._tick_line_follow(now, perception, dr_state)
+
+        elif self._state is StateName.WAYPOINT_VISIT:
+            snapped_record = self._tick_waypoint_visit(now, dr_state)
+
+        elif self._state is StateName.ARRANGE_BY_ID:
+            self._tick_arrange(dr_state)
+
+        elif self._state is StateName.RETURN_PATH:
+            self._tick_return(dr_state)
+
+        # LAND is terminal; no transition logic.
+
+        target_xy = self._current_target_xy()
+
+        return TickResult(
+            state=self._state,
+            behavior=self.behavior(),
+            target_xy_world=target_xy,
+            state_changed=self._state is not prev_state,
+            snapped_record=snapped_record,
+        )
+
+    # ------------------------------------------------------------------
+    # Per-state logic — kept small so each is one transition rule.
+    # ------------------------------------------------------------------
+
+    def _tick_takeoff(self, altitude: float) -> None:
+        ctx = self._context
+        if altitude >= ctx.takeoff_alt_threshold:
+            ctx.takeoff_alt_streak += 1
+        else:
+            ctx.takeoff_alt_streak = 0
+        if ctx.takeoff_alt_streak >= ctx.takeoff_streak_required:
+            self._state = StateName.LINE_FOLLOW
+
+    def _tick_line_follow(
+        self, now: float, perception: Optional["PerceptionResult"], dr_state: State
+    ) -> None:
+        ctx = self._context
+
+        # An unrecorded ArUco in view triggers a hover-and-record cycle.
+        if perception is not None:
+            for det in perception.aruco:
+                if det.id not in ctx.records:
+                    ctx.waypoint_visit_id = det.id
+                    ctx.waypoint_visit_start_t = now
+                    self._state = StateName.WAYPOINT_VISIT
+                    return
+
+        # All markers captured -> plan retrieval and switch to ARRANGE.
+        if len(ctx.records) >= ctx.max_records and ctx.grid is not None:
+            self._plan_retrieval(dr_state)
+
+    def _tick_waypoint_visit(
+        self, now: float, dr_state: State
+    ) -> Optional[Tuple[int, float, float]]:
+        ctx = self._context
+        snapped_record: Optional[Tuple[int, float, float]] = None
+
+        wp_id = ctx.waypoint_visit_id
+        if wp_id is not None and wp_id not in ctx.records:
+            snapped = (
+                snap_to_intersection(dr_state, ctx.grid, ctx.snap_max_err)
+                if ctx.grid is not None
+                else dr_state
+            )
+            ctx.records[wp_id] = (snapped.x, snapped.y)
+            snapped_record = (wp_id, snapped.x, snapped.y)
+
+        start = now if ctx.waypoint_visit_start_t is None else ctx.waypoint_visit_start_t
+        if (now - start) >= ctx.waypoint_hover_seconds:
+            ctx.waypoint_visit_id = None
+            ctx.waypoint_visit_start_t = None
+            self._state = StateName.LINE_FOLLOW
+        return snapped_record
+
+    def _tick_arrange(self, dr_state: State) -> None:
+        ctx = self._context
+        if not ctx.retrieval_path or ctx.grid is None:
+            self._state = StateName.LAND
+            return
+        if ctx.retrieval_idx >= len(ctx.retrieval_path):
+            self._state = StateName.LAND
+            return
+
+        target_node = ctx.retrieval_path[ctx.retrieval_idx]
+        tx, ty = ctx.grid.world(target_node)
+        if hypot(tx - dr_state.x, ty - dr_state.y) < ctx.waypoint_arrival_dist:
+            ctx.retrieval_idx += 1
+            if ctx.retrieval_idx >= len(ctx.retrieval_path):
+                self._state = StateName.LAND
+            elif ctx.retrieval_idx == len(ctx.retrieval_path) - 1:
+                # Last node is the start coordinate -> mark final leg.
+                self._state = StateName.RETURN_PATH
+
+    def _tick_return(self, dr_state: State) -> None:
+        ctx = self._context
+        if not ctx.retrieval_path or ctx.grid is None:
+            self._state = StateName.LAND
+            return
+        if ctx.retrieval_idx >= len(ctx.retrieval_path):
+            self._state = StateName.LAND
+            return
+
+        target_node = ctx.retrieval_path[ctx.retrieval_idx]
+        tx, ty = ctx.grid.world(target_node)
+        if hypot(tx - dr_state.x, ty - dr_state.y) < ctx.return_arrival_dist:
+            self._state = StateName.LAND
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _plan_retrieval(self, dr_state: State) -> None:
+        """Build the ARRANGE_BY_ID node sequence: current node -> markers
+        in ascending ID order -> start node, deduping intersections."""
+        from .planner import visit_in_order   # local to avoid cycles
+
+        ctx = self._context
+        if ctx.grid is None or ctx.start_xy is None:
+            return
+        sorted_ids = sorted(ctx.records.keys())
+        waypoints: List["Node"] = []
+        for mid in sorted_ids:
+            mx, my = ctx.records[mid]
+            waypoints.append(ctx.grid.nearest_node(mx, my))
+        waypoints.append(ctx.grid.nearest_node(*ctx.start_xy))
+        cur = ctx.grid.nearest_node(dr_state.x, dr_state.y)
+        ctx.retrieval_path = visit_in_order(ctx.grid, cur, waypoints)
+        ctx.retrieval_idx = 0
+        self._state = StateName.ARRANGE_BY_ID
+
+    def _current_target_xy(self) -> Optional[Tuple[float, float]]:
+        ctx = self._context
+        if self._state not in (StateName.ARRANGE_BY_ID, StateName.RETURN_PATH):
+            return None
+        if not ctx.retrieval_path or ctx.grid is None:
+            return None
+        if ctx.retrieval_idx >= len(ctx.retrieval_path):
+            return None
+        return ctx.grid.world(ctx.retrieval_path[ctx.retrieval_idx])
