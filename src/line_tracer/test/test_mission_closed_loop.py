@@ -231,7 +231,15 @@ def run_mission(
             cruise = (cruise_vx_override
                       if cruise_vx_override is not None
                       else behavior.cruise_vx)
-            dx_body = cruise / gains.kp_xy
+            cruise_mag = cruise / gains.kp_xy
+            # World-frame cruise rotated into body so yaw drift doesn't
+            # bend the track (mirrors line_tracer_node._on_dr_tick).
+            if ctx.start_yaw is not None:
+                dx_w = cruise_mag * math.cos(ctx.start_yaw)
+                dy_w = cruise_mag * math.sin(ctx.start_yaw)
+                dx_body, dy_body = world_to_body(dx_w, dy_w, drone.yaw)
+            else:
+                dx_body = cruise_mag
 
         # Yaw-lock fallback (mirrors line_tracer_node._on_dr_tick).
         psi = 0.0
@@ -447,9 +455,25 @@ class TestTakeoffBurst:
             f"on-ground takeoff must emit {g.takeoff_thrust_norm}, "
             f"got {cmd.thrust_norm}"
         )
-        assert cmd.thrust_norm > g.thrust_max, (
-            "burst must exceed thrust_max — the whole point is bypassing "
-            "the PD clamp to break ground contact"
+        assert cmd.thrust_norm > g.hover_thrust_norm, (
+            "burst must exceed hover_thrust_norm so the drone actually "
+            "lifts off the ground"
+        )
+
+    def test_burst_fires_while_falling(self):
+        """Regression: the original guard was abs(vz_truth) < 0.2, which
+        suppressed the burst during the initial spawn fall (vz ~= -2 m/s)
+        and produced the r19..r22 ground-stick. The drone must burst
+        while falling so it has a chance to arrest the fall."""
+        g = self._gains()
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.0, vy=0.0, vz=0.0, wz=0.0),
+            target_alt=2.0, altitude=0.10, vz_truth=-2.0, gains=g,
+        )
+        assert math.isclose(cmd.thrust_norm, g.takeoff_thrust_norm), (
+            f"falling drone below threshold must emit burst "
+            f"{g.takeoff_thrust_norm}, got {cmd.thrust_norm}. The pre-r23 "
+            f"abs() guard would have failed this case."
         )
 
     def test_no_burst_when_airborne(self):

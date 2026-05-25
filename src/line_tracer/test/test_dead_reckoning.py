@@ -70,9 +70,18 @@ def test_md_p_gain_formula(gains):
 
 
 def test_vxy_clamped_to_max(gains):
+    """vx/vy are clamped as a *vector magnitude*, not axis-wise. With
+    equal-magnitude inputs the components share max_vxy evenly along the
+    body diagonal (max_vxy / sqrt(2) each), and the direction is
+    preserved. The earlier axis-wise clamp froze the body direction at
+    45° whenever both axes saturated, which made the world-frame
+    LINE_FOLLOW cruise circle the drone (r32)."""
     vel = compute_body_velocity(100.0, -100.0, 0.0, z_hat=2.0, gains=gains)
-    assert vel.vx == gains.max_vxy
-    assert vel.vy == -gains.max_vxy
+    mag = (vel.vx**2 + vel.vy**2) ** 0.5
+    assert isclose(mag, gains.max_vxy)
+    assert vel.vx > 0.0
+    assert vel.vy < 0.0
+    assert isclose(vel.vx, -vel.vy)
 
 
 def test_wz_clamped(gains):

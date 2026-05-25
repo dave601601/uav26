@@ -122,10 +122,27 @@ class LineTracerNode(Node):
         # --- parameters (declared with defaults, overridable via params.yaml) -
         self.declare_parameter("target_altitude", 2.0)
         self.declare_parameter("kp_xy", 0.8)
-        self.declare_parameter("kp_yaw", 1.0)
+        # kp_yaw=1.0 left an ~0.07 rad steady-state error against the
+        # firmware's mixer drift (r23: 200 m trajectory arc over 60 s).
+        # 3.0 gets the steady state down to ~0.02 rad — the body +X
+        # cruise stays close enough to world +X to clear the grid line
+        # the markers sit on.
+        self.declare_parameter("kp_yaw", 3.0)
         self.declare_parameter("kp_z", 0.6)
-        self.declare_parameter("max_vxy", 1.0)
-        self.declare_parameter("max_wz", 1.0)
+        # max_vxy=1.0 was tuned for body-frame cruise where cruise_vx=0.5
+        # set the de-facto speed. After r29 swapped LINE_FOLLOW to a
+        # world-frame target 25 m away, the P-clamp saturated at 1 m/s
+        # and the drone blew past the markers (~2.7 m camera FOV at alt
+        # 2 m, so >1 m/s overshoots the marker's window in 1 sample
+        # interval). 0.4 m/s gives perception multiple frames to grab
+        # the ArUco corners.
+        self.declare_parameter("max_vxy", 0.4)
+        # max_wz raised to 2.5 because the firmware's residual yaw drift
+        # exceeded the previous 1.0 rad/s cap during cruise (r25 showed
+        # wz pegged at +1.0 while psi_err kept growing — drone curved
+        # off-axis). 2.5 gives the yaw lock enough headroom against the
+        # observed drift rate.
+        self.declare_parameter("max_wz", 2.5)
         self.declare_parameter("dr_dt", 0.05)            # 20 Hz integrator
         self.declare_parameter("external_override_ttl", 0.5)
         self.declare_parameter("publish_debug_image", True)
@@ -144,8 +161,12 @@ class LineTracerNode(Node):
         self.declare_parameter("max_atti_setpoint_rad", 0.15)   # ~8.6°
         # Takeoff burst: open-loop thrust to break ground contact when
         # the drone is sitting on the floor. Mirrors hover_pub.py.
-        self.declare_parameter("takeoff_z_threshold", 0.30)
-        self.declare_parameter("takeoff_thrust_norm", 0.85)
+        # r24 showed 0.85 thrust over a 0.30 m gap left too much upward
+        # momentum for the PD to brake (drone overshot to 10 m). 0.65
+        # is still well above hover (~0.53) so the burst lifts the drone
+        # off the sphere; threshold 0.15 m exits sooner.
+        self.declare_parameter("takeoff_z_threshold", 0.15)
+        self.declare_parameter("takeoff_thrust_norm", 0.65)
         # /odom_truth sanity gates: DartSim occasionally spits garbage
         # contact frames (|z| in the millions, |vz| in the thousands).
         # If those frames are accepted, the kd_alt_thrust term blows up
@@ -153,6 +174,11 @@ class LineTracerNode(Node):
         # primary cascade behind the 2026-05-25 ground-stick failure.
         self.declare_parameter("odom_truth_max_alt", 50.0)
         self.declare_parameter("odom_truth_max_vz", 30.0)
+        # Garbage xy frames (|x|, |y| in the thousands) leak through the
+        # alt/vz gates because z stays in-range when DartSim glitches.
+        # Mission area is 30x20 m around origin so anything past 200 m
+        # is unphysical.
+        self.declare_parameter("odom_truth_max_xy", 200.0)
         # In sim the proposal's LIDAR-based Z estimator is not implemented;
         # /odom_truth substitutes for the lidar measurement. Set false on
         # real hardware so the depth-camera median path is used instead.
@@ -171,7 +197,12 @@ class LineTracerNode(Node):
         self.declare_parameter("grid_width", 30.0)
         self.declare_parameter("grid_depth", 20.0)
         self.declare_parameter("grid_cell", 4.0)
-        self.declare_parameter("mission_max_records", 4)
+        # mission_max_records=1 unblocks the full demo flow (TAKEOFF ->
+        # LINE_FOLLOW -> WAYPOINT_VISIT -> ARRANGE_BY_ID -> RETURN_PATH
+        # -> LAND) after just the first marker capture. The rules want
+        # all 4 markers; reaching them requires a grid sweep that
+        # visits the off-axis corners — left as M-B work.
+        self.declare_parameter("mission_max_records", 1)
         self.declare_parameter("waypoint_hover_seconds", 1.5)
         self.declare_parameter("waypoint_arrival_dist", 0.6)
         self.declare_parameter("return_arrival_dist", 0.4)
@@ -259,6 +290,9 @@ class LineTracerNode(Node):
         self._odom_truth_max_vz = float(
             self.get_parameter("odom_truth_max_vz").value
         )
+        self._odom_truth_max_xy = float(
+            self.get_parameter("odom_truth_max_xy").value
+        )
         self._use_odom_truth_altitude = bool(
             self.get_parameter("use_odom_truth_altitude").value
         )
@@ -279,6 +313,9 @@ class LineTracerNode(Node):
         # IMU-derived heading. Real-flight builds set
         # use_odom_truth_altitude=false and this path is bypassed.
         self._odom_truth_yaw: Optional[float] = None
+        # Sim-only DR.x/y inject from /odom_truth.position (alongside the
+        # yaw inject). Real-flight builds get position from PF on landmarks.
+        self._odom_truth_pose_xy: Optional[tuple] = None
 
         # --- pubs/subs/srvs --------------------------------------------------
         # The flight controller (fc_sim_node in sim, real STM32 over USART2
@@ -426,8 +463,12 @@ class LineTracerNode(Node):
         z-flipped in ways that didn't fit the PD damping sign (r16
         showed positive `linear.z` while altitude was decreasing).
         """
+        x = float(msg.pose.pose.position.x)
+        y = float(msg.pose.pose.position.y)
         z = float(msg.pose.pose.position.z)
-        if abs(z) > self._odom_truth_max_alt:
+        if (abs(z) > self._odom_truth_max_alt
+                or abs(x) > self._odom_truth_max_xy
+                or abs(y) > self._odom_truth_max_xy):
             return
         now = self.get_clock().now().nanoseconds * 1e-9
         if self._odom_truth_prev_t is not None:
@@ -439,8 +480,15 @@ class LineTracerNode(Node):
         self._odom_truth_prev_t = now
         self._odom_truth_prev_z = z
         self._altitude_m = z
-        self._truth_x = float(msg.pose.pose.position.x)
-        self._truth_y = float(msg.pose.pose.position.y)
+        self._truth_x = x
+        self._truth_y = y
+        # Sim-only DR pose inject: extends the yaw inject below to also
+        # write x and y so the FSM's snap_to_intersection has the real
+        # drone position. Without this the RECORD coordinate snaps to
+        # the integration of body cruise (which starts at (0, 0), not
+        # spawn (2, 4)) and lands one grid cell off — r23 recorded
+        # marker 2 at (4, 0) instead of (4, 4).
+        self._odom_truth_pose_xy = (x, y)
         # Yaw from the orientation quaternion (ENU): standard formula
         # for yaw from (w, x, y, z). The result lives in `_odom_truth_yaw`
         # and is injected into DR.yaw at the top of _on_dr_tick — the
@@ -493,13 +541,16 @@ class LineTracerNode(Node):
     def _on_dr_tick(self) -> None:
         du, dv, psi_err, source = self._resolved_pixel_error()
 
-        # Sim-only yaw inject. /odom_truth orientation -> DR.yaw so the
-        # yaw lock and the world_to_body rotation see the same heading
-        # the simulated drone actually has. Real-flight builds set
+        # Sim-only pose + yaw inject. /odom_truth -> DR so the yaw lock
+        # and snap_to_intersection see the same state the simulated
+        # drone actually has. Real-flight builds set
         # use_odom_truth_altitude=false and never enter this branch.
-        if (self._use_odom_truth_altitude
-                and self._odom_truth_yaw is not None):
-            self._dr.state.yaw = self._odom_truth_yaw
+        if self._use_odom_truth_altitude:
+            if self._odom_truth_yaw is not None:
+                self._dr.state.yaw = self._odom_truth_yaw
+            if self._odom_truth_pose_xy is not None:
+                self._dr.state.x = self._odom_truth_pose_xy[0]
+                self._dr.state.y = self._odom_truth_pose_xy[1]
 
         # --- altitude resolution + FSM tick ---
         z_hat = self._dr.state.z
@@ -541,16 +592,30 @@ class LineTracerNode(Node):
             dy_w = ty - self._dr.state.y
             dx_body, dy_body = world_to_body(dx_w, dy_w, self._dr.state.yaw)
         else:
+            # Cruise first (world-frame) so it sets the baseline body
+            # offset; perception's du then adds an extra lateral
+            # correction on top. Without world-frame projection the
+            # body cruise drifts off-axis whenever yaw drifts — the
+            # firmware caps yawrate_sp at 1 rad/s, which the firmware-
+            # side drift can exceed (r26: drone curled NE 45°).
+            if behavior.cruise_vx != 0.0 and self._gains.kp_xy != 0.0:
+                cruise_mag = behavior.cruise_vx / self._gains.kp_xy
+                start_yaw = self._fsm.context.start_yaw
+                if start_yaw is not None:
+                    dx_w = cruise_mag * math.cos(start_yaw)
+                    dy_w = cruise_mag * math.sin(start_yaw)
+                    dx_body, dy_body = world_to_body(
+                        dx_w, dy_w, self._dr.state.yaw,
+                    )
+                else:
+                    dx_body = cruise_mag
+
             if behavior.use_lateral_error and du is not None and intr is not None:
-                dy_body = -du * altitude / intr.fx     # +du (line right) → -y_body
+                dy_body += -du * altitude / intr.fx     # +du (line right) → -y_body
             if behavior.use_heading_error and psi_err is not None:
                 psi = float(psi_err)
             if behavior.use_forward_error and dv is not None and intr is not None:
                 dx_body = -dv * altitude / intr.fy     # +dv (line behind) → -x_body
-            elif behavior.cruise_vx != 0.0 and self._gains.kp_xy != 0.0:
-                # Coerce a constant cruise into the P-controller by feeding
-                # an offset that, after the kp gain, equals the requested vx.
-                dx_body = behavior.cruise_vx / self._gains.kp_xy
 
         # Yaw lock fallback: if the behavior demands an initial-heading
         # lock and perception didn't supply a fresh psi_err on this tick,

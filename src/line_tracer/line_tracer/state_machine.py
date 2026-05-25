@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from math import hypot
+from math import cos, hypot, sin
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from .dead_reckoning import State, snap_to_intersection
@@ -101,12 +101,18 @@ _BEHAVIORS: Dict[StateName, Behavior] = {
     # on the closest vertical line; forward error (dv) is intentionally OFF
     # because grid lines are crossings to fly THROUGH, not align with — the
     # drone advances at cruise_vx, not by snapping to the next horizontal.
+    # cruise_vx is small (0.2) because line_tracer has no body-velocity
+    # feedback — pitch_sp = +cruise_vx / g becomes a constant tilt with
+    # no drag in the sim, so the drone accelerates without bound. 0.2
+    # gives ~0.02 rad pitch and the drone reaches ~2 m/s over ~10 s,
+    # slow enough to catch each marker on the +X line before yaw drift
+    # curls the track off-axis.
     StateName.LINE_FOLLOW: Behavior(
         target_altitude=_DEFAULT_TARGET_ALT,
         use_lateral_error=True,
         use_heading_error=True,
         use_forward_error=False,
-        cruise_vx=0.5,
+        cruise_vx=0.2,
         lock_yaw_to_initial=True,
     ),
     # Hover above a marker for the snap recording; no forward cruise so the
@@ -172,6 +178,12 @@ class MissionContext:
     retrieval_idx: int = 0
     start_xy: Optional[Tuple[float, float]] = None
     start_yaw: Optional[float] = None     # captured on first tick for yaw-lock
+    # World-frame distance the drone tracks along start_yaw during
+    # LINE_FOLLOW. Without a target the drone open-loop cruises and
+    # drifts off-axis (firmware drift > yawrate clamp); with a target
+    # the same world_to_body rotation already used by ARRANGE_BY_ID
+    # keeps the track aligned regardless of yaw.
+    line_follow_distance: float = 25.0
 
     # Transition counters
     takeoff_alt_streak: int = 0
@@ -388,6 +400,17 @@ class StateMachine:
 
     def _current_target_xy(self) -> Optional[Tuple[float, float]]:
         ctx = self._context
+        if self._state is StateName.LINE_FOLLOW:
+            # Project a world-frame target a fixed distance along the
+            # world +X axis (the grid is laid out so markers fall on
+            # +X-aligned grid lines, and using start_yaw caused r31 to
+            # mis-aim because the drone's spawn yaw was captured a
+            # fraction off from 0). Anchors the cruise track even when
+            # the firmware-side yaw drift exceeds the yawrate clamp.
+            if ctx.start_xy is None:
+                return None
+            sx, sy = ctx.start_xy
+            return (sx + ctx.line_follow_distance, sy)
         if self._state not in (StateName.ARRANGE_BY_ID, StateName.RETURN_PATH):
             return None
         if not ctx.retrieval_path or ctx.grid is None:

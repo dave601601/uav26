@@ -346,28 +346,30 @@ class TestMissionTickEdgeCases:
     def test_records_full_without_grid_stays_in_line_follow(self):
         """If somehow the FSM has no Grid (mis-configured node), it can
         still capture markers but should NOT crash trying to plan a
-        retrieval path; the safe behaviour is to stay put."""
+        retrieval path; the safe behaviour is to stay put. LINE_FOLLOW
+        emits a world-frame anchor (start_xy + line_follow_distance
+        along start_yaw) regardless of grid presence — that's the
+        cruise anchor introduced in r28."""
         ctx = MissionContext(grid=None, max_records=2,
                              waypoint_hover_seconds=0.05)
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
         sm.context.records[0] = (4.0, 4.0)
         sm.context.records[1] = (8.0, 4.0)
         sm.context.start_xy = (2.0, 4.0)
+        sm.context.start_yaw = 0.0
         r = sm.tick(0.0, State(x=4.0, y=4.0, z=2.0), _empty_perception(), 2.0)
         # No crash; FSM stays in LINE_FOLLOW (planner needs the grid).
         assert r.state is StateName.LINE_FOLLOW
-        assert r.target_xy_world is None
+        # LINE_FOLLOW anchor along start_yaw = 0 -> (2 + 25, 4) = (27, 4).
+        assert r.target_xy_world == (27.0, 4.0)
 
-    def test_no_target_xy_in_takeoff_or_line_follow_or_waypoint(self):
-        """Only ARRANGE_BY_ID / RETURN_PATH may emit world-frame targets.
-        Other states must return None so the node falls back to the
-        perception / cruise paths."""
+    def test_target_xy_world_only_after_takeoff_or_waypoint(self):
+        """TAKEOFF and WAYPOINT_VISIT do not emit world-frame targets;
+        the node falls back to perception / hover paths. LINE_FOLLOW
+        and ARRANGE_BY_ID / RETURN_PATH do emit them."""
         ctx = MissionContext(grid=self._grid())
         sm = StateMachine(initial=StateName.TAKEOFF, context=ctx)
         r = sm.tick(0.0, State(z=0.5), _empty_perception(), 0.5)
-        assert r.target_xy_world is None
-        sm._state = StateName.LINE_FOLLOW    # type: ignore[attr-defined]
-        r = sm.tick(0.0, State(z=2.0), _empty_perception(), 2.0)
         assert r.target_xy_world is None
         sm._state = StateName.WAYPOINT_VISIT
         sm.context.waypoint_visit_id = 99

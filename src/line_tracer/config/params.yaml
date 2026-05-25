@@ -3,10 +3,19 @@
     # ---- DR / control ----
     target_altitude: 2.0      # [m] cruise altitude during LINE_FOLLOW etc.
     kp_xy: 0.8                # P gain on body-x / body-y position offsets
-    kp_yaw: 1.0               # P gain on heading error
+    kp_yaw: 3.0               # P gain on heading error (raised from 1.0
+                              # to tighten yaw-lock against firmware drift)
     kp_z: 0.6                 # P gain on altitude error
-    max_vxy: 1.0              # [m/s] clamp on linear body velocity
-    max_wz: 1.0               # [rad/s] clamp on yaw rate
+    max_vxy: 0.4              # [m/s] clamp on linear body velocity. Low
+                              # enough for perception to grab ArUco
+                              # corners during the LINE_FOLLOW pass
+                              # (camera FOV ~2.7 m at alt 2 m).
+    max_wz: 2.5               # [rad/s] clamp on yaw rate. Firmware
+                              # caps yawrate_sp at 1 rad/s so values
+                              # above that are clipped on its side, but
+                              # the higher cap lets the lock saturate
+                              # the firmware command instead of the
+                              # algorithm command.
     dr_dt: 0.025              # [s] DR integration period (40 Hz; below
                               # fc_core's COMP_STALE_MS=200 with margin
                               # so setpoints never go stale at the FC.)

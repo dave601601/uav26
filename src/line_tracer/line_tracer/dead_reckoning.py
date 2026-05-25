@@ -85,9 +85,13 @@ class SetpointGains:
     # body_collision contact against the ground_plane in DartSim. When
     # the drone is on the floor and barely moving, we open-loop a
     # stronger thrust until vz indicates liftoff; the PD takes over once
-    # the drone is rising or above takeoff_z_threshold.
-    takeoff_z_threshold: float = 0.30
-    takeoff_thrust_norm: float = 0.85
+    # the drone is rising or above takeoff_z_threshold. r24 showed 0.85
+    # / 0.30 left ~3 m/s upward momentum that the PD clamp at 0.42
+    # couldn't brake — drone overshot to 10 m. Tightened to 0.65 / 0.15:
+    # still enough to overcome ground contact (well above hover ~0.53),
+    # exits the burst with much less upward momentum to clean up.
+    takeoff_z_threshold: float = 0.15
+    takeoff_thrust_norm: float = 0.65
 
 
 def body_vel_to_atti_thr(
@@ -153,11 +157,26 @@ def compute_body_velocity(
     """Map metric body-frame offsets + altitude error to a clamped body Twist.
 
     vx/vy: P on lateral position error (driving the offset to zero).
+           The clamp is a *vector magnitude* limit, not an axis-wise
+           clamp — if dx_body and dy_body would both saturate, their
+           ratio is preserved. The axis-wise clamp froze the direction
+           at 45° body regardless of yaw (r32: drone circled CCW
+           because world_to_body's correct body command became a
+           saturated diagonal that rotated with the drone's yaw
+           instead of pointing world +X).
     vz:    P on (target_altitude - z_hat).
     wz:    P on yaw error (psi_err is the heading error to remove).
     """
-    vx = clamp(gains.kp_xy * dx_body_m, -gains.max_vxy, gains.max_vxy)
-    vy = clamp(gains.kp_xy * dy_body_m, -gains.max_vxy, gains.max_vxy)
+    vx_raw = gains.kp_xy * dx_body_m
+    vy_raw = gains.kp_xy * dy_body_m
+    mag = (vx_raw * vx_raw + vy_raw * vy_raw) ** 0.5
+    if mag > gains.max_vxy and mag > 0.0:
+        scale = gains.max_vxy / mag
+        vx = vx_raw * scale
+        vy = vy_raw * scale
+    else:
+        vx = vx_raw
+        vy = vy_raw
     vz = clamp(gains.kp_z * (gains.target_altitude - z_hat),
                -gains.max_vxy, gains.max_vxy)
     wz = clamp(gains.kp_yaw * psi_err, -gains.max_wz, gains.max_wz)
