@@ -4,11 +4,10 @@ ROS2 C++ wrapper around `fc_core` that flies the simulated drone in Gazebo Harmo
 
 ## Planned (Open)
 
-- **Bake in the overnight sweep results.** A `gain_sweep.py` run (847 cells × 3 repeats, ~7 h wall-clock) was kicked off on 2026-05-25 to find better `(rate_kp, atti_kp, atti_kd)` triples than the firmware defaults. The CSV lives at `sweep_logs/results.csv`; rerun the script to see the top 20 by median score, then update `fc_sim_node`'s sim-retune defaults to match. Current defaults are `rate_kp=0.20, atti_kp=0.40, atti_kd=0.20`.
-- **Ground-contact flake (UNSOLVED).** Even at motors commanded ω=620 rad/s (gz-verified via `gz topic -e`, F_total ≈ 17 N vs weight 11.8 N), the drone refuses to lift if it touches the ground first. DartSim contact constraint absorbs the upward force. Reproducible at sustained thrust_norm=0.75. Lift only happens when gz happens to catch the drone in free-fall — pure init timing luck. Mitigations attempted: airborne spawn (z=1.5), takeoff burst, sanity gate. None reliable. Real fixes to try: drop `mu` / friction on the body collision; replace body collision box with a sphere; remove body collision entirely; or accept it and let line_tracer drive a takeoff sequence that works for the airframe.
-- **Startup-tumble flake (mitigated).** gz Harmonic's OdometryPublisher and IMU sensor briefly report `q=(0, 0, 1, 0)` (= 180° about Y) for the first few physics steps. The firmware reads this as "drone upside-down" and commands a big righting torque, which spins the drone on the ground into a wedged orientation. The sanity gate in `fc_sim_node` (motors stay at zero until IMU shows tilt < 45° for 20 consecutive ticks ≈ 40 ms) suppresses the runaway. Drone now stays at identity orientation through startup, but lift still depends on whether gz lets it leave the ground.
-- Tighten step-response damping. A 0.1 rad attitude step still overshoots ~3-5× before settling. line_tracer feeds small smoothly-varying setpoints so this is acceptable for integration tests; the gain sweep is searching for a better trade-off.
+- **Startup-tumble flake (mitigated).** gz Harmonic's OdometryPublisher and IMU sensor briefly report `q=(0, 0, 1, 0)` (= 180° about Y) for the first few physics steps. The firmware reads this as "drone upside-down" and commands a big righting torque, which spins the drone on the ground into a wedged orientation. The sanity gate in `fc_sim_node` (motors stay at zero until IMU shows tilt < 45° for 20 consecutive ticks ≈ 40 ms) suppresses the runaway. Drone now stays at identity orientation through startup.
 - Tier C: end-to-end line_tracer in Gazebo (TAKEOFF → LINE_FOLLOW reaches a marker).
+- Mixer's roll-vs-pitch arm coefficients are swapped in `Allocation()` (uses `a=1/(4·dx)` for roll where geometry says `b=1/(4·dy)`). Costs a ~9 % asymmetry between roll and pitch torque per unit LMN since `dx/dy ≈ 1.09`. Firmware-source change so deferred until the same fix can ship with hardware testing.
+- `quat_to_euler` in `linalg.c` returns `eul.y = -asinf(sinp)` (sign-flipped vs standard). The sim shim now accommodates this explicitly. Cleaner long-term fix is to correct the firmware function and drop the workaround in one coordinated commit; deferred until hardware re-test is possible.
 
 ## Decisions
 
@@ -16,12 +15,37 @@ ROS2 C++ wrapper around `fc_core` that flies the simulated drone in Gazebo Harmo
 - All retunable gains and deadband factors are exposed as **launch arguments** on `sim.launch.py` (and inherited by `hover_demo` / `flight_demo`). Override at run time without rebuilding: `ros2 launch fc_sim hover_demo.launch.py atti_kp_pitch:=0.20 atti_kd_pitch:=0.30`.
 - The gz-sim multicopter motor model produces clean equal-thrust hover, but `rotorDragCoefficient` and `rollingMomentCoefficient` are set to zero in the SDF — they introduced asymmetric attitude perturbation under tilt that doesn't match the firmware's IMU model.
 - Empirical hover thrust_norm in sim is ~0.500-0.510 when airborne (the firmware's `-4 * 0.6 * g * thrust_norm` mapping intersects gz physics at this point). The `hover_pub.py` PD altitude hold closes around this value.
-- **FLU↔NED Euler shim**: pitch and yaw both flipped on entry. The firmware's `quat_to_euler` has `eul.y = -asin(sinp)`, and gz odom appears to produce an NED-like quaternion for multicopter models, so the double-flip lands on the firmware-expected sign. Body rates p stays, q and r flip; accel ax stays, ay and az flip. Confirmed empirically: pitch_sp = +0.1 makes drone move +X (forward in FLU); roll_sp = +0.1 makes drone move -Y world (= right in FLU).
+- **IMU shim per-axis convention** (after the 2026-05-25 sign fix): the mixer in `Allocation()` is mixed-frame — roll and yaw signs are NED, pitch is FLU (M sign flipped). The IMU shim has to match per axis: roll passes through (FLU == NED about x), pitch is FLU on both angle (`-e.y` cancels `quat_to_euler`'s `-asinf`) and rate (`+msg.angular_velocity.y`, no flip), yaw is NED on both (`-e.z` on angle, `-msg.angular_velocity.z` on rate). Confirmed empirically: pitch_sp = +0.1 → drone moves +X (forward in FLU); roll_sp = +0.1 → drone moves -Y world (= right in FLU); yawrate_sp = +0.3 → drone yaws right (qz goes negative in FLU world).
 - **Motor index mapping**: SDF `rotor_0` (FR) ← firmware T4, `rotor_1` (BL) ← T2, `rotor_2` (FL) ← T1, `rotor_3` (BR) ← T3. Derived from the firmware mixer's L/M/N sign pattern against the NED body axes.
 - Sim FC is a standalone ROS2 node, not a Gazebo system plugin. /clock-driven tick at the world's 2 ms step = 500 Hz exactly matches the firmware's TIM2 ISR cadence. The same node binary will be the eventual hardware adapter once the byte protocol is wired to a real serial port.
 - Sanity gate is a safety mechanism for sim only. On real hardware, the IMU never lies about orientation at startup; the gate is harmless there (level_streak reaches threshold within 40 ms of power-on if the drone is sitting upright).
 
 ## Done
+
+### Pitch q.y sign fix + raise sim_retune defaults to firmware-native (2026-05-25)
+
+After the sphere collision change exposed the controller's actual closed-loop behavior, a 0.05 rad pitch step diverged within 1 s — drone flipped past 90° and crashed. Trace through the sign convention showed:
+
+- `quat_to_euler` (`linalg.c:543`) returns `eul.y = -asinf(sinp)` (sign-flipped).
+- The IMU shim flipped pitch back (`out.pitch = -e.y`), landing pitch_fw in **FLU** convention (= +FLU_pitch = -NED_pitch).
+- The mixer in `Allocation()` is also FLU for pitch (M sign-flipped vs standard NED, like the existing yaw mixer is NED).
+- But the body-rate shim flipped `q.y` (`pqr_fw.y = -msg.angular_velocity.y`), putting pqr_fw.y in **NED** convention while pitch_fw was in FLU.
+
+Cascaded loop saw `pqr_des = kp·att_err` (positive when pitch_fw needed to increase) but the measured `pqr_fw.y` had the opposite sign for the same physical rotation → `pqr_err` grew with the rotation → positive-feedback divergence on any non-zero pitch setpoint. Masked previously by the 0.40 m body-collision box wedging the drone before it could actually rotate.
+
+Fix: `fc_sim_node.cpp:191` — remove the `q.y` flip so pqr.y is in FLU and matches pitch_fw. Roll axes had no flips (consistent), yaw shim still flips both (consistent NED). One-line change; comment block above the shim now documents the actual per-axis convention.
+
+With the bug fixed, the firmware-native gains (`rate_kp=0.40, atti_kp=0.80, atti_kd=0.20`) track cleanly. Earlier rounds had halved these to 0.20 / 0.40 / 0.20 under the assumption the gz motor plant was "1.3-1.6 × hotter than the SDF said" — that turned out to be a misdiagnosis of the sign bug + the wedge-corner ground collision. Sim-retune defaults bumped back to firmware-native; rate_kp_r=0.80, rate_kp_p/q=0.40. Old comment claiming gz motor-plant gain mismatch removed.
+
+Regression test: `flight_demo.launch.py phase_duration:=5 pitch_amp:=0.10 roll_amp:=0.10 yaw_amp:=0.3` runs the full 12-phase sequence (HOLD → PITCH_FWD → HOLD → PITCH_BACK → HOLD → ROLL_R → HOLD → ROLL_L → HOLD → YAW_R → YAW_L → HOLD, ~60 s total) without crashing for the first time. Drone tracks each commanded axis correctly, returns to level after each phase, altitude wanders within ±0.4 m of 2.0 m target during maneuvers (±0.01 m at pure hover).
+
+### Sphere body collision: unblocks takeoff (2026-05-25)
+
+`src/world/models/uav26_quad/model.sdf` body_collision changed from a 0.40 × 0.40 × 0.06 m box to a 0.05 m sphere at CoM. The oversized box (sized to the outline of the cross-arms, not the actual body) had four ground corners at (±0.20, ±0.20, ±0.03) that pivoted on contact: any micro-tilt from asymmetric motor spin-up wedged the drone on a single corner, and the thrust line through CoM couldn't break the contact constraint. Sphere has no edges to pivot on; landed drone CoM sits 5 cm above ground, supported on a point contact.
+
+Effect: previously the gain sweep saw identical score 2.9550 (= target altitude RMS = drone never moved) across all 535 sampled cells regardless of `(rate_kp, atti_kp, atti_kd)`. With the sphere, the very first run hit z=1.99 m (target 2.0 m) and held with RMS error 0.01 m and thrust=0.500 dead-stable. ~300× improvement from a one-line SDF edit — confirming the "ground-stuck" Open item was geometric, not a tuning problem.
+
+This also exposed the pitch sign bug above; the box had been masking it by mechanically preventing the drone from actually rotating in response to attitude commands.
 
 ### Gain sweep tooling + interrupt-safe overnight runs (commits `00276a8`–`0d8d049`, 2026-05-25)
 

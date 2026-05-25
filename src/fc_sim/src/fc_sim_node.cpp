@@ -36,17 +36,23 @@ namespace {
 // uav26_quad SDF. ω_i = sqrt(T_i / k_f).
 constexpr double kDefaultMotorConstant = 8.54858e-06;
 
-// Conversion from sensor_msgs/Imu (FLU body, ENU world) to the
-// firmware's NED body frame.
+// Conversion from sensor_msgs/Imu (FLU body, ENU world) to the frame
+// the firmware's mixer + controller actually operate in.
 //
-// Body rates: p stays, q and r flip.
-// Acceleration: ax stays, ay and az flip.
-//
-// Conversion from gz odom orientation (empirically NED-ish for the
-// multicopter plugins) into the firmware's NED Euler convention.
-// quat_to_euler returns eul.y = -asin(sinp); when fed the gz quaternion
-// it produces a sign that is the negative of the NED pitch the firmware
-// expects. We flip it back. Yaw needs the same flip.
+// The mixer signs in Allocation() are NED for roll + yaw but FLU for
+// pitch (T1..T4 patterns), and the firmware's quat_to_euler has
+// eul.y = -asinf(sinp), so:
+//   roll  : FLU == NED (x-axis common). pqr.x not flipped.
+//   pitch : Euler ends up FLU (firmware quat's -asin combined with the
+//           shim's -e.y); mixer's M sign is also FLU. pqr.y must ALSO
+//           be FLU = +msg.angular_velocity.y. Flipping q.y broke this
+//           (pitch_fw was FLU, pqr.y was NED) and caused positive-
+//           feedback divergence on any pitch setpoint — masked
+//           previously by the oversized body collision pinning the
+//           drone before it could actually rotate.
+//   yaw   : Euler is NED (shim's -e.z), mixer's N sign is NED, and
+//           pqr.z = -msg.z = +omega_z_NED — all match.
+// Accel was previously sign-flipped on y, z but is currently unused.
 struct EulerNed {
     float roll;
     float pitch;
@@ -141,20 +147,22 @@ public:
         const bool sim_retune = this->declare_parameter<bool>("sim_retune", true);
         if (sim_retune) {
             pid_rate.ki = vec(0.0f, 0.0f, 0.0f);
-            // Sim retune: firmware gains were tuned for the real
-            // airframe, but the gz motor plant produces 1.3-1.6x more
-            // thrust per ω than the SDF motorConstant says, so every
-            // torque command is amplified and the drone over-rotates.
-            // Halve kp_atti, double kd_atti — the loop becomes gentler
-            // but the gz plant gain compensates back to roughly the
-            // intended bandwidth.
+            // Sim retune: firmware gains were hand-tuned for the real
+            // airframe. In sim the rate integrator winds up against
+            // gz IMU noise, so zero rate_ki. Attitude/rate kp are kept
+            // close to firmware defaults (0.8 / 0.4) — earlier rounds
+            // halved them under the assumption the gz motor plant was
+            // 1.3-1.6x hotter than the SDF said, but that turned out
+            // to be a misdiagnosis of the now-fixed pitch sign bug
+            // (q.y in the IMU shim) + the wedge-corner ground collision.
+            // With both fixed, the firmware-native gains track cleanly.
             pid_rate.kp = vec(
-                (float)this->declare_parameter<double>("rate_kp_p", 0.20),
-                (float)this->declare_parameter<double>("rate_kp_q", 0.20),
-                (float)this->declare_parameter<double>("rate_kp_r", 0.40));
+                (float)this->declare_parameter<double>("rate_kp_p", 0.40),
+                (float)this->declare_parameter<double>("rate_kp_q", 0.40),
+                (float)this->declare_parameter<double>("rate_kp_r", 0.80));
             pid_euler.kp = vec(
-                (float)this->declare_parameter<double>("atti_kp_roll",  0.40),
-                (float)this->declare_parameter<double>("atti_kp_pitch", 0.40),
+                (float)this->declare_parameter<double>("atti_kp_roll",  0.80),
+                (float)this->declare_parameter<double>("atti_kp_pitch", 0.80),
                 0.0f);
             pid_euler.kd = vec(
                 (float)this->declare_parameter<double>("atti_kd_roll",  0.20),
@@ -188,8 +196,8 @@ private:
         euler_ned_ = vec((float)e.roll, (float)e.pitch, (float)e.yaw);
         pqr_ned_ = vec(
             (float)msg.angular_velocity.x,
-            (float)-msg.angular_velocity.y,
-            (float)-msg.angular_velocity.z);
+            (float)msg.angular_velocity.y,        // FLU, matches pitch_fw frame
+            (float)-msg.angular_velocity.z);      // NED, matches yaw_fw frame
         acc_ned_ = vec(
             (float)msg.linear_acceleration.x,
             (float)-msg.linear_acceleration.y,

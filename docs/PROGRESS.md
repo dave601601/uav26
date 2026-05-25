@@ -13,10 +13,9 @@ Index. Each topic file holds the actual work log. Entries go newest-first inside
 
 ## Open
 
-- [ ] **DartSim ground-stuck (UNSOLVED).** Drone refuses to lift even at thrust_norm=0.75 sustained 20+ s if it touches the ground first. Mitigated by airborne spawn + sanity gate but not reliable. See [fc_sim](progress/fc_sim.md) Open for proposed fixes (lower friction, sphere collision, no body collision).
-- [ ] **Bake in overnight gain sweep results.** A `scripts/gain_sweep.py --grid overnight` run is searching for better `(rate_kp, atti_kp, atti_kd)` defaults than the current `(0.20, 0.40, 0.20)`. When the CSV is in, update `fc_sim_node`'s sim-retune defaults.
-- [ ] Tier C: line_tracer end-to-end smoke (TAKEOFF → LINE_FOLLOW reaches a marker). Blocked on reliable takeoff.
-- [ ] Step-response damping. A 0.1 rad attitude step overshoots ~3-5×. Acceptable for line_tracer (continuous setpoints) but the sweep should find a better trade-off.
+- [ ] Tier C: line_tracer end-to-end smoke (TAKEOFF → LINE_FOLLOW reaches a marker). Now unblocked — sphere collision + pitch sign fix landed 2026-05-25.
+- [ ] Mixer `Allocation()` swaps `a`=1/(4·dx) and `b`=1/(4·dy) between roll and pitch terms — ~9 % asymmetry. Firmware-source change deferred until paired with hardware re-test.
+- [ ] `quat_to_euler` in `linalg.c` returns `eul.y = -asinf(sinp)` (sign-flipped). Sim shim compensates explicitly. Cleanup needs coordinated firmware + shim change paired with hardware re-test.
 - [ ] Update `line_tracer`'s default `hover_thrust_norm` from 0.49 to 0.50 once the sim hover point is finalized.
 
 ## Conventions
