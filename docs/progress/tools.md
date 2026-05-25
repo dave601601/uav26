@@ -4,6 +4,17 @@ Standalone scripts under `scripts/` that help develop or evaluate the system.
 
 ## Done
 
+### `scripts/plot_waypoint.py` — visualise a waypoint_demo log (2026-05-25)
+
+Reads a piped `ros2 launch fc_sim waypoint_demo.launch.py ... | grep -E 'WP|>>'` log, extracts waypoint definitions, the per-1 Hz pos/vel/dist samples, and the WP advance events, then writes a 3-row PNG: top-down trajectory with waypoint markers, position-vs-time with target overlay, and distance-to-current-WP. Also prints a one-line summary of per-WP arrival times and final positional error.
+
+Runs on the host via uv (PEP 723 inline metadata pulls matplotlib + numpy). No docker required — it just reads a log file.
+
+    scripts/plot_waypoint.py sweep_logs/manual/r10_wp_box.log
+    scripts/plot_waypoint.py path/to/run.log --out path/to/run.png
+
+Sample output: `sweep_logs/manual/r10_wp_box.png` — box pattern (3 m × 3 m square) shows clean WP0→WP1→WP2→WP3 traversal (~6 s per leg) and the limit-cycle around the return waypoint that the cascaded P-pos / P-vel controller can't fully damp without feedforward.
+
 ### `scripts/gain_sweep.py` — parallel attitude-gain sweep (commits `00276a8`–`0d8d049`, 2026-05-25)
 
 Spawns N docker compose run --rm containers in parallel, each running `hover_demo.launch.py` headless with a different `(rate_kp, atti_kp, atti_kd)` triple and a unique `ROS_DOMAIN_ID`. Parses telemetry from each cell's log, scores by `RMS(z − target_alt) + 0.5 × worst-case` over the last 15 s, then medians across repeats per cell.
