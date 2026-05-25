@@ -121,12 +121,19 @@ class LineTracerNode(Node):
         self.declare_parameter("dr_dt", 0.05)            # 20 Hz integrator
         self.declare_parameter("external_override_ttl", 0.5)
         self.declare_parameter("publish_debug_image", True)
-        # FC setpoint shaping. hover_thrust_norm matches the sim's empirical
-        # hover point (fc_sim_node / flight_demo both close around 0.500).
-        self.declare_parameter("hover_thrust_norm", 0.50)
-        self.declare_parameter("kp_alt_thrust", 0.10)        # thrust_norm per metre
-        self.declare_parameter("kd_alt_thrust", 0.25)        # thrust_norm per (m/s vz)
-        self.declare_parameter("max_atti_setpoint_rad", 0.20)   # ~11.5°
+        # FC setpoint shaping. hover_thrust_norm sits a hair above the sim's
+        # empirical hover point (~0.50) so the altitude controller defaults
+        # to "slightly climbing" and the P+D fight altitude error harder.
+        # thrust_min/_max clamp to the same band flight_demo uses (proven
+        # stable with the firmware's 0.80 atti gain): the unclamped P term
+        # at start-up alt_err=2 m would command full thrust 0.97 and the
+        # high-gain attitude loop slams into limits before settling.
+        self.declare_parameter("hover_thrust_norm", 0.52)
+        self.declare_parameter("kp_alt_thrust", 0.25)        # thrust_norm per metre
+        self.declare_parameter("kd_alt_thrust", 0.30)        # thrust_norm per (m/s vz)
+        self.declare_parameter("thrust_min", 0.42)
+        self.declare_parameter("thrust_max", 0.70)
+        self.declare_parameter("max_atti_setpoint_rad", 0.15)   # ~8.6°
         # In sim the proposal's LIDAR-based Z estimator is not implemented;
         # /odom_truth substitutes for the lidar measurement. Set false on
         # real hardware so the depth-camera median path is used instead.
@@ -218,11 +225,15 @@ class LineTracerNode(Node):
         self._hover_thrust_norm = float(self.get_parameter("hover_thrust_norm").value)
         self._kp_alt_thrust = float(self.get_parameter("kp_alt_thrust").value)
         self._kd_alt_thrust = float(self.get_parameter("kd_alt_thrust").value)
+        self._thrust_min = float(self.get_parameter("thrust_min").value)
+        self._thrust_max = float(self.get_parameter("thrust_max").value)
         self._max_atti_sp = float(self.get_parameter("max_atti_setpoint_rad").value)
         self._use_odom_truth_altitude = bool(
             self.get_parameter("use_odom_truth_altitude").value
         )
         self._latest_vz: float = 0.0    # for kd_alt damping
+        self._truth_x: float = 0.0      # for the throttled status log + plot
+        self._truth_y: float = 0.0
 
         # --- pubs/subs/srvs --------------------------------------------------
         # The flight controller (fc_sim_node in sim, real STM32 over USART2
@@ -305,6 +316,10 @@ class LineTracerNode(Node):
             )
 
     def _on_depth(self, msg: Image) -> None:
+        # When /odom_truth is the truth source (sim path) the depth camera
+        # contribution would overwrite it on every callback — guard.
+        if self._use_odom_truth_altitude:
+            return
         try:
             arr = self._bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
         except Exception as e:                                # pragma: no cover
@@ -354,9 +369,15 @@ class LineTracerNode(Node):
         this. It exists so the demo doesn't depend on tuning the depth
         camera; the proposal's eventual LIDAR-based KF will plug into the
         same `_altitude_m` / `_latest_vz` slot.
+
+        The xyz pose is also captured for the throttled status log; the
+        controllers don't read it (DR integrates from perception), only
+        plot_mission.py downstream does.
         """
         self._altitude_m = float(msg.pose.pose.position.z)
         self._latest_vz = float(msg.twist.twist.linear.z)
+        self._truth_x = float(msg.pose.pose.position.x)
+        self._truth_y = float(msg.pose.pose.position.y)
 
     def _handle_set_state(self, request, response):
         try:
@@ -503,7 +524,9 @@ class LineTracerNode(Node):
         if self._log_counter == 0:
             self.get_logger().info(
                 f"[{self._fsm.state.name}/{source}] "
-                f"du={du} dv={dv} psi_err={psi_err} alt={altitude:.2f} "
+                f"xy=({self._truth_x:+.2f},{self._truth_y:+.2f}) "
+                f"alt={altitude:.2f} vz_truth={self._latest_vz:+.2f} | "
+                f"du={du} dv={dv} psi_err={psi_err} | "
                 f"vx={vel.vx:+.2f} vy={vel.vy:+.2f} vz={vel.vz:+.2f} wz={vel.wz:+.2f}"
             )
 
@@ -514,20 +537,23 @@ class LineTracerNode(Node):
     def _build_setpoint(self, vel, target_altitude: float):
         """Map dead-reckoning vel (body FLU) into an fc_sim_msgs/Setpoint.
 
-        Small-angle approximation:
-          pitch_sp = -vx / g       (positive pitch in FLU tips the nose up,
-                                    which decelerates +X motion; we want the
-                                    opposite, hence the minus sign)
-          roll_sp  = +vy / g       (positive roll tips the right wing down,
-                                    so the drone slides +Y in FLU)
+        Small-angle map matching the sim's empirical sign convention
+        (verified in fc_sim progress notes after the 2026-05-25 pitch
+        sign fix):
 
-        thrust_norm = hover_thrust_norm + kp_alt * (target_altitude - alt).
+          pitch_sp = +vx / g    (pitch_sp=+0.1 → drone slides +X in FLU)
+          roll_sp  = -vy / g    (roll_sp=+0.1 → drone slides -Y in FLU,
+                                 i.e. right in FLU; to command +y_body the
+                                 roll must be negative)
 
-        Both attitude setpoints are clamped to max_atti_setpoint_rad.
+        thrust_norm = hover + kp_alt*(target_alt - alt) - kd_alt*vz_truth,
+        clamped to [thrust_min, thrust_max] so a fresh start-up alt error
+        can't push the firmware's attitude loop into oscillation by
+        commanding full-throttle.
         """
         g = 9.80665
-        pitch_sp = -float(vel.vx) / g
-        roll_sp  = +float(vel.vy) / g
+        pitch_sp = +float(vel.vx) / g
+        roll_sp  = -float(vel.vy) / g
         # Clamp to keep within the firmware's maxatticmd (30°) with margin.
         pitch_sp = max(-self._max_atti_sp, min(self._max_atti_sp, pitch_sp))
         roll_sp  = max(-self._max_atti_sp, min(self._max_atti_sp, roll_sp))
@@ -539,7 +565,7 @@ class LineTracerNode(Node):
             + self._kp_alt_thrust * alt_err
             - self._kd_alt_thrust * float(self._latest_vz)
         )
-        thrust = max(0.0, min(1.0, thrust))
+        thrust = max(self._thrust_min, min(self._thrust_max, thrust))
 
         sp = Setpoint()
         sp.mode = Setpoint.MODE_ATTITHR

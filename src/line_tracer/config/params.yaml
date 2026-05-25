@@ -7,7 +7,9 @@
     kp_z: 0.6                 # P gain on altitude error
     max_vxy: 1.0              # [m/s] clamp on linear body velocity
     max_wz: 1.0               # [rad/s] clamp on yaw rate
-    dr_dt: 0.05               # [s] DR integration period (20 Hz)
+    dr_dt: 0.025              # [s] DR integration period (40 Hz; below
+                              # fc_core's COMP_STALE_MS=200 with margin
+                              # so setpoints never go stale at the FC.)
     external_override_ttl: 0.5  # [s] /line_tracer/pixel_error stale threshold
     publish_debug_image: true
 
