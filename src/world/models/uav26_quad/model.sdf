@@ -99,11 +99,15 @@
         </material>
       </visual>
 
+      <!-- Sphere instead of a 0.40 m box: the oversized box wedged on its
+           corners during ground contact and prevented liftoff. A 5 cm
+           sphere at CoM supports the landed drone (CoM 5 cm above ground)
+           but has no edges for DartSim to pivot on. -->
       <collision name="body_collision">
         <geometry>
-          <box>
-            <size>0.40 0.40 0.06</size>
-          </box>
+          <sphere>
+            <radius>0.05</radius>
+          </sphere>
         </geometry>
       </collision>
 
