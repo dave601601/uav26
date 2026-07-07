@@ -2,43 +2,7 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
-## Current state (2026-05-25 evening — r38 full demo flow)
-
-### r38 — all 6 FSM states fire end-to-end (commit `81918ba`)
-
-r38 walks the complete mission: TAKEOFF -> LINE_FOLLOW ->
-WAYPOINT_VISIT (marker 2 recorded at the correct (4, 4)) ->
-ARRANGE_BY_ID -> RETURN_PATH -> LAND. Altitude holds 2.08 m through
-cruise and descends to 0.08 m in LAND. 132/132 line_tracer pytest +
-18/18 fc_core gtest.
-
-Fixes that made the retrieval phases land:
-
-| Change | Why |
-|---|---|
-| fc_core `maxratecmd` 1.0 -> 3.0 rad/s; `fc_rate_deadband_factor` 0.04 -> 0.0133 so the absolute rate deadband stays 0.04 rad/s | Firmware yawrate clamp was tighter than algorithm-side `max_wz=2.5`, so the yaw lock output was always clipped; yaw drifted ~0.2 rad/s uncorrected and the cruise track curled off-axis (r30..r34). Without the factor rescale `test_atti_pid` fails (steady-state pqr_cmd falls inside the widened deadband). |
-| `max_vxy` 0.4 -> 0.2 m/s | No body-velocity feedback (`pitch_sp = vx/g` is open-loop attitude, not velocity tracking); accumulated inertia overshot the small body command at 0.4. Halving keeps overshoot within 5-10 m of the retrieval target. |
-| `waypoint_arrival_dist` 0.6 -> 5.0 m, `return_arrival_dist` 0.4 -> 3.0 m, `return_path_timeout` 30 s forces LAND | Drone still wanders in retrieval; the timeout is the pragmatic demo workaround. Real fix is body-velocity PD from the /odom_truth derivative (already used for vz) — M-B work. |
-
-### r34 — line tracing demo, marker recorded at correct cell (commit `3bdcb70`)
-
-r34 shows TAKEOFF -> LINE_FOLLOW -> WAYPOINT_VISIT -> LINE_FOLLOW ->
-ARRANGE_BY_ID with marker 2 recorded at the correct (4, 4). Bundle:
-
-| Change | Why |
-|---|---|
-| Vector clamp on vx/vy in `compute_body_velocity` (replaces axis-wise clamp) | Axis-wise clamp froze the body command at the diagonal whenever both axes saturated; combined with a world-frame cruise this circled the drone CCW around the mission area (r32). Vector clamp preserves direction. |
-| LINE_FOLLOW emits `target_xy_world = (start_x + line_follow_distance, start_y)` | Cruising along `start_yaw` was a detour — start_yaw is captured a fraction off-zero during the spawn-fall + sanity-gate window (r31 flew to a wrong corner). World +X is the natural cruise direction; markers sit on +X-aligned grid lines. |
-| params.yaml `max_vxy` / `max_wz` / `kp_yaw` un-hardcoded | Yaml values 1.0/1.0/1.0 silently overrode every `declare_parameter` change from r25 on — all r25..r30 tuning had no effect. r31 was the first run where tuning landed. |
-| `mission_max_records` 4 -> 1 | FSM completes the demo flow after the first marker. Rules want 4; visiting off-axis corners (4,16) (24,16) needs a grid sweep — M-B. |
-| `TestTakeoffBurst.test_burst_fires_while_falling` | Pins the case that broke r19..r22 (the original `abs(vz_truth) < 0.2` guard suppressed the burst during the spawn fall) — the coverage gap called out after r22. |
-
-All three r23 leftovers are resolved: DR x/y now syncs from
-/odom_truth pose in `_on_dr_tick` (sim-only, next to the yaw inject),
-`odom_truth_max_xy=200` rejects garbage xy frames in
-`_on_odom_truth`, and the yaw curl is gone with the maxratecmd bump.
-
-## Earlier on 2026-05-25 (r23 midday — superseded by r38)
+## Current state (2026-05-25 end-of-session)
 
 ### Algorithm: ✅ done
 
@@ -71,7 +35,7 @@ What landed across `a71eae9`, `ed587ce`, `0d838f2`:
 | Yaw lock during TAKEOFF saturated wz, interacted with sphere ground contact, drone spun in place without lifting | TAKEOFF behavior lock_yaw_to_initial=False. LINE_FOLLOW and later still lock. |
 | Drone occasionally hits ground before sanity gate releases motors | Spawn altitude 1.5 -> 3.0 m. Buys ~0.5 s more free-fall to stabilize. |
 
-Still open in r23 (all three resolved by r34/r38 — see Current state):
+Still open in r23 (not blocking for the visual demo):
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
@@ -105,28 +69,31 @@ in flight.
    ```
    docker compose run --rm -T uav-aruco bash -lc "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && colcon test --packages-select line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs && colcon test-result --test-result-base build/line_tracer"
    ```
-   Expect 132/132.
+   Expect 124/124.
 2. Reproduce the sim issue:
    ```
-   docker compose run --rm -T -v "$(pwd)/sweep_logs:/sweep_logs" uav-aruco bash -lc "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ( ros2 launch world sim.launch.py headless:=true marker_seed:=42 > /sweep_logs/mission/rN_sim.log 2>&1 & ) && sleep 5 && stdbuf -oL -eL ros2 launch line_tracer line_tracer.launch.py > /sweep_logs/mission/rN_tracer.log 2>&1 & TRACER_PID=\$!; sleep 90; kill -INT \$TRACER_PID; wait; echo done"
+   docker compose run --rm -T -v /home/dongha/uav26/sweep_logs:/sweep_logs uav-aruco bash -lc "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ( ros2 launch world sim.launch.py headless:=true marker_seed:=42 > /sweep_logs/mission/rN_sim.log 2>&1 & ) && sleep 5 && stdbuf -oL -eL ros2 launch line_tracer line_tracer.launch.py > /sweep_logs/mission/rN_tracer.log 2>&1 & TRACER_PID=\$!; sleep 90; kill -INT \$TRACER_PID; wait; echo done"
    ```
 3. Visualize: `scripts/plot_mission.py sweep_logs/mission/rN_tracer.log`. PNG appears next to the log.
 4. Pick one of the three integration failure modes above and try a fix. The fixture in `test_mission_closed_loop.py` lets you A/B-test the algorithm-level change before re-running the sim.
 
 ## Planned (Open)
 
-- M-B (XY accuracy < 0.5 m per recorded marker, 30 pt per WP). Needs:
-  body-velocity PD from the /odom_truth derivative so retrieval
-  actually converges (then tighten `waypoint_arrival_dist` /
-  `return_arrival_dist` back down and drop the RETURN_PATH timeout),
-  `mission_max_records` back to 4, and a grid sweep to reach the
-  off-axis corners (4,16) (24,16).
-- M-C: retrieval order (40 pt) + per-WP Z (20 pt).
-- M-D: mission time bonus.
-- M-E: robustness (multi-frame ID voting, lost-line yaw search).
-- DartSim's ODE collision detector still aborts occasionally with the
-  firmware-native 0.40 / 0.80 gains — the demo runs on the halved
-  0.20 / 0.40 sim.launch defaults to dodge it.
+- **M-A demo polish (still rough).** End-to-end headless run goes
+  TAKEOFF -> LINE_FOLLOW cleanly with the post-2026-05-25 fixes, but
+  the drone often drifts at takeoff (drone sits on the sphere body
+  collision during the few-second window before line_tracer engages,
+  small contact perturbations push it laterally before the takeoff
+  burst reaches 1.8 m). DartSim's ODE collision detector also still
+  aborts occasionally with the firmware-native 0.40 / 0.80 gains —
+  the demo currently runs on the halved 0.20 / 0.40 sim.launch
+  defaults to dodge it.
+- ArUco detection-during-flight not yet verified in end-to-end mode.
+  The FSM transition path (LINE_FOLLOW -> WAYPOINT_VISIT -> ...) is
+  unit-tested but has not yet caught a marker during a real run.
+- M-B (XY accuracy < 0.5 m) + M-C (retrieval order + Z) + M-D (time)
+  + M-E (robustness) remain as listed in the M-A plan; none are
+  blocking for the smoke-test demo.
 
 ## Done
 

@@ -4,19 +4,6 @@ Pure C library carrying the STM32 firmware controller into ROS2 land.
 
 ## Done
 
-### maxratecmd 1.0 -> 3.0 rad/s for autonomous yaw authority (commit `81918ba`, 2026-05-25)
-
-The firmware's `maxratecmd = 1.0` rad/s was calibrated for SBUS stick
-travel; in autonomous mode it clamped the companion's yawrate setpoint
-below the algorithm-side `max_wz = 2.5`, so the yaw lock was always
-clipped and drone yaw drifted ~0.2 rad/s uncorrected (line_tracer
-r30..r34 cruise curled off-axis). Raised to 3.0 rad/s.
-`fc_rate_deadband_factor` scaled 0.04 -> 0.0133 so the absolute rate
-deadband stays at 0.04 rad/s — without the rescale `test_atti_pid`
-fails because the proportional deadband widens with maxratecmd.
-This deviates from the verbatim-copy rule (see Decisions); the change
-must be ported back to the embedded firmware repo.
-
 ### Firmware port + companion protocol + Tier A tests (commit `6eb7612`, 2026-05-25)
 
 Teammate delivered the actual STM32G431 flight-controller firmware (`Core (1).zip`).
