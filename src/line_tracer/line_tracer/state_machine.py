@@ -187,15 +187,22 @@ class MissionContext:
     # (still try to get home) rather than LAND-in-place.
     arrange_start_t: Optional[float] = None
     arrange_timeout: float = 60.0
-    # LINE_FOLLOW cruises toward a MOVING world-frame target
-    # (drone_x + lookahead, start_y). The lookahead sets how hard the
-    # velocity vector leans into cross-track error: with the old fixed
-    # far target (start_x + 25, start_y) the direction was ~unit +X, so
-    # a 1 m takeoff drift decayed over tens of metres and the drone
-    # cruised past marker row outside the camera footprint (r42).
-    # lookahead 2.0 m makes a 1 m cross error steer ~27 degrees toward
-    # the line while still advancing.
+    # LINE_FOLLOW without a grid falls back to a MOVING lookahead
+    # target (drone_x + lookahead, start_y). The lookahead sets how
+    # hard the velocity vector leans into cross-track error: with a
+    # fixed far target the direction was ~unit +X, so a 1 m takeoff
+    # drift decayed over tens of metres and the drone cruised past the
+    # marker row outside the camera footprint (r42). 2.0 m makes a 1 m
+    # cross error steer ~27 degrees toward the line while advancing.
     line_follow_lookahead: float = 2.0
+    # Serpentine search plan over the grid's interior rows (generated
+    # by _plan_sweep on the first LINE_FOLLOW tick with a grid).
+    # sweep_arrival_dist is looser than waypoint_arrival_dist: sweep
+    # corners are route shaping, not scored positions.
+    sweep_path: List[Tuple[float, float]] = field(default_factory=list)
+    sweep_idx: int = 0
+    sweep_arrival_dist: float = 1.5
+    sweep_margin: float = 2.0     # [m] inset from the arena border
 
     # Transition counters
     takeoff_alt_streak: int = 0
@@ -330,6 +337,23 @@ class StateMachine:
         # All markers captured -> plan retrieval and switch to ARRANGE.
         if len(ctx.records) >= ctx.max_records and ctx.grid is not None:
             self._plan_retrieval(dr_state)
+            return
+
+        # Serpentine search over the grid rows. Markers sit on grid
+        # intersections, so cruising each interior row scans every
+        # intersection on it; the +X-only cruise of r38..r55 could only
+        # ever find markers on the start row.
+        if ctx.grid is not None and not ctx.sweep_path:
+            self._plan_sweep()
+        if ctx.sweep_path and ctx.sweep_idx < len(ctx.sweep_path):
+            tx, ty = ctx.sweep_path[ctx.sweep_idx]
+            if hypot(tx - dr_state.x, ty - dr_state.y) < ctx.sweep_arrival_dist:
+                ctx.sweep_idx += 1
+                if ctx.sweep_idx >= len(ctx.sweep_path):
+                    # Sweep exhausted without filling the records:
+                    # retrieve what we have rather than cruising off
+                    # into the wall or hovering forever.
+                    self._plan_retrieval(dr_state)
 
     def _tick_waypoint_visit(
         self, now: float, dr_state: State
@@ -420,6 +444,34 @@ class StateMachine:
     # Helpers
     # ------------------------------------------------------------------
 
+    def _plan_sweep(self) -> None:
+        """Serpentine (lawnmower) waypoints over the grid's interior
+        rows, starting from the row nearest start_y and moving away
+        from it. Rows are the grid's horizontal lines (markers only
+        sit on intersections, so scanning each row with the downward
+        camera sees every candidate on it). X endpoints are inset by
+        sweep_margin from the arena border."""
+        ctx = self._context
+        if ctx.grid is None:
+            return
+        x_min = ctx.sweep_margin
+        x_max = ctx.grid.width - ctx.sweep_margin
+        rows = [y for y in ctx.grid.ys if 0.0 < y < ctx.grid.depth]
+        if not rows:
+            return
+        start_y = ctx.start_xy[1] if ctx.start_xy is not None else rows[0]
+        rows.sort(key=lambda y: abs(y - start_y))
+        path: List[Tuple[float, float]] = []
+        going_right = True
+        for y in rows:
+            if path:
+                # Climb to the next row at the current x endpoint.
+                path.append((path[-1][0], y))
+            path.append((x_max if going_right else x_min, y))
+            going_right = not going_right
+        ctx.sweep_path = path
+        ctx.sweep_idx = 0
+
     def _plan_retrieval(self, dr_state: State) -> None:
         """Build the ARRANGE_BY_ID node sequence: current node -> markers
         in ascending ID order -> start node, deduping intersections."""
@@ -460,10 +512,13 @@ class StateMachine:
                 return None
             return ctx.start_xy
         if self._state is StateName.LINE_FOLLOW:
-            # Moving lookahead target along the world +X grid row the
-            # mission started on (markers sit on +X-aligned lines;
-            # start_yaw mis-aimed r31 because spawn yaw is captured a
-            # fraction off zero). See line_follow_lookahead.
+            # Serpentine sweep waypoint when a plan exists; otherwise
+            # the gridless fallback: a moving lookahead along the
+            # world +X row the mission started on (markers sit on
+            # +X-aligned lines; start_yaw mis-aimed r31 because spawn
+            # yaw is captured a fraction off zero).
+            if ctx.sweep_path and ctx.sweep_idx < len(ctx.sweep_path):
+                return ctx.sweep_path[ctx.sweep_idx]
             if ctx.start_xy is None:
                 return None
             sx, sy = ctx.start_xy

@@ -13,30 +13,32 @@ Index. Each topic file holds the actual work log. Entries go newest-first inside
 
 ## Open
 
-### Where to resume (2026-07-08 — M-A demo verified on the 4S train)
+### Where to resume (2026-07-08 late — full 4-marker mission lands)
 
-r54 and r55 fly the full six-state mission back to back on the real
-power train (2212-920KV/4S): marker 2 recorded at (4,4) exactly,
-cruise 1.98 m, touchdown 0.5 m from the start, drone parked after
-disarm, no DartSim aborts. Root-cause fixes from the four-agent audit
-are logged per topic: [line_tracer](progress/line_tracer.md) (velocity
-loop, velocity-mode landing, FSM return guards),
-[world](progress/world.md) (4S motors, four-feet contact),
-[fc_sim](progress/fc_sim.md) (prime altitude hold, disarm,
-single-writer guard), [fc_core](progress/fc_core.md) (900 g thrust
-scale), [docker](progress/docker.md) (zombie-FC teardown contract —
-read before running anything).
+r57 flies the complete competition flow (seed 42, 719 s): serpentine
+sweep finds all four markers (recorded at exact GT cells, err 0.00 m),
+ARRANGE tours them in ID order, drone homes and parks 0.53 m from
+spawn. Platform fixes from the four-agent audit are logged per topic:
+[line_tracer](progress/line_tracer.md) (sweep, velocity loop,
+velocity-mode landing, FSM guards), [world](progress/world.md) (4S
+motors, four-feet contact), [fc_sim](progress/fc_sim.md) (prime
+altitude hold, disarm, single-writer guard),
+[fc_core](progress/fc_core.md) (900 g thrust scale),
+[docker](progress/docker.md) (zombie-FC teardown contract — read
+before running anything).
 
-Run missions ONLY via `scripts/run_mission.sh` (sweep + SIGINT
-teardown): `docker compose exec -T uav-aruco bash -s rNN <
-scripts/run_mission.sh`.
+Run missions ONLY via `scripts/run_mission.sh`:
+`docker compose exec -T uav-aruco bash -s rNN 900 <
+scripts/run_mission.sh` (900 s for the full mission).
 
 #### Next milestones
 
-- [ ] M-B: mission_max_records back to 4 + grid sweep for the
-      off-axis corners; XY accuracy <0.5 m per marker (30 pt per WP).
-- [ ] M-C: retrieval order (40 pt) + per-WP Z (20 pt).
-- [ ] M-D: mission time bonus.
+- [x] M-B: 4-marker sweep + recorded XY (r57; sim-side accuracy is
+      snap-exact because DR is truth-injected — hardware DR drift is
+      the real M-B risk, revisit with the LIDAR/flow estimator).
+- [ ] M-C: retrieval order verification output (40 pt) + per-WP Z
+      (20 pt).
+- [ ] M-D: mission time (sweep revisits empty rows; ~12 min now).
 - [ ] M-E: robustness (multi-frame ID voting, lost-line yaw search).
 - [ ] Test-reality gap (audit findings): run_mission test driver
       calls the real node methods instead of reimplementing them;

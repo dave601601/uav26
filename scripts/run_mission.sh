@@ -2,7 +2,9 @@
 # Headless end-to-end mission run for the uav-aruco container.
 #
 # Usage (from the repo root, on the host):
-#   docker compose exec -T uav-aruco bash -s r53 < scripts/run_mission.sh
+#   docker compose exec -T uav-aruco bash -s r53 [duration_s] < scripts/run_mission.sh
+# duration_s defaults to 150 (single-marker smoke); the full 4-marker
+# mission (sweep + ID-order tour + return) needs ~700.
 #
 # Logs land in build/sweep_logs/mission/<run>_{sim,tracer}.log (the
 # build/ directory is bind-mounted, so they are visible on the host).
@@ -23,6 +25,7 @@ source /workspace/install/setup.bash
 set -u   # after sourcing: ROS setup scripts reference unbound vars
 
 RUN=${1:-r$(date +%H%M%S)}
+DUR=${2:-150}
 LOGDIR=/workspace/build/sweep_logs/mission
 mkdir -p "$LOGDIR"
 
@@ -50,7 +53,7 @@ stdbuf -oL -eL ros2 launch line_tracer line_tracer.launch.py \
   > "$LOGDIR/${RUN}_tracer.log" 2>&1 &
 TRACER_PID=$!
 
-sleep 150
+sleep "$DUR"
 kill -INT "$TRACER_PID" 2>/dev/null
 sleep 3
 kill -INT "$SIM_PID" 2>/dev/null

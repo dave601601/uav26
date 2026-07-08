@@ -2,7 +2,43 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
-## Current state (2026-07-08 — r54/r55 full mission, twice in a row)
+## Current state (2026-07-08 late — r57 full 4-marker mission)
+
+r57 flies the complete competition flow in one 719 s run (seed 42):
+serpentine sweep over the interior grid rows finds and records ALL
+FOUR markers at exactly their ground-truth cells (id2 (4,4), id0
+(24,4), id3 (24,16), id1 (4,16) — err 0.00 m each), ARRANGE_BY_ID
+tours the corners in ID order, and the drone homes to the start and
+parks at (2.12, 4.51) — 0.53 m from spawn. No DartSim aborts.
+162 tests green (144 pytest + 18 gtest).
+
+What M-B added on top of the r54 platform:
+
+- `_plan_sweep`: lawnmower waypoints over every interior grid row
+  (markers only sit on intersections), starting from the row nearest
+  the start, x endpoints inset 2 m from the border. LINE_FOLLOW
+  follows the sweep; a WAYPOINT_VISIT interrupt resumes where it
+  left off; sweep exhaustion with partial records still retrieves
+  what was found.
+- mission_max_records back to 4 (the rules' value).
+- max_vxy 0.2 -> 0.5: the 0.2 cap dated from the open-loop era when
+  commanded velocity was really acceleration. With the velocity loop
+  the drone tracks 0.5 m/s and the camera still gets ~5 s of dwell
+  per marker. The ~250 m mission needs the speed.
+- arrange_timeout 420 s (r57 measured the nominal tour at ~330 sim
+  seconds; the 300 s guard cut the final homing leg — harmless, it
+  falls through to RETURN_PATH, but a backstop shouldn't fire on the
+  nominal path).
+- `scripts/run_mission.sh` takes a duration argument; the full
+  mission needs ~900 wall seconds (sim RTF runs a bit under 1).
+
+Remaining toward M-C/M-D/M-E: per-WP Z handling, mission time (the
+sweep revisits empty rows — a smarter search or higher cruise speed
+cuts minutes), robustness items (multi-frame ID voting, lost-line
+recovery), and the test-reality gaps from the audit (driver calling
+real node methods, MockDrone attitude lag, gz smoke tier).
+
+## Superseded state (2026-07-08 — r54/r55 single-marker mission)
 
 Two consecutive clean headless runs on the 4S power train: TAKEOFF ->
 LINE_FOLLOW -> WAYPOINT_VISIT (marker 2 recorded at exactly (4,4),

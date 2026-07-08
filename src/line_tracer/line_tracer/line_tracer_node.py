@@ -204,12 +204,17 @@ class LineTracerNode(Node):
         self.declare_parameter("grid_width", 30.0)
         self.declare_parameter("grid_depth", 20.0)
         self.declare_parameter("grid_cell", 4.0)
-        # mission_max_records=1 unblocks the full demo flow (TAKEOFF ->
-        # LINE_FOLLOW -> WAYPOINT_VISIT -> ARRANGE_BY_ID -> RETURN_PATH
-        # -> LAND) after just the first marker capture. The rules want
-        # all 4 markers; reaching them requires a grid sweep that
-        # visits the off-axis corners — left as M-B work.
-        self.declare_parameter("mission_max_records", 1)
+        # Full mission: all 4 markers. LINE_FOLLOW serpentine-sweeps the
+        # grid's interior rows to reach the off-axis corners; the FSM
+        # falls back to retrieving whatever it has if the sweep
+        # completes with fewer records.
+        self.declare_parameter("mission_max_records", 4)
+        # ARRANGE tours all markers in ID order — a full-arena tour is
+        # ~140 m ≈ 330 sim-seconds at max_vxy 0.5 (r57 measured). The
+        # stall guard is a backstop, not a schedule: 300 s cut r57's
+        # tour on its final homing leg (harmless — it falls through to
+        # RETURN_PATH — but the nominal path shouldn't hit the guard).
+        self.declare_parameter("arrange_timeout", 420.0)
         self.declare_parameter("waypoint_hover_seconds", 1.5)
         # arrival_dist: with body-velocity feedback (kp_vel) the drone
         # tracks its commanded speed instead of accumulating inertia, so
@@ -252,6 +257,7 @@ class LineTracerNode(Node):
                 self.get_parameter("return_arrival_dist").value
             ),
             snap_max_err=float(self.get_parameter("snap_max_err").value),
+            arrange_timeout=float(self.get_parameter("arrange_timeout").value),
         )
         self._fsm = StateMachine(
             initial=StateName.TAKEOFF,

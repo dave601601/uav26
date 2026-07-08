@@ -262,6 +262,68 @@ class TestMissionTick:
         r = sm.tick(0.10, State(x=2.2, y=4.0, z=2.0), _empty_perception(), 2.0)
         assert r.state is StateName.LAND
 
+    def test_sweep_serpentine_covers_interior_rows(self):
+        """LINE_FOLLOW plans a lawnmower over every interior grid row
+        (markers only sit on intersections) starting from the row
+        nearest the start point, with x endpoints inset by
+        sweep_margin."""
+        ctx = self._ctx()
+        sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
+        ctx.start_xy = (2.0, 4.0)
+        ctx.start_yaw = 0.0
+        r = sm.tick(0.0, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        path = ctx.sweep_path
+        assert path, "sweep must be planned on the first gridful tick"
+        # Interior rows of the 30x20/4 m grid are y = 4, 8, 12, 16.
+        assert {y for _, y in path} == {4.0, 8.0, 12.0, 16.0}
+        # Endpoints inset by the margin.
+        xs = {x for x, _ in path}
+        assert xs <= {ctx.sweep_margin, 30.0 - ctx.sweep_margin}
+        # First leg runs along the start row.
+        assert path[0] == (30.0 - ctx.sweep_margin, 4.0)
+        # The active target is the first sweep waypoint.
+        assert r.target_xy_world == path[0]
+
+    def test_sweep_advances_and_resumes_after_visit(self):
+        ctx = self._ctx()
+        sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
+        ctx.start_xy = (2.0, 4.0)
+        ctx.start_yaw = 0.0
+        sm.tick(0.0, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        first = ctx.sweep_path[0]
+        # Arriving at the first corner advances the index.
+        r = sm.tick(0.1, State(x=first[0], y=first[1], z=2.0),
+                    _empty_perception(), 2.0)
+        assert ctx.sweep_idx == 1
+        assert r.target_xy_world == ctx.sweep_path[1]
+        # A marker interrupt (WAYPOINT_VISIT) must not reset the sweep.
+        r = sm.tick(0.2, State(x=first[0], y=first[1], z=2.0), _seen(0), 2.0)
+        assert r.state is StateName.WAYPOINT_VISIT
+        r = sm.tick(0.2 + ctx.waypoint_hover_seconds + 0.05,
+                    State(x=first[0], y=first[1], z=2.0),
+                    _empty_perception(), 2.0)
+        assert r.state is StateName.LINE_FOLLOW
+        assert ctx.sweep_idx == 1
+
+    def test_sweep_exhaustion_retrieves_partial_records(self):
+        """If the search completes with fewer than max_records, the
+        FSM retrieves what it has instead of cruising into the wall."""
+        ctx = self._ctx()
+        sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
+        ctx.start_xy = (2.0, 4.0)
+        ctx.start_yaw = 0.0
+        ctx.records[0] = (8.0, 4.0)   # only one of four found
+        now = 0.0
+        sm.tick(now, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        # Teleport through every sweep corner.
+        for wx, wy in list(ctx.sweep_path):
+            now += 0.1
+            r = sm.tick(now, State(x=wx, y=wy, z=2.0), _empty_perception(), 2.0)
+            if r.state is not StateName.LINE_FOLLOW:
+                break
+        assert sm.state is StateName.ARRANGE_BY_ID
+        assert ctx.retrieval_path
+
     def test_arrange_timeout_falls_through_to_return(self):
         """ARRANGE stall guard: if the drone never samples inside
         waypoint_arrival_dist of the current node, the FSM must not
