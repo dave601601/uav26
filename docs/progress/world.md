@@ -2,6 +2,27 @@
 
 Gazebo Harmonic simulation package: arena, drone model, sensor plugins, bridge, launch.
 
+## Done (recent)
+
+### 4S motor model + four-feet contact geometry (2026-07-08)
+
+- Motor plugins: maxRotVelocity 800 -> 1050 rad/s, motorConstant
+  8.55e-06 -> 8.0e-06. k_f x w_max^2 = 8.82 N ~= 900 gf per motor —
+  the 2212-920KV / 4S / 9450-prop operating point. Must stay in sync
+  with fc_core `max_thrust_g_per_motor` and fc_sim defaults.
+- Contact: the single 5 cm CoM sphere made the drone a ball — one
+  contact point, no support polygon (tipped over landing motors-off,
+  r49), zero rolling resistance (disarmed drone rolled 6 m after a
+  clean touchdown, r53). Replaced with four r=0.02 sphere feet at the
+  arm tips with explicit mu=1.0; contact height unchanged (-0.05 m).
+  r54/r55: drone stays parked within 2 cm after touchdown.
+- Spawn stays airborne at 3.0 m and the comment now records the r45-r49
+  experiments as constraints: resting spawn explodes DartSim (rotor
+  spin-up in ground contact -> "ODE INTERNAL ERROR 1 ... aabbBound"),
+  short-hop spawn lands motors-off before the IMU sanity gate opens
+  and tips over, and the sim->tracer launch gap must stay ~8 s or the
+  FSM engages mid-air above takeoff_alt_threshold and skips TAKEOFF.
+
 ## Planned (Open)
 
 - Replace `MulticopterVelocityControl` (fake FC accepting `Twist`) with `fc_sim_node` driven by Setpoint + actuator outputs. Drop the `enable_fc` TimerAction.

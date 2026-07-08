@@ -155,16 +155,25 @@
     <include>
       <uri>model://uav26_quad</uri>
       <name>uav26_quad</name>
-      <!-- Spawn airborne at 3.0 m. The fc_sim_node sanity gate keeps
-           motors off (drone in free-fall, stays level) until the IMU
-           confirms attitude is sane; then motors engage and catch the
-           drone before it hits the ground. r17/r18 took off cleanly
-           from z=1.5 but r19/r20 (same code) didn't — the sanity-gate
-           release window vs. ground contact timing is borderline.
-           Spawning higher buys ~0.5 s more for level_streak to cross
-           the gate before contact, lifting reliability up. Avoids the
-           ground-contact constraint problem in DartSim where drones
-           resting on the floor refuse to lift even with excess thrust. -->
+      <!-- Spawn airborne at 3.0 m. gz publishes garbage IMU orientation
+           for the first fraction of a second; fc_sim's sanity gate
+           keeps motors off until the IMU reads level, then the
+           auto-hover prime catches the fall and lowers the drone to a
+           soft, attitude-controlled touchdown. The 0.78 s of fall is
+           what gives the gate time to open BEFORE ground contact.
+
+           Spawn-height experiments (2026-07, r45-r49) — do not repeat:
+           - z=0.06 (resting): spinning the rotor joints up from zero
+             while the sphere collision is in ground contact explodes
+             DartSim ("ODE INTERNAL ERROR 1 ... aabbBound", r46/r47).
+           - z=0.30 (short hop): the fall (0.22 s) ends before the
+             sanity gate clears the initial IMU garbage; the drone
+             lands motors-off, tips over on the sphere, and the gate
+             never opens again — fc_sim outputs zero motor speed
+             forever while /fc/setpoint pleads for takeoff (r49).
+           - Launch gap sim->tracer must stay ~8 s: at 3 s the drone is
+             still above takeoff_alt_threshold and the FSM skips
+             TAKEOFF entirely (r48). -->
       <pose>2.0 4.0 3.0 0 0 0</pose>
     </include>
 

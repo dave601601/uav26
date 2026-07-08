@@ -27,6 +27,15 @@
     - 4 × gz-sim-multicopter-motor-model-system (per-rotor thrust dynamics)
     - gz-sim-odometry-publisher-system (ground-truth /odom_truth)
 
+  Motor model: 2212 920KV on 4S (the real power train), 9450/1045-class
+  props. maxRotVelocity 1050 rad/s ~= 10000 rpm loaded (920 kV x 14.8 V
+  no-load = 13600 rpm; ~74 % under prop load). motorConstant 8.0e-06
+  gives k_f * w_max^2 = 8.82 N ~= 900 gf max thrust per motor, the
+  middle of published bench numbers for this motor/prop/battery combo.
+  Total max thrust 35.3 N vs 11.6 N weight -> hover at thrust_norm 0.33.
+  Must stay consistent with fc_core controller.c max_thrust_g_per_motor
+  and fc_sim_node kDefaultMotorConstant / max_motor_omega.
+
   The previous gz-sim-multicopter-control-system (fake FC) has been
   removed; the simulated FC is now fc_sim_node running fc_core.
 -->
@@ -99,16 +108,80 @@
         </material>
       </visual>
 
-      <!-- Sphere instead of a 0.40 m box: the oversized box wedged on its
-           corners during ground contact and prevented liftoff. A 5 cm
-           sphere at CoM supports the landed drone (CoM 5 cm above ground)
-           but has no edges for DartSim to pivot on. -->
-      <collision name="body_collision">
+      <!-- Four sphere feet instead of one CoM sphere. The single 5 cm
+           sphere made the drone literally a ball: one contact point,
+           no support polygon (tipped over when landing motors-off,
+           r49) and zero rolling resistance (a disarmed drone with
+           residual velocity rolled 6 m across the arena after a clean
+           touchdown, r53). Four small spheres at the arm tips give a
+           0.20 m square support polygon (tip angle ~63 deg with CoM
+           5 cm up) and slide-with-friction instead of rolling; the
+           earlier 0.40 m box wedged on its EDGES, which point feet
+           don't have. Contact height stays -0.05 m so spawn/landing
+           altitudes are unchanged. -->
+      <collision name="foot_fr">
+        <pose>0.10 -0.10 -0.03 0 0 0</pose>
         <geometry>
           <sphere>
-            <radius>0.05</radius>
+            <radius>0.02</radius>
           </sphere>
         </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <collision name="foot_fl">
+        <pose>0.10 0.10 -0.03 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>0.02</radius>
+          </sphere>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <collision name="foot_br">
+        <pose>-0.10 -0.10 -0.03 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>0.02</radius>
+          </sphere>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <collision name="foot_bl">
+        <pose>-0.10 0.10 -0.03 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>0.02</radius>
+          </sphere>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
       </collision>
 
       <!-- ===== 하향 D435 카메라 mesh (visual only) =====
@@ -353,8 +426,8 @@
       <turningDirection>ccw</turningDirection>
       <timeConstantUp>0.0125</timeConstantUp>
       <timeConstantDown>0.025</timeConstantDown>
-      <maxRotVelocity>800.0</maxRotVelocity>
-      <motorConstant>8.54858e-06</motorConstant>
+      <maxRotVelocity>1050.0</maxRotVelocity>
+      <motorConstant>8.0e-06</motorConstant>
       <momentConstant>0.016</momentConstant>
       <commandSubTopic>command/motor_speed</commandSubTopic>
       <actuator_number>0</actuator_number>
@@ -371,8 +444,8 @@
       <turningDirection>ccw</turningDirection>
       <timeConstantUp>0.0125</timeConstantUp>
       <timeConstantDown>0.025</timeConstantDown>
-      <maxRotVelocity>800.0</maxRotVelocity>
-      <motorConstant>8.54858e-06</motorConstant>
+      <maxRotVelocity>1050.0</maxRotVelocity>
+      <motorConstant>8.0e-06</motorConstant>
       <momentConstant>0.016</momentConstant>
       <commandSubTopic>command/motor_speed</commandSubTopic>
       <actuator_number>1</actuator_number>
@@ -389,8 +462,8 @@
       <turningDirection>cw</turningDirection>
       <timeConstantUp>0.0125</timeConstantUp>
       <timeConstantDown>0.025</timeConstantDown>
-      <maxRotVelocity>800.0</maxRotVelocity>
-      <motorConstant>8.54858e-06</motorConstant>
+      <maxRotVelocity>1050.0</maxRotVelocity>
+      <motorConstant>8.0e-06</motorConstant>
       <momentConstant>0.016</momentConstant>
       <commandSubTopic>command/motor_speed</commandSubTopic>
       <actuator_number>2</actuator_number>
@@ -407,8 +480,8 @@
       <turningDirection>cw</turningDirection>
       <timeConstantUp>0.0125</timeConstantUp>
       <timeConstantDown>0.025</timeConstantDown>
-      <maxRotVelocity>800.0</maxRotVelocity>
-      <motorConstant>8.54858e-06</motorConstant>
+      <maxRotVelocity>1050.0</maxRotVelocity>
+      <motorConstant>8.0e-06</motorConstant>
       <momentConstant>0.016</momentConstant>
       <commandSubTopic>command/motor_speed</commandSubTopic>
       <actuator_number>3</actuator_number>
