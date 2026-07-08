@@ -2,15 +2,18 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
-## Current state (2026-07-08 late — r57 full 4-marker mission)
+## Current state (2026-07-08 end — r57/r60 full 4-marker mission, video-verified)
 
-r57 flies the complete competition flow in one 719 s run (seed 42):
+r57 and r60 fly the complete competition flow (seed 42, ~12 min):
 serpentine sweep over the interior grid rows finds and records ALL
 FOUR markers at exactly their ground-truth cells (id2 (4,4), id0
 (24,4), id3 (24,16), id1 (4,16) — err 0.00 m each), ARRANGE_BY_ID
 tours the corners in ID order, and the drone homes to the start and
-parks at (2.12, 4.51) — 0.53 m from spawn. No DartSim aborts.
-162 tests green (144 pytest + 18 gtest).
+parks ~0.5 m from spawn. No DartSim aborts. r60's downward camera was
+recorded for the whole mission (16768 frames) and encoded to a 10x
+video with the detection overlay — each marker's yellow box + id is
+visible during its 3 s hover. 162 tests green (144 pytest + 18
+gtest).
 
 What M-B added on top of the r54 platform:
 

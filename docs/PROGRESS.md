@@ -13,33 +13,37 @@ Index. Each topic file holds the actual work log. Entries go newest-first inside
 
 ## Open
 
-### Where to resume (2026-07-08 late — full 4-marker mission lands)
+### Where to resume (2026-07-08 end — mission verified, incl. on video)
 
-r57 flies the complete competition flow (seed 42, 719 s): serpentine
-sweep finds all four markers (recorded at exact GT cells, err 0.00 m),
-ARRANGE tours them in ID order, drone homes and parks 0.53 m from
-spawn. Platform fixes from the four-agent audit are logged per topic:
-[line_tracer](progress/line_tracer.md) (sweep, velocity loop,
-velocity-mode landing, FSM guards), [world](progress/world.md) (4S
-motors, four-feet contact), [fc_sim](progress/fc_sim.md) (prime
-altitude hold, disarm, single-writer guard),
-[fc_core](progress/fc_core.md) (900 g thrust scale),
-[docker](progress/docker.md) (zombie-FC teardown contract — read
-before running anything).
+The full competition flow works and is visually verified: r57/r60
+(seed 42, ~12 min) sweep the grid serpentine, record all four markers
+at their exact GT cells (err 0.00 m), hover 3 s over each with the
+ArUco overlay visible, tour them in ID order, home, and park ~0.5 m
+from spawn. r60's downward-camera feed is archived as a 10x video via
+the new recorder tool. Platform root-cause fixes from the four-agent
+audit are logged per topic: [line_tracer](progress/line_tracer.md)
+(sweep, velocity loop, velocity-mode landing, FSM guards),
+[world](progress/world.md) (4S motors, four-feet contact),
+[fc_sim](progress/fc_sim.md) (prime altitude hold, disarm,
+single-writer guard), [fc_core](progress/fc_core.md) (900 g thrust
+scale), [docker](progress/docker.md) (zombie-FC teardown contract +
+Docker Desktop WSLg GUI plumbing — read before running anything).
 
-Run missions ONLY via `scripts/run_mission.sh`:
-`docker compose exec -T uav-aruco bash -s rNN 900 <
-scripts/run_mission.sh` (900 s for the full mission).
+Daily driver is `scripts/dev.sh`: `gui` (Gazebo window + tracer),
+`view` (rqt_image_view on the detection overlay), `mission rNN 900`
+(headless + FSM summary), `build`. It wraps the X11 bridge, container
+recreation, and the zombie-sweep contract.
 
 #### Next milestones
 
-- [x] M-B: 4-marker sweep + recorded XY (r57; sim-side accuracy is
-      snap-exact because DR is truth-injected — hardware DR drift is
-      the real M-B risk, revisit with the LIDAR/flow estimator).
+- [x] M-B: 4-marker sweep + recorded XY (r57/r60; sim-side accuracy
+      is snap-exact because DR is truth-injected — hardware DR drift
+      is the real M-B risk, revisit with the LIDAR/flow estimator).
 - [ ] M-C: retrieval order verification output (40 pt) + per-WP Z
       (20 pt).
 - [ ] M-D: mission time (sweep revisits empty rows; ~12 min now).
-- [ ] M-E: robustness (multi-frame ID voting, lost-line yaw search).
+- [ ] M-E: robustness (multi-frame ID voting, lost-line yaw search;
+      the 3 s hover already gives the voting window).
 - [ ] Test-reality gap (audit findings): run_mission test driver
       calls the real node methods instead of reimplementing them;
       MockDrone gets attitude lag + drag=0; one launch_testing
@@ -62,10 +66,14 @@ scripts/run_mission.sh` (900 s for the full mission).
 
 1. `git log --oneline -25` — recent commits + their scope.
 2. Read this index, then open the topic file(s) listed in **Open**.
-3. Spin up the dev env: `docker compose up -d uav-aruco`. The container auto-runs `hover_demo` because of `compose.override.yml` — to drop to a shell instead: `docker compose run --rm uav-aruco bash`.
-4. First-run / fresh-install bootstrap:
-   ```
-   docker compose run --rm uav-aruco bash -lc "source /opt/ros/jazzy/setup.bash && cd /workspace && colcon build --packages-ignore realsense2_camera realsense2_camera_msgs"
-   ```
-5. Smoke test: `colcon test --packages-select fc_core line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs` should give **159 passing tests** (18 fc_core gtest + 141 line_tracer pytest, post-r54).
-6. Standalone scripts live under `scripts/` and use `uv` via PEP 723 inline metadata (`#!/usr/bin/env -S uv run --script`). No pip/apt install needed — invoke directly.
+3. `scripts/dev.sh gui` (or `mission rNN 900`) — handles container up,
+   rebuild-if-needed, X11 bridge, and teardown. `dev.sh view` shows
+   the detection overlay. Container recreation drops
+   `/workspace/install`; dev.sh rebuilds automatically.
+4. Smoke test: `colcon test --packages-select fc_core line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs` should give **162 passing tests** (18 fc_core gtest + 144 line_tracer pytest, post-r57).
+5. Analysis tools: `scripts/plot_mission.py <tracer.log>` (trajectory
+   PNG + recorded-vs-GT diff; pass `--layout` with the runtime
+   aruco_layout.yaml), `src/line_tracer/scripts/record_debug_video.py`
+   (record the camera overlay during a run, encode an N-x video on the
+   sim timeline). Host scripts under `scripts/` use `uv` via PEP 723
+   inline metadata — no installs needed.

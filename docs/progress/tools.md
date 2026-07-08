@@ -4,6 +4,26 @@ Standalone scripts under `scripts/` that help develop or evaluate the system.
 
 ## Done
 
+### `scripts/dev.sh` + `scripts/run_mission.sh` — workflow drivers (2026-07-08)
+
+`dev.sh` is the daily driver: `gui` (X11 bridge + container up +
+rebuild-if-needed + Gazebo GUI + tracer, Ctrl+C teardown), `view`
+(rqt_image_view on /line_tracer/debug_image), `mission rNN [dur]`
+(headless run + FSM summary), `build`. `run_mission.sh` is the
+underlying headless runner and carries the zombie-sweep contract
+(sweep before start, SIGINT first, pkill fc_sim_node /
+parameter_bridge by name — see docker.md for why).
+
+### `src/line_tracer/scripts/record_debug_video.py` — camera overlay to N-x video (2026-07-08)
+
+Runs in the container: `record` dumps every /line_tracer/debug_image
+frame as JPEG + sim stamp; `encode --speedup 10 --fps 30` resamples
+frames on the sim timeline (RTF-independent playback speed) and
+writes an mp4 under build/debug_video/. Picks the longest monotonic
+stamp segment first — a second sim session starting mid-recording
+restamps from zero and would otherwise collapse the video span (r60).
+Used for the r60 full-mission 10x detection video.
+
 ### `scripts/plot_waypoint.py` — visualise a waypoint_demo log (2026-05-25)
 
 Reads a piped `ros2 launch fc_sim waypoint_demo.launch.py ... | grep -E 'WP|>>'` log, extracts waypoint definitions, the per-1 Hz pos/vel/dist samples, and the WP advance events, then writes a 3-row PNG: top-down trajectory with waypoint markers, position-vs-time with target overlay, and distance-to-current-WP. Also prints a one-line summary of per-WP arrival times and final positional error.
