@@ -4,6 +4,38 @@ Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning
 
 ## In progress (2026-07-08 — lookahead candidates, M-D)
 
+### Tests: 144 -> 183 (side camera + candidate FSM + closed loop)
+
+- `test_side_camera.py` (20): projection pinned against the downward
+  cam's hardcoded map; band edges; the roll identity Rx(r)*Rz(pi/2) =
+  Rz(pi/2)*Ry(-r) (roll = shallower mount); body pitch swings the hit
+  to exactly x = -h*tan(p) — the initial "boresight is +Y so pitch is
+  invariant" assumption was WRONG (the depressed ray has a -Z
+  component that Ry rotates into -X); horizon/range gates; oblique
+  6 px/module detection on a warped synthetic marker; tracker votes.
+- `test_state_machine.py` (+13): row-skip planning + non-ascending
+  guard, tick-top dedup, GOTO flows (record target / record different
+  id en route / not-found drop / timeout / vote re-election),
+  row-finish flush, short-circuit tour, fallback-once exhaustion.
+- `test_mission_closed_loop.py` (+3): `SideCam` synthetic band model;
+  seed-42-like corner layout completes with GOTO_CANDIDATE and exact
+  cells; lookahead run beats the full sweep by >20 sim-seconds
+  (measured ~130 s saving); side-blind marker on a skipped row is
+  recovered by the fallback sweep.
+
+Two design fixes surfaced by writing the tests (not tuning):
+
+- Fallback sweep entry: `_plan_sweep(rows_override=...)` put the FAR x
+  endpoint first, so a drone finishing the skip sweep at x_min would
+  cut a diagonal to (x_max, row) and pass row markers outside the
+  downward camera's 1.5 m radius. The fallback now routes to the near
+  endpoint of the first row before traversing (`from_x`); the primary
+  plan is unchanged (spawn sits at the inset by construction).
+- Recorded-beats-candidate had a one-tick lag: the tick-top dedup
+  filter runs before WAYPOINT_VISIT records, so a freshly recorded id
+  stayed visible in `ctx.candidates` until the next tick. The record
+  path now purges the id from candidates + queue in the same tick.
+
 ### FSM: GOTO_CANDIDATE + row-skip sweep + short-circuit
 
 The search now consumes lookahead candidates (fed per tick as

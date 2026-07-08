@@ -548,6 +548,13 @@ class StateMachine:
             )
             ctx.records[wp_id] = (snapped.x, snapped.y)
             snapped_record = (wp_id, snapped.x, snapped.y)
+            # Recorded beats candidate immediately (don't wait for the
+            # next tick-top filter): the id leaves the candidate pool
+            # and the visit queue in the same tick the record lands.
+            ctx.candidates.pop(wp_id, None)
+            ctx.candidate_queue = [
+                i for i in ctx.candidate_queue if i != wp_id
+            ]
 
         start = now if ctx.waypoint_visit_start_t is None else ctx.waypoint_visit_start_t
         if (now - start) >= ctx.waypoint_hover_seconds:
@@ -622,7 +629,11 @@ class StateMachine:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _plan_sweep(self, rows_override: Optional[List[float]] = None) -> None:
+    def _plan_sweep(
+        self,
+        rows_override: Optional[List[float]] = None,
+        from_x: Optional[float] = None,
+    ) -> None:
         """Serpentine (lawnmower) waypoints over the grid's interior
         rows, starting from the row nearest start_y and moving away
         from it. Rows are the grid's horizontal lines (markers only
@@ -639,7 +650,13 @@ class StateMachine:
         to step 1 rather than sweeping with an eye on visited ground.
 
         rows_override bypasses row selection entirely — used by the
-        exhaustion fallback to fly the previously skipped rows."""
+        exhaustion fallback to fly the previously skipped rows. That
+        path also passes from_x (the drone's current x) so the plan
+        routes to the NEAR endpoint of the first row before traversing:
+        the original plan skips this because the spawn sits at the
+        x_min inset by construction, but a fallback starts wherever the
+        skip sweep ended — diving diagonally at the far endpoint would
+        leave the first row's near half outside the downward camera."""
         ctx = self._context
         if ctx.grid is None:
             return
@@ -667,8 +684,12 @@ class StateMachine:
             return
         path: List[Tuple[float, float]] = []
         going_right = True
+        if from_x is not None:
+            # Route to the first row's near endpoint before traversing.
+            going_right = abs(from_x - x_min) <= abs(from_x - x_max)
+            path.append((x_min if going_right else x_max, rows[0]))
         for y in rows:
-            if path:
+            if path and path[-1][1] != y:
                 # Climb to the next row at the current x endpoint.
                 path.append((path[-1][0], y))
             path.append((x_max if going_right else x_min, y))
@@ -696,7 +717,10 @@ class StateMachine:
             and not ctx.sweep_fallback_done
         ):
             ctx.sweep_fallback_done = True
-            self._plan_sweep(rows_override=list(ctx.sweep_skipped_rows))
+            self._plan_sweep(
+                rows_override=list(ctx.sweep_skipped_rows),
+                from_x=dr_state.x,
+            )
             return
         self._plan_retrieval(dr_state)
 

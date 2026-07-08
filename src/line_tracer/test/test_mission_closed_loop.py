@@ -47,6 +47,7 @@ from line_tracer.dead_reckoning import (
 )
 from line_tracer.grid import Grid
 from line_tracer.perception import ArucoDetection, PerceptionResult
+from line_tracer.side_camera import CandidateTracker
 from line_tracer.state_machine import (
     MissionContext,
     StateMachine,
@@ -152,6 +153,42 @@ class SyntheticCam:
         return PerceptionResult(aruco=dets)
 
 
+@dataclass
+class SideCam:
+    """Synthetic sideways lookahead camera (the OV9281+6mm model).
+
+    Mirrors the sim geometry at 2 m altitude: markers whose +Y offset
+    from the drone falls inside the VFOV ground band [3.0, 10.6] m and
+    within the 35.5 deg HFOV cone are 'observed' at their ground-truth
+    xy (projection accuracy is unit-tested separately in
+    test_side_camera.py; this model exercises tracker + FSM).
+    ``blind_ids`` simulates missed detections — the safety-net fallback
+    sweep must still find those markers."""
+    markers: dict[int, tuple[float, float]] = field(default_factory=dict)
+    band_near_m: float = 3.0
+    band_far_m: float = 10.6
+    hfov_half_tan: float = 0.3204     # tan(17.75 deg)
+    min_altitude: float = 1.5
+    blind_ids: frozenset = frozenset()
+
+    def observe_into(
+        self, drone: MockDrone, tracker: CandidateTracker,
+        now: float, grid: Grid,
+    ) -> None:
+        if drone.z < self.min_altitude:
+            return
+        for mid, (mx, my) in self.markers.items():
+            if mid in self.blind_ids:
+                continue
+            lateral = my - drone.y     # camera faces body +Y (yaw locked)
+            if not (self.band_near_m <= lateral <= self.band_far_m):
+                continue
+            if abs(mx - drone.x) > lateral * self.hfov_half_tan:
+                continue
+            slant = math.hypot(lateral, drone.z)
+            tracker.observe(mid, mx, my, slant, now, grid)
+
+
 # ---------------------------------------------------------------------------
 # Closed-loop driver
 # ---------------------------------------------------------------------------
@@ -180,6 +217,9 @@ def run_mission(
     grid: Optional[Grid] = None,
     cruise_vx_override: Optional[float] = None,
     max_records: Optional[int] = None,
+    use_lookahead: bool = False,
+    sweep_row_step: int = 1,
+    side_blind_ids: frozenset = frozenset(),
 ) -> MissionRunRecord:
     """Replicate the node's per-tick body of ``_on_dr_tick`` without rclpy."""
     if grid is None:
@@ -187,6 +227,11 @@ def run_mission(
 
     drone = MockDrone(x=start_xy[0], y=start_xy[1], z=start_z, yaw=start_yaw)
     cam = SyntheticCam(markers=markers)
+    side_cam = (
+        SideCam(markers=markers, blind_ids=side_blind_ids)
+        if use_lookahead else None
+    )
+    tracker = CandidateTracker()
 
     # Default: the FSM waits for as many records as we planted. Caller
     # can override (e.g. takeoff-only tests use a large value so the
@@ -202,6 +247,8 @@ def run_mission(
         waypoint_arrival_dist=0.5,
         return_arrival_dist=0.5,
         snap_max_err=2.0,
+        sweep_row_step=sweep_row_step,
+        candidate_wait_seconds=2.0,
     )
     fsm = StateMachine(initial=StateName.TAKEOFF, target_altitude=2.0, context=ctx)
 
@@ -215,12 +262,17 @@ def run_mission(
     state_sequence: list[StateName] = []
 
     while now < max_seconds:
-        # Mirror line_tracer_node._on_dr_tick.
+        # Mirror line_tracer_node._on_dr_tick (+ _on_lookahead).
         perception = cam.perceive(drone)
+        candidates = None
+        if side_cam is not None:
+            side_cam.observe_into(drone, tracker, now, grid)
+            candidates = tracker.snapshot(3, grid)
         tick_res = fsm.tick(now=now,
                             dr_state=drone.to_dr_state(),
                             perception=perception,
-                            altitude=drone.z)
+                            altitude=drone.z,
+                            candidates=candidates)
         if not state_sequence or state_sequence[-1] is not tick_res.state:
             state_sequence.append(tick_res.state)
         behavior = tick_res.behavior
@@ -686,3 +738,65 @@ def replace_behavior(b, **overrides):
     LINE_FOLLOW behavior without rewriting the whole dict."""
     from dataclasses import replace
     return replace(b, **overrides)
+
+
+class TestLookaheadMission:
+    """Candidate-directed missions end to end: the seed-42-like layout
+    (markers on the first and last interior rows) is where the row-skip
+    + candidate design pays — the two middle rows never get flown."""
+
+    def _corner_markers(self) -> dict[int, tuple[float, float]]:
+        # Mirrors the seed-42 ground truth: two markers on row 4, two on
+        # row 16, nothing on rows 8/12.
+        return {2: (4.0, 4.0), 0: (24.0, 4.0), 3: (24.0, 16.0), 1: (4.0, 16.0)}
+
+    def test_lookahead_records_all_four_at_true_cells(self):
+        result = run_mission(
+            self._corner_markers(),
+            max_seconds=500.0,
+            use_lookahead=True,
+            sweep_row_step=2,
+        )
+        assert set(result.records) == {0, 1, 2, 3}
+        for mid, gt in self._corner_markers().items():
+            rec = result.records[mid]
+            assert math.hypot(rec[0] - gt[0], rec[1] - gt[1]) < 0.01, (
+                f"id {mid}: recorded {rec} vs gt {gt} — snap must be exact"
+            )
+        assert result.final_state is StateName.LAND
+        # Row-16 markers must have arrived via candidates, not the sweep.
+        assert StateName.GOTO_CANDIDATE in result.state_sequence
+
+    def test_lookahead_beats_full_sweep_on_time(self):
+        markers = self._corner_markers()
+        base = run_mission(markers, max_seconds=600.0)
+        fast = run_mission(markers, max_seconds=600.0,
+                           use_lookahead=True, sweep_row_step=2)
+        assert base.final_state is StateName.LAND
+        assert fast.final_state is StateName.LAND
+        assert set(base.records) == set(fast.records) == {0, 1, 2, 3}
+        # The baseline must not contain the new state; the lookahead run
+        # must be meaningfully faster (it skips rows 8 and 12 entirely
+        # and short-circuits the rest of row 12's return leg).
+        assert StateName.GOTO_CANDIDATE not in base.state_sequence
+        assert fast.elapsed_s < base.elapsed_s - 20.0, (
+            f"lookahead {fast.elapsed_s:.0f}s vs baseline "
+            f"{base.elapsed_s:.0f}s — expected >20 s saving"
+        )
+
+    def test_side_blind_marker_recovered_by_fallback_sweep(self):
+        """A marker the side camera never sees (missed detection) sits
+        on a skipped row: the one-shot fallback sweep must still fly
+        that row and record it with the downward camera."""
+        markers = {0: (8.0, 4.0), 9: (12.0, 8.0)}
+        result = run_mission(
+            markers,
+            max_seconds=500.0,
+            use_lookahead=True,
+            sweep_row_step=2,
+            side_blind_ids=frozenset({9}),
+        )
+        assert set(result.records) == {0, 9}
+        assert result.records[9] == (12.0, 8.0)
+        assert result.fsm.context.sweep_fallback_done
+        assert result.final_state is StateName.LAND
