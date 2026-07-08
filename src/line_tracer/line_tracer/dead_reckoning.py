@@ -156,6 +156,15 @@ def body_vel_to_atti_thr(
     vx/g mapping applies — that path commands a constant acceleration
     per unit of commanded velocity and must only be used where drag or
     short exposure bounds the speed.
+
+    yawrate_sp is NEGATED from vel.wz: the Setpoint contract mirrors
+    the firmware's NED body frame (fc_sim passes it through, the
+    flight_demo documents +yawrate_sp = yaw right/CW), while vel.wz is
+    REP-103 FLU (+CCW). This flip was missing until 2026-07-09: a
+    measured +0.3 rad/s command turned the gz drone CW, which made
+    yaw = 0 a REPELLER of the yaw lock (any perturbation grew until
+    the nearest line-aligned attractor at 90/180 deg) — the r60/r61
+    missions silently flew at yaw ~ pi, full-mission wz saturation.
     """
     g = 9.80665
     # Touchdown: LAND drives target_alt to 0; once the drone is on the
@@ -189,7 +198,7 @@ def body_vel_to_atti_thr(
         return AttiThrCmd(
             pitch_sp=pitch_sp,
             roll_sp=roll_sp,
-            yawrate_sp=vel.wz,
+            yawrate_sp=-vel.wz,     # FLU +CCW -> firmware NED +CW
             thrust_norm=thrust,
         )
     # Burst fires when drone is below threshold AND not already rising.
@@ -212,7 +221,7 @@ def body_vel_to_atti_thr(
     return AttiThrCmd(
         pitch_sp=pitch_sp,
         roll_sp=roll_sp,
-        yawrate_sp=vel.wz,
+        yawrate_sp=-vel.wz,         # FLU +CCW -> firmware NED +CW
         thrust_norm=thrust,
     )
 

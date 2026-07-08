@@ -969,6 +969,7 @@ class LineTracerNode(Node):
             self.get_logger().info(
                 f"[{self._fsm.state.name}/{source}] "
                 f"xy=({self._truth_x:+.2f},{self._truth_y:+.2f}) "
+                f"yaw={self._dr.state.yaw:+.2f} "
                 f"alt={altitude:.2f} vz_truth={self._latest_vz:+.2f} | "
                 f"du={du} dv={dv} psi_err={psi_err} | "
                 f"vx={vel.vx:+.2f} vy={vel.vy:+.2f} vz={vel.vz:+.2f} wz={vel.wz:+.2f}"

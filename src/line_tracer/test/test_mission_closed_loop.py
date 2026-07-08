@@ -120,7 +120,10 @@ class MockDrone:
         if self.z == 0.0 and self.vz < 0.0:
             # Park on the floor instead of going negative.
             self.vz = 0.0
-        self.yaw += cmd.yawrate_sp * dt
+        # yawrate_sp is the firmware's NED yaw rate (+ = CW from above);
+        # the plant's FLU yaw integrates the negation — mirrors the gz
+        # chain measured on 2026-07-09 (+0.3 cmd -> -1.68 rad).
+        self.yaw -= cmd.yawrate_sp * dt
 
     def to_dr_state(self) -> State:
         return State(x=self.x, y=self.y, z=self.z, yaw=self.yaw)
@@ -494,6 +497,19 @@ class TestAttiThrSign:
             vx_meas=0.0, vy_meas=0.0,
         )
         assert cmd.roll_sp < 0
+
+    def test_positive_wz_yields_negative_yawrate_sp(self):
+        """vel.wz is REP-103 FLU (+CCW); the Setpoint contract is the
+        firmware's NED (+CW) — flight_demo's YAW_RIGHT documents it and
+        fc_sim passes it through unconverted. A +wz intent must emit a
+        negative yawrate_sp. This sign was wrong until 2026-07-09 and
+        made yaw=0 a repeller of the yaw lock (r60/r61 flew at 180 deg
+        with the lock saturated the whole flight)."""
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.0, vy=0.0, vz=0.0, wz=0.5),
+            target_alt=2.0, altitude=2.0, vz_truth=0.0, gains=self._gains(),
+        )
+        assert cmd.yawrate_sp == -0.5
 
     def test_open_loop_fallback_without_measurement(self):
         """No measurement (hardware without an estimator, or stale

@@ -4,6 +4,31 @@ Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning
 
 ## In progress (2026-07-08 — lookahead candidates, M-D)
 
+### Yaw actuation sign was REVERSED end-to-end (r62 -> measured fix)
+
+r62 (first run with the mod-pi lock override) still flew flipped and
+still saturated wz all flight — the override math was right but could
+not converge because the PLANT sign is inverted: a direct experiment
+(hover the sim, command yawrate_sp=+0.3 for 12 s) turned the drone
+-1.68 rad, i.e. +command = CW. The Setpoint contract is the
+firmware's NED body frame (+yawrate = yaw right; flight_demo_pub.py
+documents it, fc_sim passes it through, fc_core treats yaw as NED
+throughout per the fc_sim IMU-path comments) — but line_tracer fed
+its REP-103 FLU wz (+CCW) in unconverted. Under the reversed sign
+the yaw lock's fixed point at 0 is a REPELLER and the line-aligned
+orientations at 90/180 deg are attractors: every long run drifted to
+yaw ~ pi and stayed (r60/r61 full-flight wz saturation), invisible
+until the side camera made yaw direction load-bearing. The r15-era
+"kp_yaw too small to fully cancel drift" observation was this bug.
+
+Fix: `body_vel_to_atti_thr` emits `yawrate_sp = -vel.wz` (the same
+place the pitch/roll sign bookkeeping lives); MockDrone now models
+the NED plant (`yaw -= yawrate_sp*dt`) so the closed-loop tests
+exercise the true double negation; sign pinned by a dedicated test.
+The 1 Hz status log now prints yaw. Roll/pitch were already
+empirically shimmed (2026-05-25); yaw rate was the last unconverted
+field.
+
 ### r61 + yaw-flip root cause: perception's psi_err is mod-pi
 
 r61 (first lookahead mission, seed 42) recorded all four markers at
