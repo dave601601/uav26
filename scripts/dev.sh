@@ -26,11 +26,18 @@ DC="docker compose"
 EXEC="$DC exec -T uav-aruco"
 
 ensure_x_bridge() {
-  if [ ! -S /mnt/wsl/wslg-x11/X0 ]; then
-    echo "[dev] WSLg X bridge missing — creating (sudo may prompt)"
-    sudo mkdir -p /mnt/wsl/wslg-x11
-    sudo mount --bind /mnt/wslg/.X11-unix /mnt/wsl/wslg-x11
+  # Userspace relay (scripts/x11_bridge.py): repo-local ./.x11-bridge/X0
+  # -> real WSLg socket. Needed because Docker Desktop resolves
+  # absolute mount paths in its own VM (ghost Xwayland). No sudo.
+  mkdir -p .x11-bridge
+  if [ -f .x11-bridge/pid ] && kill -0 "$(cat .x11-bridge/pid)" 2>/dev/null \
+      && [ -S .x11-bridge/X0 ]; then
+    return
   fi
+  echo "[dev] starting userspace X11 bridge"
+  nohup python3 scripts/x11_bridge.py >/dev/null 2>&1 &
+  sleep 1
+  [ -S .x11-bridge/X0 ] || { echo "[dev] X11 bridge failed to start (see .x11-bridge/log)"; exit 1; }
 }
 
 ensure_container() {

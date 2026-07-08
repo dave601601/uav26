@@ -23,15 +23,31 @@ Build environment for the workspace.
   graph. Recreating the container drops `/workspace/install` (not a
   mounted volume) — rebuild after `docker compose up -d`.
 - GUI under Docker Desktop (WSL2): absolute bind-mount paths resolve
-  inside the docker-desktop utility VM, so `/tmp/.X11-unix` grabs the
-  VM's own invisible Xwayland — gz renders happily into a ghost
-  session and no window ever appears. The real per-user WSLg socket
-  is bridged through the cross-distro `/mnt/wsl` tmpfs
-  (`mount --bind /mnt/wslg/.X11-unix /mnt/wsl/wslg-x11`, then compose
-  mounts that). `scripts/dev.sh gui` creates the bridge (sudo),
-  recreates the container if it predates the bridge, rebuilds if
-  install/ is gone, and launches sim + tracer with Ctrl+C teardown.
-  `scripts/dev.sh mission rNN [dur]` is the headless equivalent.
+  inside the docker-desktop utility VM, so `/tmp/.X11-unix` (and
+  `/mnt/wslg`, and $HOME symlinks pointing at them) grab the VM's own
+  invisible Xwayland — gz renders happily into a ghost session and no
+  window ever appears. The abstract X socket is not listening, and a
+  root bind through `/mnt/wsl` needs sudo per boot. What DOES bridge
+  into the user distro is project-relative mounts, so compose mounts
+  `./.x11-bridge:/tmp/.X11-unix` and `scripts/x11_bridge.py` (a
+  sudo-less userspace relay, auto-started by `scripts/dev.sh gui`)
+  serves a proxied `X0` there, forwarding to the real
+  `/mnt/wslg/.X11-unix/X0`. Verified end to end: gz's Qt connections
+  relay to the user-session Xwayland (raw X handshake accepted for a
+  non-default user — client uid does not matter) and the window
+  reaches the Weston compositor. Caveat: the relay cannot forward
+  SCM_RIGHTS fds, so DRI3/MIT-SHM fall back to plain wire transport
+  (slower, still correct).
+- If no window appears ANYWHERE despite all of the above, check
+  `/mnt/wslg/weston.log`: `CreateWndow(): rdp_peer is not initalized`
+  means WSLg's Windows-side RDP client (msrdc.exe, see `tasklist.exe`)
+  is dead — the compositor has no channel to the Windows desktop and
+  no WSL GUI app from any user can display. Remedy: `wsl --shutdown`
+  from Windows, reopen the terminal (kills all WSL sessions including
+  running agents/containers).
+  `scripts/dev.sh gui` = bridge + container up + rebuild-if-needed +
+  sim + tracer with Ctrl+C teardown; `scripts/dev.sh mission rNN
+  [dur]` is the headless equivalent.
 
 ## Status
 
