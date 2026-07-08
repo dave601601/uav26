@@ -16,3 +16,6 @@ src/world/models/world_assets/markers_runtime.sdf
 .x11-bridge/
 # Recorded videos (use record_debug_video.py to regenerate)
 *.mp4
+
+# Local secrets (GitHub token etc.)
+.env
