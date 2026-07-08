@@ -65,6 +65,7 @@ from .dead_reckoning import (
     SetpointGains,
     State,
     body_vel_to_atti_thr,
+    resolve_locked_yaw_error,
     wrap_angle,
     world_to_body,
 )
@@ -895,16 +896,21 @@ class LineTracerNode(Node):
             if behavior.use_forward_error and dv is not None and intr is not None:
                 dx_body = -dv * altitude / intr.fy     # +dv (line behind) → -x_body
 
-        # Yaw lock fallback: if the behavior demands an initial-heading
-        # lock and perception didn't supply a fresh psi_err on this tick,
-        # drive yaw back toward MissionContext.start_yaw. Without this
-        # the firmware's residual mixer/quat-sign asymmetry steadily
-        # yaws the drone (~20° per takeoff in r15) and cruise_vx in
-        # body +X ends up sending the drone diagonally off-grid.
+        # Yaw lock: perception's psi_err fine-trims the heading, but it
+        # is mod-pi (line alignment) and blind to 90/180-degree flips —
+        # r61 spun over a marker (its edges hijacked the Hough vertical)
+        # and settled at yaw=pi, self-consistent to the line follower
+        # forever. resolve_locked_yaw_error lets perception through only
+        # while |start_yaw - yaw| stays inside the vertical-band width;
+        # beyond that (or with no fresh psi_err) the absolute lock error
+        # drives the unwind. See dead_reckoning.resolve_locked_yaw_error.
         if (behavior.lock_yaw_to_initial
-                and psi == 0.0
                 and self._fsm.context.start_yaw is not None):
-            psi = wrap_angle(self._fsm.context.start_yaw - self._dr.state.yaw)
+            psi = resolve_locked_yaw_error(
+                psi if psi != 0.0 else None,
+                self._fsm.context.start_yaw,
+                self._dr.state.yaw,
+            )
 
         # --- target altitude per FSM ---
         gains_now = self._gains

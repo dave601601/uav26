@@ -11,6 +11,7 @@ from line_tracer.dead_reckoning import (
     clamp,
     compute_body_velocity,
     integrate,
+    resolve_locked_yaw_error,
     snap_to_intersection,
     wrap_angle,
 )
@@ -215,3 +216,56 @@ def test_snap_preserves_z_and_yaw(default_grid):
     out = snap_to_intersection(s, default_grid, max_err=1.0)
     assert isclose(out.x, 8.0) and isclose(out.y, 4.0)
     assert isclose(out.z, 1.85) and isclose(out.yaw, -1.3)
+
+
+class TestResolveLockedYawError:
+    """The mod-pi blindness fix: perception's line-alignment psi_err
+    only fine-trims inside the vertical-band width; larger lock errors
+    (90/180-degree flips, r61's marker-edge spin) are unwound by the
+    absolute lock, and the 180-degree antipode unwinds in a
+    deterministic direction instead of dithering."""
+
+    def test_small_lock_error_passes_perception_through(self):
+        assert resolve_locked_yaw_error(0.05, 0.0, 0.1) == 0.05
+
+    def test_no_perception_falls_back_to_lock_error(self):
+        got = resolve_locked_yaw_error(None, 0.0, 0.1)
+        assert isclose(got, -0.1, abs_tol=1e-12)
+
+    def test_exact_zero_perception_treated_as_absent(self):
+        # Pre-existing convention: psi == 0.0 means "nothing fresh".
+        got = resolve_locked_yaw_error(0.0, 0.0, 0.2)
+        assert isclose(got, -0.2, abs_tol=1e-12)
+
+    def test_large_lock_error_overrides_perception(self):
+        """Drone spun 90 degrees: the perpendicular grid line reads as
+        a small psi_err (mod-pi), but the lock must win."""
+        got = resolve_locked_yaw_error(0.03, 0.0, pi / 2)
+        assert isclose(got, -pi / 2, abs_tol=1e-12)
+
+    def test_threshold_edge_inside_uses_perception(self):
+        assert resolve_locked_yaw_error(0.1, 0.0, 0.55) == 0.1
+
+    def test_antipode_unwinds_deterministically(self):
+        """At yaw ~ 180 deg the wrapped error alternates sign with tiny
+        wobbles; both sides of the flip must command the SAME direction
+        so the P controller actually unwinds (r60/r61 dithered at
+        +-max_wz forever)."""
+        just_under = resolve_locked_yaw_error(None, 0.0, pi - 0.02)
+        just_over = resolve_locked_yaw_error(None, 0.0, -(pi - 0.02))
+        assert just_under < 0 or isclose(just_under, pi, abs_tol=0.15)
+        # yaw = pi - 0.02 -> err = -(pi - 0.02): inside the fold band?
+        # band is 0.1: -(pi - 0.02) < -(pi - 0.1) -> folded to +pi.
+        assert isclose(just_under, pi, abs_tol=1e-12)
+        # yaw just past the flip: err = +(pi - 0.02), kept positive.
+        assert isclose(just_over, pi - 0.02, abs_tol=1e-12)
+        # Same sign on both sides -> no dithering.
+        assert just_under * just_over > 0
+
+    def test_exact_antipode_is_positive_pi(self):
+        got = resolve_locked_yaw_error(None, 0.0, pi)
+        assert isclose(got, pi, abs_tol=1e-12)
+
+    def test_respects_nonzero_start_yaw(self):
+        got = resolve_locked_yaw_error(None, 1.0, 1.2)
+        assert isclose(got, -0.2, abs_tol=1e-12)

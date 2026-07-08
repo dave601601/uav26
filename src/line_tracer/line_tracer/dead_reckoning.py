@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from math import cos, hypot, pi, sin
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 if TYPE_CHECKING:
     from .grid import Grid
@@ -293,6 +293,49 @@ class DeadReckoning:
         )
         self.state = integrate(self.state, vel, dt)
         return vel, self.state
+
+
+def resolve_locked_yaw_error(
+    psi_perception: Optional[float],
+    start_yaw: float,
+    yaw: float,
+    override_threshold: float = 0.6,
+    antipode_band: float = 0.1,
+) -> float:
+    """Yaw error to command when the behavior locks yaw to start_yaw.
+
+    Perception's psi_err comes from grid-LINE alignment and is mod-pi:
+    it cannot distinguish the locked heading from a 90/180-degree flip
+    — every grid-aligned orientation reads as "aligned". r61 showed the
+    failure: crossing a marker, the marker's own edges hijack the Hough
+    vertical line, psi_err chases the marker's random orientation, the
+    drone spins ~90 degrees, the PERPENDICULAR grid line now looks
+    vertical, and the new heading is self-consistent forever (the
+    sideways lookahead camera then stares at the explored side; r60's
+    wz=+-2.5 saturation for the whole flight was the same latent state).
+
+    Rule: a legitimate nearest-line psi_err is bounded by the vertical
+    classification half-width (pi/6 = 0.52 rad), so once the absolute
+    lock error exceeds ``override_threshold`` (0.6 = half-width plus
+    margin) perception CANNOT be right about which line is "the" line —
+    the lock takes over and unwinds the flip. Inside the threshold,
+    perception fine-trims as before; with no perception the lock error
+    is the fallback (the pre-existing behavior).
+
+    The ambiguous antipode: wrap_angle(start - yaw) alternates sign as
+    yaw wobbles across the exact 180-degree flip, so a plain P command
+    dithers +-max_wz and never unwinds (observed in r60/r61). Errors
+    inside ``antipode_band`` of -pi are folded to +pi so the unwind
+    direction is deterministic.
+    """
+    lock_err = wrap_angle(start_yaw - yaw)
+    if lock_err < -(pi - antipode_band):
+        lock_err = pi
+    if abs(lock_err) > override_threshold:
+        return lock_err
+    if psi_perception is None or psi_perception == 0.0:
+        return lock_err
+    return psi_perception
 
 
 def world_to_body(err_x_world: float, err_y_world: float, yaw: float) -> Tuple[float, float]:

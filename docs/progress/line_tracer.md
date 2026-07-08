@@ -4,6 +4,43 @@ Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning
 
 ## In progress (2026-07-08 — lookahead candidates, M-D)
 
+### r61 + yaw-flip root cause: perception's psi_err is mod-pi
+
+r61 (first lookahead mission, seed 42) recorded all four markers at
+exact cells and landed — but via the skipped-row FALLBACK sweep, not
+candidates: search 235 sim s vs r60's 221 s. The side camera stared at
+the EXPLORED side the whole flight. Root cause chain, from the log:
+
+- At t~40 s the drone crossed marker 2 at (4,4): the marker's own
+  edges (random orientation) hijacked the Hough vertical line,
+  psi_err escalated -0.05 -> -0.44 chasing it, the drone spun, and
+  after ~90 deg the PERPENDICULAR grid line read as "the" vertical
+  line (line alignment is mod-pi) — the new heading is
+  self-consistent to the line follower. It eventually settled at
+  yaw ~ pi and stayed there for the rest of the flight (odom
+  quaternion confirmed z=0.9999).
+- Position control is yaw-agnostic (world_to_body), so r57/r60 flew
+  correct missions in this state — invisible until the side camera
+  made the yaw DIRECTION load-bearing. r60's log shows the same
+  wz=+-2.5 saturation for the entire flight: the yaw lock stuck at
+  the wrapped-angle antipode, where wrap(start-yaw) alternates sign
+  every tick and a P controller dithers instead of unwinding.
+- Proof the projection itself is right: from (6.4, 12.1) on the
+  row-12 leg, the flipped camera (world -Y) saw marker 2 eight
+  metres away and the attitude-compensated ray-cast voted EXACTLY
+  node (4,4) — using the flipped DR yaw. `>> CANDIDATE id=2 ...
+  range=8.6` was the smoking gun (already-recorded ids are filtered,
+  so the mission was unaffected).
+
+Fix: `dead_reckoning.resolve_locked_yaw_error` — perception psi_err
+may only fine-trim while |wrap(start_yaw - yaw)| <= 0.6 rad (the
+vertical-band half-width pi/6 plus margin; a legitimate nearest-line
+error can never exceed it). Beyond that the absolute lock error
+drives the unwind, and errors within 0.1 rad of -pi fold to +pi so
+the unwind direction is deterministic. 8 new unit tests; the
+marker-edge Hough hijack itself is an M-E follow-up (mask ArUco
+quads before line detection).
+
 ### Tests: 144 -> 183 (side camera + candidate FSM + closed loop)
 
 - `test_side_camera.py` (20): projection pinned against the downward

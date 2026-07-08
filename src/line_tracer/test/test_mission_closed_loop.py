@@ -42,6 +42,7 @@ from line_tracer.dead_reckoning import (
     body_vel_to_atti_thr,
     compute_body_velocity,
     Gains,
+    resolve_locked_yaw_error,
     wrap_angle,
     world_to_body,
 )
@@ -299,11 +300,12 @@ def run_mission(
             else:
                 dx_body = cruise_mag
 
-        # Yaw-lock fallback (mirrors line_tracer_node._on_dr_tick).
+        # Yaw-lock (mirrors line_tracer_node._on_dr_tick; the synthetic
+        # cam supplies no psi_err, so perception passes None).
         psi = 0.0
         if (behavior.lock_yaw_to_initial
                 and ctx.start_yaw is not None):
-            psi = wrap_angle(ctx.start_yaw - drone.yaw)
+            psi = resolve_locked_yaw_error(None, ctx.start_yaw, drone.yaw)
 
         # vel + atti / thrust
         gains_now = Gains(
