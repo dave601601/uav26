@@ -31,12 +31,12 @@ def generate_launch_description() -> LaunchDescription:
     )
     hover_thrust_arg = DeclareLaunchArgument(
         "hover_thrust_norm",
-        default_value="0.500",
+        default_value="0.333",
         description="Feed-forward hover thrust_norm (0..1).",
     )
     kp_alt_arg = DeclareLaunchArgument(
         "kp_alt",
-        default_value="0.04",
+        default_value="0.027",
         description="P gain on altitude error (thrust_norm per metre).",
     )
     delay_arg = DeclareLaunchArgument(

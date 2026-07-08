@@ -67,11 +67,11 @@ class FlightDemo(Node):
 
         # Altitude hold (same plant constants as hover_pub.py).
         self.declare_parameter("target_altitude", 2.0)
-        self.declare_parameter("hover_thrust_norm", 0.500)
-        self.declare_parameter("kp_alt", 0.03)
-        self.declare_parameter("kd_alt", 0.10)
-        self.declare_parameter("thrust_min", 0.40)
-        self.declare_parameter("thrust_max", 0.60)
+        self.declare_parameter("hover_thrust_norm", 0.333)
+        self.declare_parameter("kp_alt", 0.02)
+        self.declare_parameter("kd_alt", 0.067)
+        self.declare_parameter("thrust_min", 0.27)
+        self.declare_parameter("thrust_max", 0.40)
 
         # Sequence shape.
         self.declare_parameter("phase_duration", 5.0)

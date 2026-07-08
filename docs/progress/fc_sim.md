@@ -2,6 +2,34 @@
 
 ROS2 C++ wrapper around `fc_core` that flies the simulated drone in Gazebo Harmonic, plus Python helper nodes (`hover_pub.py`, `flight_demo_pub.py`) and launch files for canned demos.
 
+## Done (recent)
+
+### Prime altitude hold, disarm path, single-writer guard (2026-07-08)
+
+- Auto-hover prime is now a real altitude hold (rate-limited descent
+  to `prime_alt_target` 1.2 m, velocity-P around the hover
+  feed-forward). The old fixed near-hover thrust only cancelled
+  gravity — it never braked the spawn fall, so every run slammed the
+  ground at 5-7 m/s and the "soft catch" was luck in how the tumble
+  settled. The prime's vz derivative uses the odometry message stamp;
+  gating on `fc_now_ms` (fed by a separate /clock subscription) raced
+  the odom arrivals — dt read 0 between clock ticks (vz stuck at 0
+  during the fall, r51) and garbage across jumps.
+- Disarm: a fresh companion setpoint with arm=false zeroes the motors.
+  `Control()`'s mux only consults armingflag on the stale-link path,
+  so the gate lives in `controlTick`. line_tracer sends arm=false
+  after its touchdown cutoff.
+- Single-writer guard: if another publisher appears on
+  `/uav26_quad/command/motor_speed`, log FATAL (throttled) and emit
+  zero motor speeds. Orphaned fc_sim instances from earlier runs
+  re-arm on the next run's /clock+/imu and silently fight it for the
+  drone — this poisoned r42..r51 (see docker.md for the teardown
+  contract).
+- 4S defaults: kDefaultMotorConstant 8.0e-06, max_motor_omega 1050,
+  auto_hover_thrust_norm 0.335 (r52 clean-run hover). Demo scripts
+  (hover/flight/waypoint pubs + launches) rescaled by 0.667 so their
+  commanded forces are unchanged.
+
 ## Planned (Open)
 
 - **Startup-tumble flake (mitigated).** gz Harmonic's OdometryPublisher and IMU sensor briefly report `q=(0, 0, 1, 0)` (= 180° about Y) for the first few physics steps. The firmware reads this as "drone upside-down" and commands a big righting torque, which spins the drone on the ground into a wedged orientation. The sanity gate in `fc_sim_node` (motors stay at zero until IMU shows tilt < 45° for 20 consecutive ticks ≈ 40 ms) suppresses the runaway. Drone now stays at identity orientation through startup.

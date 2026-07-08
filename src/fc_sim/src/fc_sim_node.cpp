@@ -33,8 +33,9 @@ using namespace std::chrono_literals;
 namespace {
 
 // Default motor-thrust coefficient — must match motorConstant in the
-// uav26_quad SDF. ω_i = sqrt(T_i / k_f).
-constexpr double kDefaultMotorConstant = 8.54858e-06;
+// uav26_quad SDF. ω_i = sqrt(T_i / k_f). 8.0e-06 with ω_max 1050 rad/s
+// models the real 2212 920KV / 4S power train (~900 gf max per motor).
+constexpr double kDefaultMotorConstant = 8.0e-06;
 
 // Conversion from sensor_msgs/Imu (FLU body, ENU world) to the frame
 // the firmware's mixer + controller actually operate in.
@@ -81,7 +82,7 @@ public:
         motor_constant_ = this->declare_parameter<double>(
             "motor_constant", kDefaultMotorConstant);
         max_motor_omega_ = this->declare_parameter<double>(
-            "max_motor_omega", 800.0);
+            "max_motor_omega", 1050.0);
         publish_telemetry_hz_ = this->declare_parameter<double>(
             "telemetry_hz", 100.0);
         // Auto-prime the drone with a safe level-attitude hover thrust
@@ -90,8 +91,15 @@ public:
         // overrides. Hover prime stays armed until an external
         // unarmed setpoint disarms it.
         auto_hover_init_ = this->declare_parameter<bool>("auto_hover_init", true);
+        // Feed-forward for the prime's altitude hold — the clean-run
+        // hover point on the 900 g/motor 4S train (r52: 0.334; the
+        // earlier 0.38 was measured on a zombie-contaminated run).
         auto_hover_thrust_ = this->declare_parameter<double>(
-            "auto_hover_thrust_norm", 0.50);
+            "auto_hover_thrust_norm", 0.335);
+        prime_alt_target_ = this->declare_parameter<double>(
+            "prime_alt_target", 1.2);
+        prime_kp_alt_ = this->declare_parameter<double>("prime_kp_alt", 0.5);
+        prime_kv_alt_ = this->declare_parameter<double>("prime_kv_alt", 0.4);
 
         // ---- Subscriptions ----
         rclcpp::QoS qos_sensors(rclcpp::KeepLast(10));
@@ -214,6 +222,22 @@ private:
             (float)msg.pose.pose.position.y,     // ENU east  -> NED north (approx)
             (float)msg.pose.pose.position.x,     // ENU north -> NED east
             (float)-msg.pose.pose.position.z);   // ENU up    -> NED down
+        // World-frame vz for the auto-hover prime's damping term.
+        // dt MUST come from the odometry message's own stamp: gating on
+        // fc_now_ms (updated by a separate /clock subscription) races
+        // the odom arrivals — dt reads 0 between clock ticks (vz stuck
+        // at 0 while falling) and garbage across clock jumps (vz=20).
+        uint32_t stamp_ms = (uint32_t)(msg.header.stamp.sec * 1000u
+                          + msg.header.stamp.nanosec / 1000000u);
+        if (std::fabs(alt_lidar_) < 50.0f && prime_prev_ms_ != 0
+                && stamp_ms > prime_prev_ms_
+                && (stamp_ms - prime_prev_ms_) < 500u) {
+            float dt = (float)(stamp_ms - prime_prev_ms_) * 1e-3f;
+            float vz = (alt_lidar_ - prime_prev_alt_) / dt;
+            if (std::fabs(vz) < 30.0f) prime_vz_ = vz;
+        }
+        prime_prev_ms_ = stamp_ms;
+        prime_prev_alt_ = alt_lidar_;
         have_odom_ = true;
     }
 
@@ -241,8 +265,35 @@ private:
 
         // Auto-hover-init keeps COMP fresh until a real setpoint
         // arrives (after which onSetpoint takes over COMP.last_ms).
+        // The prime is a real altitude hold, not a fixed thrust: a
+        // constant near-hover thrust only cancels gravity, it does NOT
+        // brake the spawn fall — every pre-2026-07 run slammed the
+        // ground at 5-7 m/s and the "soft catch" was luck in how the
+        // tumble settled (r44-r50). PD on altitude parks the drone at
+        // prime_alt_target until the companion takes over, so the
+        // pre-engagement phase never touches the ground at all.
         if (auto_hover_init_ && !got_external_setpoint_) {
             COMP.last_ms = now_ms;
+            if (have_odom_) {
+                // Rate-limited descent to the park altitude: command a
+                // vertical-velocity target (never faster than 0.5 m/s)
+                // and drive thrust with a P on the velocity error
+                // around the hover feed-forward. A plain altitude PD
+                // lets the fall accelerate through the thrust floor
+                // and arrives at the park altitude too hot (r51 hit
+                // the floor at ~3.6 m/s).
+                float err = (float)prime_alt_target_ - alt_lidar_;
+                float vz_des = std::clamp(
+                    (float)prime_kp_alt_ * err, -0.5f, 0.5f);
+                float thr = (float)auto_hover_thrust_
+                          + (float)prime_kv_alt_ * (vz_des - prime_vz_);
+                COMP.thrust_norm = std::clamp(thr, 0.20f, 0.60f);
+                RCLCPP_INFO_THROTTLE(
+                    get_logger(), *get_clock(), 500,
+                    "prime: alt=%.2f vz=%.2f vz_des=%.2f thr=%.2f",
+                    (double)alt_lidar_, (double)prime_vz_,
+                    (double)vz_des, (double)COMP.thrust_norm);
+            }
         }
 
         controlTick();
@@ -272,6 +323,34 @@ private:
             // Publish zero motor speeds. Drone free-falls / sits;
             // critically, the firmware controller is NOT engaged so it
             // can't fight bad sensor data.
+            actuator_msgs::msg::Actuators out;
+            out.header.stamp = get_clock()->now();
+            out.velocity.assign(4, 0.0);
+            pub_actuators_->publish(out);
+            return;
+        }
+
+        // Single-writer guard: two fc_sim instances silently fighting
+        // over one drone (orphans from a previous run re-activated by
+        // the new run's /clock) poisoned a week of runs (r42..r51).
+        // count_publishers includes this node, so >1 means a rival.
+        if (count_publishers("/uav26_quad/command/motor_speed") > 1) {
+            RCLCPP_FATAL_THROTTLE(
+                get_logger(), *get_clock(), 1000,
+                "another publisher on /uav26_quad/command/motor_speed — "
+                "zombie fc_sim? Emitting zero motor speeds until it is "
+                "gone (pkill fc_sim_node / parameter_bridge strays).");
+            actuator_msgs::msg::Actuators out;
+            out.header.stamp = get_clock()->now();
+            out.velocity.assign(4, 0.0);
+            pub_actuators_->publish(out);
+            return;
+        }
+
+        // Disarm: a fresh companion setpoint with arm=false means
+        // touchdown is complete — motors off. Control()'s mux only
+        // consults armingflag on the stale-link path, so gate here.
+        if (got_external_setpoint_ && !COMP.arm) {
             actuator_msgs::msg::Actuators out;
             out.header.stamp = get_clock()->now();
             out.velocity.assign(4, 0.0);
@@ -354,7 +433,13 @@ private:
     bool have_odom_ = false;
     bool got_external_setpoint_ = false;
     bool auto_hover_init_ = false;
-    double auto_hover_thrust_ = 0.50;
+    double auto_hover_thrust_ = 0.335;
+    double prime_alt_target_ = 1.2;
+    double prime_kp_alt_ = 0.5;
+    double prime_kv_alt_ = 0.4;
+    float prime_vz_ = 0.0f;
+    float prime_prev_alt_ = 0.0f;
+    uint32_t prime_prev_ms_ = 0;
     int level_streak_ = 0;
 
     uint32_t setpoint_seq_ = 0;

@@ -21,20 +21,23 @@ class HoverPub(Node):
         super().__init__("hover_pub")
 
         # Closed-loop altitude hold: PD on z with vz feedback.
-        # Plant model derived empirically: d_thrust_force / d_thrust_norm
-        # ~ 24 N (per unit), m = 1.182 kg, so the loop's natural freq is
-        # omega_n = sqrt(24 * kp / m). Critical-damping kd ~ 2*sqrt(kp).
+        # Plant model: d_thrust_force / d_thrust_norm ~ 35.3 N (per
+        # unit; 900 g/motor 2212-920KV 4S train), m = 1.182 kg, so the
+        # loop's natural freq is omega_n = sqrt(35.3 * kp / m).
+        # Critical-damping kd ~ 2*sqrt(kp). Norms below are the old
+        # 600 g-train values rescaled by 0.667 so the commanded forces
+        # are unchanged.
         self.declare_parameter("target_altitude", 2.0)
-        self.declare_parameter("hover_thrust_norm", 0.500)
-        self.declare_parameter("kp_alt", 0.03)
-        self.declare_parameter("kd_alt", 0.10)
+        self.declare_parameter("hover_thrust_norm", 0.333)
+        self.declare_parameter("kp_alt", 0.02)
+        self.declare_parameter("kd_alt", 0.067)
         self.declare_parameter("publish_hz", 100.0)
-        self.declare_parameter("thrust_min", 0.40)
-        self.declare_parameter("thrust_max", 0.75)
+        self.declare_parameter("thrust_min", 0.27)
+        self.declare_parameter("thrust_max", 0.50)
         # Takeoff burst: when the drone is below this altitude AND
         # almost stationary, command a stronger thrust to break static
         # ground contact friction. Once airborne, normal PD takes over.
-        self.declare_parameter("takeoff_thrust_norm", 0.85)
+        self.declare_parameter("takeoff_thrust_norm", 0.57)
         self.declare_parameter("takeoff_z_threshold", 0.30)
 
         self._target_alt = float(self.get_parameter("target_altitude").value)

@@ -30,9 +30,9 @@ def generate_launch_description() -> LaunchDescription:
     pitch_amp_arg      = DeclareLaunchArgument("pitch_amp",        default_value="0.05")
     roll_amp_arg       = DeclareLaunchArgument("roll_amp",         default_value="0.05")
     yaw_amp_arg        = DeclareLaunchArgument("yaw_amp",          default_value="0.30")
-    hover_thrust_arg   = DeclareLaunchArgument("hover_thrust_norm", default_value="0.500")
-    kp_alt_arg         = DeclareLaunchArgument("kp_alt",           default_value="0.03")
-    kd_alt_arg         = DeclareLaunchArgument("kd_alt",           default_value="0.10")
+    hover_thrust_arg   = DeclareLaunchArgument("hover_thrust_norm", default_value="0.333")
+    kp_alt_arg         = DeclareLaunchArgument("kp_alt",           default_value="0.02")
+    kd_alt_arg         = DeclareLaunchArgument("kd_alt",           default_value="0.067")
     settle_delay_arg   = DeclareLaunchArgument("settle_delay",     default_value="3.0")
 
     sim = IncludeLaunchDescription(
