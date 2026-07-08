@@ -120,6 +120,15 @@ static float dy = 335.235f / 1000.0f / 2.0f;
 static float mass_org = 1.182f;
 static float mass = 0.0f;
 
+/* Per-motor max thrust in grams-force. thrust_norm=1.0 commands
+ * 4 * this * 9.81/1000 newtons of total lift. 900 g matches the real
+ * power train: 2212 920KV motors on a 4S pack with 9450/1045-class
+ * props (bench range 800-1000 g/motor; the previous 600 g constant
+ * assumed the same motor on 3S). F2PWM's thrust-to-DSHOT curve is
+ * still calibrated for the 600 g train and needs a thrust-stand
+ * recalibration before hardware flight — see docs/progress/fc_core.md. */
+static float max_thrust_g_per_motor = 900.0f;
+
 static enum MODE mode = attithrmode;
 
 /* Companion link stale threshold (ms). Below this, COMP is trusted.
@@ -130,8 +139,9 @@ static enum MODE mode = attithrmode;
 #define COMP_STALE_MS 200u
 
 /* Descent thrust reference used when companion goes stale in
- * autonomous mode. Slightly below hover so the drone settles gently. */
-#define COMP_STALE_THRUST_NORM 0.40f
+ * autonomous mode. Slightly below hover so the drone settles gently.
+ * Hover for the 1.182 kg frame on the 900 g/motor 4S train is ~0.33. */
+#define COMP_STALE_THRUST_NORM 0.27f
 
 thrvec Control(vec3d NED, vec3d vel, vec3d Euler, vec3d pqr, sbus_t sbus){
     (void)NED; (void)vel;
@@ -168,7 +178,7 @@ thrvec Control(vec3d NED, vec3d vel, vec3d Euler, vec3d pqr, sbus_t sbus){
         pcmd = maxratecmd * roll_in;
         qcmd = maxratecmd * pitch_in;
         rcmd = maxratecmd * yaw_in;
-        thrust = -4.0f * 600.0f / 1000.0f * 9.81f * thr_in;
+        thrust = -4.0f * max_thrust_g_per_motor / 1000.0f * 9.81f * thr_in;
 
         LMN = RATEControl(vec(pcmd, qcmd, rcmd), pqr, 1.0f / 500.0f);
     }
@@ -176,7 +186,7 @@ thrvec Control(vec3d NED, vec3d vel, vec3d Euler, vec3d pqr, sbus_t sbus){
         rollcmd  = maxatticmd * roll_in;
         pitchcmd = maxatticmd * pitch_in;
         rcmd     = maxratecmd * yaw_in;
-        thrust   = -4.0f * 600.0f / 1000.0f * 9.81f * thr_in;
+        thrust   = -4.0f * max_thrust_g_per_motor / 1000.0f * 9.81f * thr_in;
 
         vec3d pqr_cmd = ATTIControl(vec(rollcmd, pitchcmd, 0.0f), Euler, pqr);
         pqr_cmd.z = rcmd;

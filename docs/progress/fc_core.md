@@ -4,6 +4,20 @@ Pure C library carrying the STM32 firmware controller into ROS2 land.
 
 ## Done
 
+### Thrust scale switched to the real power train: 900 g/motor, 2212-920KV on 4S (2026-07-08)
+
+`Control()`'s thrust mapping assumed 600 g max thrust per motor (the
+same motor on 3S). The real vehicle flies 2212 920KV motors on a 4S
+pack (9450/1045-class props, bench range 800-1000 g/motor), so
+thrust_norm=1.0 now commands 4 x 900 gf = 35.3 N; hover for the
+1.182 kg frame sits at norm ~0.33 (r52 measured 0.334 in a clean
+run). `COMP_STALE_THRUST_NORM` rescaled 0.40 -> 0.27 to stay just
+below the new hover. Deviates from the verbatim-copy rule alongside
+the earlier maxratecmd bump; both must be ported back to the embedded
+repo, and `F2PWM`'s thrust-to-DSHOT curve is still calibrated for the
+600 g train — needs a thrust-stand recalibration before hardware
+flight.
+
 ### Firmware port + companion protocol + Tier A tests (commit `6eb7612`, 2026-05-25)
 
 Teammate delivered the actual STM32G431 flight-controller firmware (`Core (1).zip`).
