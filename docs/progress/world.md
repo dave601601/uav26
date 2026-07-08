@@ -4,6 +4,30 @@ Gazebo Harmonic simulation package: arena, drone model, sensor plugins, bridge, 
 
 ## Done (recent)
 
+### Sideways lookahead camera — OV9281 + 6 mm model (2026-07-08)
+
+- New `lookahead` camera sensor on `uav26_quad`: boresight = +Y_body
+  depressed 22 deg (`pose 0 0.05 -0.03 0 0.384 1.5708`; SDF rpy
+  composes Rz(yaw)*Ry(pitch), same convention the downward cam uses
+  for straight-down). HFOV 0.6196 rad = 35.5 deg — the real OV9281
+  (3 um px) behind a 6 mm lens. Purpose: while the serpentine sweeps
+  row y, this camera observes every intersection of row y+4 (lateral
+  4 m, depression 26.6 deg), so the sweep can skip every other row
+  (M-D). Sideways beats forward because yaw is locked to +X: on -X
+  legs the drone flies backward and a forward camera would stare at
+  already-swept ground, while +Y always faces the unexplored side of
+  an ascending sweep.
+- Resolution 640x400 (f = 1000 px), HALF the real sensor, for RTF:
+  full 1280x800@15 halved host RTF (0.674 -> 0.366 measured on the
+  idle-spawn scene); 640x400@10 lands at 0.533. The load-bearing
+  +4 m row keeps ~6.3 px/module (detects fine); only the
+  opportunistic +8 m band is lost. All nodes run on sim time, so RTF
+  affects wall-clock only. L8 bridges end-to-end as mono8 with
+  fx = 999.7 in camera_info.
+- `bridge.yaml`: `/camera/lookahead/image_raw` + `/camera/lookahead/camera_info`.
+- Verified headless (seed 42): 640x400 mono8 frames at the scaled
+  rate, floor + grid line visible at the expected oblique angle.
+
 ### 4S motor model + four-feet contact geometry (2026-07-08)
 
 - Motor plugins: maxRotVelocity 800 -> 1050 rad/s, motorConstant

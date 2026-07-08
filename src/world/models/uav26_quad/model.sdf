@@ -249,6 +249,42 @@
         <always_on>1</always_on>
       </sensor>
 
+      <!-- ===== Sideways lookahead camera (OV9281 1280x800 mono + 6 mm) =====
+           Models the real OV9281 global-shutter sensor (3 um px, 1/4"):
+           f = 6 mm / 3 um = 2000 px -> horizontal_fov = 2*atan(640/2000)
+           = 0.6196 rad (35.5 deg), VFOV 22.6 deg.
+           Mount: boresight = +Y_body depressed 22 deg. SDF rpy composes
+           R = Rz(yaw)*Ry(pitch), so (r p y) = (0, 0.384, pi/2) maps the
+           gz-camera view axis +X -> (0, cos22, -sin22) in body frame.
+           At 2 m altitude the VFOV band covers lateral ground distance
+           3.05..10.6 m; the adjacent sweep row (+4 m) is the load-bearing
+           target. This is what lets the serpentine skip every other row.
+           Sim renders at HALF the real sensor resolution (640x400,
+           f=1000 px) purely for RTF: full 1280x800 halved host RTF
+           (0.67 -> 0.37). The +4 m row still gets ~6.3 px/module
+           (detects fine); only the opportunistic +8 m band is lost.
+           Real hardware has 2x this pixel budget, so sim detection
+           performance is the conservative bound. -->
+      <sensor name="lookahead" type="camera">
+        <pose>0 0.05 -0.03 0 0.384 1.5707963267948966</pose>
+        <topic>uav26_quad/camera/lookahead/image</topic>
+        <gz_frame_id>lookahead_optical_frame</gz_frame_id>
+        <update_rate>10</update_rate>
+        <camera>
+          <horizontal_fov>0.6196</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>400</height>
+            <format>L8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>30.0</far>
+          </clip>
+        </camera>
+        <always_on>1</always_on>
+      </sensor>
+
       <!-- IMU (line_tracer 는 사용 안 하지만 가짜 FC 가 angular rate 추정에 씀) -->
       <sensor name="imu" type="imu">
         <topic>uav26_quad/imu</topic>

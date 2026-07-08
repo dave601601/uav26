@@ -33,6 +33,19 @@
   gz_type_name: "gz.msgs.CameraInfo"
   direction: GZ_TO_ROS
 
+# === Sideways lookahead camera (OV9281 model; mono8 in ROS) ===
+- ros_topic_name: "/camera/lookahead/image_raw"
+  gz_topic_name: "/uav26_quad/camera/lookahead/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/lookahead/camera_info"
+  gz_topic_name: "/uav26_quad/camera/lookahead/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
 # === IMU (디버그 / 가짜 FC 내부 사용) ===
 - ros_topic_name: "/imu"
   gz_topic_name: "/uav26_quad/imu"
