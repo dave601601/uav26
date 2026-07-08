@@ -94,7 +94,7 @@ SENSOR_QOS = QoSProfile(
 # once retrieval starts the candidate knowledge can no longer change the
 # mission, so the detection CPU is skipped for the whole ARRANGE tour.
 _LOOKAHEAD_ACTIVE_STATES = frozenset(
-    {StateName.LINE_FOLLOW, StateName.WAYPOINT_VISIT}
+    {StateName.LINE_FOLLOW, StateName.GOTO_CANDIDATE, StateName.WAYPOINT_VISIT}
 )
 
 
@@ -256,6 +256,16 @@ class LineTracerNode(Node):
         # and enough to reject one-frame ID misreads at 6 px/module.
         self.declare_parameter("lookahead_vote_threshold", 3)
         self.declare_parameter("lookahead_max_range", 12.0)
+        # GOTO_CANDIDATE shaping: how long to hover on a voted node
+        # waiting for the downward camera before giving the id up, and
+        # the per-attempt stall guard (counterpart of arrange_timeout).
+        self.declare_parameter("candidate_wait_seconds", 4.0)
+        self.declare_parameter("goto_timeout", 60.0)
+        # Serpentine row skip: 2 = fly every other interior row and let
+        # the side camera observe the skipped one. Forced back to 1 at
+        # runtime when lookahead_enable is false — without the side
+        # camera a skipped row is simply never observed.
+        self.declare_parameter("sweep_row_step", 2)
 
         target_alt = float(self.get_parameter("target_altitude").value)
         self._gains = Gains(
@@ -289,6 +299,15 @@ class LineTracerNode(Node):
             ),
             snap_max_err=float(self.get_parameter("snap_max_err").value),
             arrange_timeout=float(self.get_parameter("arrange_timeout").value),
+            candidate_wait_seconds=float(
+                self.get_parameter("candidate_wait_seconds").value
+            ),
+            goto_timeout=float(self.get_parameter("goto_timeout").value),
+            sweep_row_step=(
+                int(self.get_parameter("sweep_row_step").value)
+                if bool(self.get_parameter("lookahead_enable").value)
+                else 1
+            ),
         )
         self._fsm = StateMachine(
             initial=StateName.TAKEOFF,
@@ -344,8 +363,9 @@ class LineTracerNode(Node):
         # quaternion; hardware would substitute the FC attitude here).
         self._odom_truth_rp: Optional[Tuple[float, float]] = None
         # Last logged (id -> node) so >> CANDIDATE lines fire once per
-        # promotion / node change, not every frame.
+        # promotion / node change, not every frame; same idea for drops.
         self._logged_candidates: dict = {}
+        self._logged_dropped: set = set()
 
         # FC setpoint shaping constants (cached from params)
         self._hover_thrust_norm = float(self.get_parameter("hover_thrust_norm").value)
@@ -801,13 +821,27 @@ class LineTracerNode(Node):
         altitude = self._altitude_m if self._altitude_m is not None else max(z_hat, 0.05)
 
         now = self.get_clock().now().nanoseconds * 1e-9
+        candidates = None
+        if self._lookahead_enable and self._fsm.context.grid is not None:
+            candidates = self._tracker.snapshot(
+                self._lookahead_vote_threshold, self._fsm.context.grid
+            )
         tick_result = self._fsm.tick(
             now=now,
             dr_state=self._dr.state,
             perception=self._latest_perception,
             altitude=altitude,
+            candidates=candidates,
         )
         behavior = tick_result.behavior
+
+        # Candidate drops happen inside the FSM (arrival wait expired /
+        # goto stall); surface each once for the grep-based verifier.
+        dropped = self._fsm.context.dropped_candidate_ids
+        if len(dropped) > len(self._logged_dropped):
+            for cid in dropped - self._logged_dropped:
+                self.get_logger().info(f">> CANDIDATE-DROP id={cid}")
+            self._logged_dropped = set(dropped)
 
         # FSM events worth logging on the spot — these are what the verifier
         # greps for to confirm the demo walked all phases.

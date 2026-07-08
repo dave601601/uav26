@@ -4,6 +4,41 @@ Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning
 
 ## In progress (2026-07-08 — lookahead candidates, M-D)
 
+### FSM: GOTO_CANDIDATE + row-skip sweep + short-circuit
+
+The search now consumes lookahead candidates (fed per tick as
+`tick(candidates=tracker.snapshot(...))`, default None keeps every
+legacy caller source-compatible):
+
+- `sweep_row_step=2` (param; forced 1 when lookahead is disabled):
+  `_plan_sweep` flies every other interior row — {4, 12} for our grid
+  — and stashes the complement. Skip requires the distance-sorted
+  rows to ASCEND (camera faces +Y = unexplored only then); otherwise
+  reverts to step 1.
+- Candidate dedup is FSM-owned and runs at tick top: recorded ids and
+  dropped ids are filtered from every snapshot (the tracker keeps
+  votes forever and knows nothing of the mission). Primary dedup key
+  is the ArUco id; the per-(id, node) majority vote in the tracker
+  guards against long-range ID misreads.
+- New state GOTO_CANDIDATE (ARRANGE-style world-target navigation):
+  flies to `candidates[queue[0]].xy` (live lookup — the target moves
+  if votes re-elect a node). Any unrecorded downward sighting en
+  route — target or not — goes through the unchanged WAYPOINT_VISIT
+  snap-record; the queue entry stays until resolved, so the same
+  target resumes after the interrupt. Arrival + candidate_wait (4 s)
+  without a downward sighting drops the id permanently
+  (`>> CANDIDATE-DROP`); goto_timeout 60 s is the stall guard.
+- Visit scheduling: row-finish flush (candidates spotted from the
+  finished row are visited during the transit — they sit on the row
+  in between) and short-circuit (records + candidates >= 4 abandons
+  the remaining sweep immediately). Nearest-neighbor chaining orders
+  the queue.
+- `_on_sweep_exhausted` (now also checked when GOTO returns to an
+  already-exhausted sweep — previously unreachable, would have hit
+  the gridless cruise-into-wall fallback): pending candidates first,
+  then a ONE-SHOT fallback sweep over the skipped rows (safety net
+  for missed side detections), then retrieval with what exists.
+
 ### side_camera.py — lookahead perception + candidate tracker
 
 Pure module (no rclpy) for the new sideways OV9281+6mm camera

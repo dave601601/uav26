@@ -5,16 +5,31 @@ automaton that walks the 7-step competition mission:
 
   1. TAKEOFF       — climb open-loop to target altitude.
   2. LINE_FOLLOW   — perception-driven grid-line tracking + ArUco capture.
-  3. WAYPOINT_VISIT — brief hover above a freshly-seen marker; record its
+  3. GOTO_CANDIDATE — fly to an intersection the sideways lookahead
+                     camera voted a marker onto. Never records anything
+                     itself: on arrival the downward camera sees the
+                     marker and the normal WAYPOINT_VISIT machinery
+                     takes over; if it doesn't within
+                     candidate_wait_seconds, the candidate is dropped
+                     and the sweep resumes where it left off.
+  4. WAYPOINT_VISIT — brief hover above a freshly-seen marker; record its
                      XY by snapping the dead-reckoned position to the
                      nearest grid intersection (markers are known to sit
                      on intersections, so a sighting is an absolute fix).
-  4. ARRANGE_BY_ID — once all 4 markers are captured, plan a BFS path
+  5. ARRANGE_BY_ID — once all 4 markers are captured, plan a BFS path
                      visiting them in ascending ID order, then walk it
                      node-by-node.
-  5. RETURN_PATH   — final leg of that plan, heading back to the start
+  6. RETURN_PATH   — final leg of that plan, heading back to the start
                      coordinates captured at takeoff.
-  6. LAND          — descend in place.
+  7. LAND          — descend in place.
+
+Candidates (fed per tick via ``tick(candidates=...)`` from the node's
+``CandidateTracker``) also reshape the search itself: with
+``sweep_row_step=2`` the serpentine only flies every other interior row
+— the side camera observes the skipped row from 4 m away — and the
+sweep short-circuits into candidate visits as soon as
+records + candidates account for every marker. A one-shot fallback
+sweep over the skipped rows covers missed side detections.
 
 The 1-7 split is rules-aligned (시작 -> 라인트레이싱 -> 식별 -> 구조 경로 (역순)
 -> 자동 착륙). The proposal's particle-filter / vertiport / KF-z elements
@@ -31,18 +46,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from math import cos, hypot, sin
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 from .dead_reckoning import State, snap_to_intersection
 
 if TYPE_CHECKING:
     from .grid import Grid, Node
     from .perception import PerceptionResult
+    from .side_camera import Candidate
 
 
 class StateName(Enum):
     TAKEOFF = "TAKEOFF"
     LINE_FOLLOW = "LINE_FOLLOW"
+    GOTO_CANDIDATE = "GOTO_CANDIDATE"
     WAYPOINT_VISIT = "WAYPOINT_VISIT"
     ARRANGE_BY_ID = "ARRANGE_BY_ID"
     RETURN_PATH = "RETURN_PATH"
@@ -121,6 +138,18 @@ _BEHAVIORS: Dict[StateName, Behavior] = {
         target_altitude=_DEFAULT_TARGET_ALT,
         use_lateral_error=True,
         use_heading_error=True,
+        use_forward_error=False,
+        cruise_vx=0.0,
+        lock_yaw_to_initial=True,
+    ),
+    # Fly to a lookahead candidate's intersection. Same world-target
+    # navigation shape as ARRANGE_BY_ID; the downward camera stays
+    # live via the LINE_FOLLOW-equivalent detection check in
+    # _tick_goto_candidate, not via perception-driven steering.
+    StateName.GOTO_CANDIDATE: Behavior(
+        target_altitude=_DEFAULT_TARGET_ALT,
+        use_lateral_error=False,
+        use_heading_error=False,
         use_forward_error=False,
         cruise_vx=0.0,
         lock_yaw_to_initial=True,
@@ -208,6 +237,31 @@ class MissionContext:
     sweep_idx: int = 0
     sweep_arrival_dist: float = 1.5
     sweep_margin: float = 2.0     # [m] inset from the arena border
+    # Row-skip: with the sideways lookahead camera observing the row
+    # 4 m to +Y, the serpentine only needs every row_step-th interior
+    # row. Requires the distance-sorted rows to ASCEND in y (camera
+    # faces +Y = the unexplored side only for an ascending sweep);
+    # _plan_sweep falls back to step 1 otherwise. The complement rows
+    # are kept for the one-shot exhaustion fallback.
+    sweep_row_step: int = 1
+    sweep_skipped_rows: List[float] = field(default_factory=list)
+    sweep_fallback_done: bool = False
+
+    # Lookahead candidates: id -> Candidate (side_camera.Candidate duck
+    # type: .node, .xy, .votes, .last_seen, .best_range). Refreshed each
+    # tick from the tracker snapshot, minus recorded and dropped ids —
+    # ALL dedup filtering lives here because the FSM owns records and
+    # the drop decisions; the tracker only accumulates votes.
+    candidates: Dict[int, "Candidate"] = field(default_factory=dict)
+    dropped_candidate_ids: Set[int] = field(default_factory=set)
+    # Visit order for GOTO_CANDIDATE; queue[0] is the active target and
+    # stays queued until resolved (recorded -> purged, or dropped), so
+    # a WAYPOINT_VISIT interrupt en route resumes the same target.
+    candidate_queue: List[int] = field(default_factory=list)
+    goto_start_t: Optional[float] = None    # per-attempt stall guard
+    goto_arrive_t: Optional[float] = None   # arrival dwell before drop
+    candidate_wait_seconds: float = 4.0
+    goto_timeout: float = 60.0
 
     # Transition counters
     takeoff_alt_streak: int = 0
@@ -275,6 +329,7 @@ class StateMachine:
         dr_state: State,
         perception: Optional["PerceptionResult"],
         altitude: float,
+        candidates: Optional[Dict[int, "Candidate"]] = None,
     ) -> TickResult:
         ctx = self._context
         prev_state = self._state
@@ -285,11 +340,30 @@ class StateMachine:
         if ctx.start_yaw is None:
             ctx.start_yaw = dr_state.yaw
 
+        # Candidate dedup, the FSM-owned half: a tracker snapshot always
+        # re-includes every id it ever voted (it has no mission state),
+        # so recorded ids (already visited) and dropped ids (given up
+        # at the node) are filtered here every tick. candidates=None
+        # (callers without a lookahead camera / legacy tests) keeps the
+        # existing dict but still purges newly resolved ids.
+        fresh = candidates if candidates is not None else ctx.candidates
+        ctx.candidates = {
+            i: c
+            for i, c in fresh.items()
+            if i not in ctx.records and i not in ctx.dropped_candidate_ids
+        }
+        ctx.candidate_queue = [
+            i for i in ctx.candidate_queue if i in ctx.candidates
+        ]
+
         if self._state is StateName.TAKEOFF:
             self._tick_takeoff(altitude)
 
         elif self._state is StateName.LINE_FOLLOW:
             self._tick_line_follow(now, perception, dr_state)
+
+        elif self._state is StateName.GOTO_CANDIDATE:
+            self._tick_goto_candidate(now, perception, dr_state)
 
         elif self._state is StateName.WAYPOINT_VISIT:
             snapped_record = self._tick_waypoint_visit(now, dr_state)
@@ -344,21 +418,120 @@ class StateMachine:
             self._plan_retrieval(dr_state)
             return
 
+        # Short-circuit: every marker is accounted for (recorded or
+        # believed at a voted intersection) — stop paying for blind
+        # sweep legs and go collect the candidates. A wrong candidate
+        # is time-bounded, not fatal: GOTO drops it after the arrival
+        # wait and the sweep resumes at the same sweep_idx.
+        if (
+            ctx.grid is not None
+            and ctx.candidates
+            and len(ctx.records) + len(ctx.candidates) >= ctx.max_records
+        ):
+            self._enqueue_pending_candidates(dr_state)
+            if ctx.candidate_queue:
+                ctx.goto_start_t = None
+                ctx.goto_arrive_t = None
+                self._state = StateName.GOTO_CANDIDATE
+                return
+
+        # Queue drain: candidates enqueued earlier (row-finish flush /
+        # short-circuit) are visited before any further sweeping; this
+        # is also how the chain resumes after each WAYPOINT_VISIT
+        # bounces back to LINE_FOLLOW.
+        if ctx.candidate_queue:
+            ctx.goto_start_t = None
+            ctx.goto_arrive_t = None
+            self._state = StateName.GOTO_CANDIDATE
+            return
+
         # Serpentine search over the grid rows. Markers sit on grid
         # intersections, so cruising each interior row scans every
         # intersection on it; the +X-only cruise of r38..r55 could only
         # ever find markers on the start row.
         if ctx.grid is not None and not ctx.sweep_path:
             self._plan_sweep()
-        if ctx.sweep_path and ctx.sweep_idx < len(ctx.sweep_path):
+        if ctx.sweep_path:
+            if ctx.sweep_idx >= len(ctx.sweep_path):
+                # Reachable on the tick after GOTO_CANDIDATE returns
+                # with the sweep already exhausted; without this the
+                # gridless moving-lookahead fallback below would cruise
+                # the drone into the wall.
+                self._on_sweep_exhausted(dr_state)
+                return
             tx, ty = ctx.sweep_path[ctx.sweep_idx]
             if hypot(tx - dr_state.x, ty - dr_state.y) < ctx.sweep_arrival_dist:
+                row_y = ty
                 ctx.sweep_idx += 1
                 if ctx.sweep_idx >= len(ctx.sweep_path):
                     # Sweep exhausted without filling the records:
                     # retrieve what we have rather than cruising off
                     # into the wall or hovering forever.
-                    self._plan_retrieval(dr_state)
+                    self._on_sweep_exhausted(dr_state)
+                    return
+                # Row-finish flush: the next waypoint starting a new row
+                # means candidates spotted from the finished row (they
+                # sit on the row 4 m toward the new one) are literally
+                # on the way — visit them during the transit.
+                if ctx.sweep_path[ctx.sweep_idx][1] != row_y and ctx.candidates:
+                    self._enqueue_pending_candidates(dr_state)
+                    if ctx.candidate_queue:
+                        ctx.goto_start_t = None
+                        ctx.goto_arrive_t = None
+                        self._state = StateName.GOTO_CANDIDATE
+
+    def _tick_goto_candidate(
+        self, now: float, perception: Optional["PerceptionResult"], dr_state: State
+    ) -> None:
+        ctx = self._context
+
+        # The downward camera stays authoritative: ANY unrecorded marker
+        # in view (the target or one crossed en route) goes through the
+        # normal hover-and-snap recording. The queue is untouched — if
+        # what got recorded was not queue[0], the same target resumes
+        # after WAYPOINT_VISIT returns to LINE_FOLLOW.
+        if perception is not None:
+            for det in perception.aruco:
+                if det.id not in ctx.records:
+                    ctx.waypoint_visit_id = det.id
+                    ctx.waypoint_visit_start_t = now
+                    ctx.goto_start_t = None
+                    ctx.goto_arrive_t = None
+                    self._state = StateName.WAYPOINT_VISIT
+                    return
+
+        # Target resolved (recorded en route) or invalidated (vote moved
+        # and the id fell out of the snapshot) — back to LINE_FOLLOW,
+        # which drains the rest of the queue or resumes the sweep.
+        if not ctx.candidate_queue:
+            ctx.goto_start_t = None
+            ctx.goto_arrive_t = None
+            self._state = StateName.LINE_FOLLOW
+            return
+
+        cid = ctx.candidate_queue[0]
+        cand = ctx.candidates[cid]
+
+        if ctx.goto_start_t is None:
+            ctx.goto_start_t = now
+        if (now - ctx.goto_start_t) >= ctx.goto_timeout:
+            # Stall guard, counterpart of arrange_timeout: never orbit a
+            # candidate forever.
+            self._drop_candidate(cid)
+            self._state = StateName.LINE_FOLLOW
+            return
+
+        tx, ty = cand.xy
+        if hypot(tx - dr_state.x, ty - dr_state.y) < ctx.waypoint_arrival_dist:
+            if ctx.goto_arrive_t is None:
+                ctx.goto_arrive_t = now
+            elif (now - ctx.goto_arrive_t) >= ctx.candidate_wait_seconds:
+                # Hovered over the voted intersection and the downward
+                # camera never fired: the candidate was wrong. Drop it
+                # (never re-promoted) and resume the search; a skipped-
+                # row fallback sweep still covers the real marker.
+                self._drop_candidate(cid)
+                self._state = StateName.LINE_FOLLOW
 
     def _tick_waypoint_visit(
         self, now: float, dr_state: State
@@ -449,23 +622,49 @@ class StateMachine:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _plan_sweep(self) -> None:
+    def _plan_sweep(self, rows_override: Optional[List[float]] = None) -> None:
         """Serpentine (lawnmower) waypoints over the grid's interior
         rows, starting from the row nearest start_y and moving away
         from it. Rows are the grid's horizontal lines (markers only
         sit on intersections, so scanning each row with the downward
         camera sees every candidate on it). X endpoints are inset by
-        sweep_margin from the arena border."""
+        sweep_margin from the arena border.
+
+        With sweep_row_step > 1 only every step-th row is flown — the
+        sideways lookahead camera observes each skipped row from the
+        flown one 4 m away. The skip is only valid when the sorted rows
+        ASCEND in y: the camera faces body +Y (world +Y under the yaw
+        lock), which is the unexplored side of an ascending sweep only.
+        A descending or oscillating order (spawn between rows) reverts
+        to step 1 rather than sweeping with an eye on visited ground.
+
+        rows_override bypasses row selection entirely — used by the
+        exhaustion fallback to fly the previously skipped rows."""
         ctx = self._context
         if ctx.grid is None:
             return
         x_min = ctx.sweep_margin
         x_max = ctx.grid.width - ctx.sweep_margin
-        rows = [y for y in ctx.grid.ys if 0.0 < y < ctx.grid.depth]
+        if rows_override is not None:
+            rows = list(rows_override)
+            ctx.sweep_skipped_rows = []
+        else:
+            rows = [y for y in ctx.grid.ys if 0.0 < y < ctx.grid.depth]
+            if not rows:
+                return
+            start_y = ctx.start_xy[1] if ctx.start_xy is not None else rows[0]
+            rows.sort(key=lambda y: abs(y - start_y))
+            ctx.sweep_skipped_rows = []
+            if ctx.sweep_row_step > 1:
+                ascending = all(
+                    rows[i] < rows[i + 1] for i in range(len(rows) - 1)
+                )
+                if ascending:
+                    kept = rows[:: ctx.sweep_row_step]
+                    ctx.sweep_skipped_rows = [y for y in rows if y not in kept]
+                    rows = kept
         if not rows:
             return
-        start_y = ctx.start_xy[1] if ctx.start_xy is not None else rows[0]
-        rows.sort(key=lambda y: abs(y - start_y))
         path: List[Tuple[float, float]] = []
         going_right = True
         for y in rows:
@@ -476,6 +675,59 @@ class StateMachine:
             going_right = not going_right
         ctx.sweep_path = path
         ctx.sweep_idx = 0
+
+    def _on_sweep_exhausted(self, dr_state: State) -> None:
+        """Sweep ran out before all records landed. Priority: collect
+        believed candidates; then a ONE-SHOT sweep over the rows the
+        row-skip left out (a missed side detection is invisible to the
+        candidate path — this is its safety net); finally retrieve
+        whatever was recorded rather than cruising off the arena."""
+        ctx = self._context
+        if ctx.candidates:
+            self._enqueue_pending_candidates(dr_state)
+            if ctx.candidate_queue:
+                ctx.goto_start_t = None
+                ctx.goto_arrive_t = None
+                self._state = StateName.GOTO_CANDIDATE
+                return
+        if (
+            len(ctx.records) < ctx.max_records
+            and ctx.sweep_skipped_rows
+            and not ctx.sweep_fallback_done
+        ):
+            ctx.sweep_fallback_done = True
+            self._plan_sweep(rows_override=list(ctx.sweep_skipped_rows))
+            return
+        self._plan_retrieval(dr_state)
+
+    def _enqueue_pending_candidates(self, dr_state: State) -> None:
+        """Append every un-queued candidate in nearest-neighbor chain
+        order from the current position (<=4 nodes; greedy chaining is
+        within pennies of optimal at that size)."""
+        ctx = self._context
+        pending = [i for i in ctx.candidates if i not in ctx.candidate_queue]
+        px, py = dr_state.x, dr_state.y
+        while pending:
+            nxt = min(
+                pending,
+                key=lambda i: hypot(
+                    ctx.candidates[i].xy[0] - px, ctx.candidates[i].xy[1] - py
+                ),
+            )
+            ctx.candidate_queue.append(nxt)
+            px, py = ctx.candidates[nxt].xy
+            pending.remove(nxt)
+
+    def _drop_candidate(self, cid: int) -> None:
+        """Give up on a candidate id: never re-promoted (the tracker
+        would keep re-snapshotting it otherwise) and cleared from the
+        queue + goto timers."""
+        ctx = self._context
+        ctx.dropped_candidate_ids.add(cid)
+        ctx.candidates.pop(cid, None)
+        ctx.candidate_queue = [i for i in ctx.candidate_queue if i != cid]
+        ctx.goto_start_t = None
+        ctx.goto_arrive_t = None
 
     def _plan_retrieval(self, dr_state: State) -> None:
         """Build the ARRANGE_BY_ID node sequence: current node -> markers
@@ -528,6 +780,16 @@ class StateMachine:
                 return None
             sx, sy = ctx.start_xy
             return (dr_state.x + ctx.line_follow_lookahead, sy)
+        if self._state is StateName.GOTO_CANDIDATE:
+            # Live lookup (not a copy captured at transition): if votes
+            # move the winning node while en route, the target follows.
+            # Hover-in-place during the arrival wait falls out of the
+            # target staying pinned to the node.
+            if ctx.candidate_queue:
+                cand = ctx.candidates.get(ctx.candidate_queue[0])
+                if cand is not None:
+                    return cand.xy
+            return None
         if self._state not in (StateName.ARRANGE_BY_ID, StateName.RETURN_PATH):
             return None
         if self._state is StateName.RETURN_PATH and ctx.start_xy is not None:

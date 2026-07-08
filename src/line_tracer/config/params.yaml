@@ -52,6 +52,11 @@
     lookahead_mount_tz: -0.03
     lookahead_vote_threshold: 3   # sightings on one node before candidate
     lookahead_max_range: 12.0     # [m] slant; beyond this a hit is noise
+    candidate_wait_seconds: 4.0   # [s] hover on a voted node before drop
+    goto_timeout: 60.0            # [s] GOTO_CANDIDATE stall guard
+    sweep_row_step: 2             # fly every 2nd interior row (side cam
+                                  # observes the skipped one); forced to
+                                  # 1 when lookahead_enable is false
 
     # ---- Initial conditions ----
     default_altitude: 0.0
