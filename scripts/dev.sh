@@ -4,6 +4,10 @@
 #
 #   scripts/dev.sh gui [seed]             Gazebo GUI + line_tracer.
 #                                         Ctrl+C stops everything.
+#   scripts/dev.sh view                   rqt_image_view on the ArUco /
+#                                         line detection overlay
+#                                         (/line_tracer/debug_image).
+#                                         Run alongside gui or mission.
 #   scripts/dev.sh mission [run] [dur]    Headless mission via
 #                                         run_mission.sh (default 900 s),
 #                                         then prints the FSM summary.
@@ -82,6 +86,13 @@ case "${1:-gui}" in
     sleep 8
     $EXEC bash -lc "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 launch line_tracer line_tracer.launch.py" &
     wait
+    ;;
+
+  view)
+    ensure_x_bridge
+    ensure_container
+    echo "[dev] rqt_image_view on /line_tracer/debug_image (close the window or Ctrl+C to exit)"
+    $EXEC bash -lc "source /opt/ros/jazzy/setup.bash && ros2 run rqt_image_view rqt_image_view /line_tracer/debug_image"
     ;;
 
   mission)

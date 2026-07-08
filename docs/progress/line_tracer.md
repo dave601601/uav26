@@ -32,6 +32,11 @@ What M-B added on top of the r54 platform:
 - `scripts/run_mission.sh` takes a duration argument; the full
   mission needs ~900 wall seconds (sim RTF runs a bit under 1).
 
+Marker hover raised to 3 s (waypoint_hover_seconds) so the detection
+is visually verifiable: the ArUco overlay (yellow corner box + id)
+publishes on /line_tracer/debug_image at ~16 Hz; `scripts/dev.sh
+view` opens rqt_image_view on it alongside `dev.sh gui`/`mission`.
+
 Remaining toward M-C/M-D/M-E: per-WP Z handling, mission time (the
 sweep revisits empty rows — a smarter search or higher cruise speed
 cuts minutes), robustness items (multi-frame ID voting, lost-line

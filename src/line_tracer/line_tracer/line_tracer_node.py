@@ -215,7 +215,7 @@ class LineTracerNode(Node):
         # tour on its final homing leg (harmless — it falls through to
         # RETURN_PATH — but the nominal path shouldn't hit the guard).
         self.declare_parameter("arrange_timeout", 420.0)
-        self.declare_parameter("waypoint_hover_seconds", 1.5)
+        self.declare_parameter("waypoint_hover_seconds", 3.0)
         # arrival_dist: with body-velocity feedback (kp_vel) the drone
         # tracks its commanded speed instead of accumulating inertia, so
         # the loose 5.0/3.0 r38-demo tolerances tighten back toward the

@@ -167,7 +167,12 @@ class MissionContext:
     max_records: int = 4
     takeoff_alt_threshold: float = 1.8     # m, altitude that counts as airborne
     takeoff_streak_required: int = 10      # consecutive ticks above threshold
-    waypoint_hover_seconds: float = 1.5
+    # 3 s: long enough to visually confirm the detection overlay on
+    # /line_tracer/debug_image while parked over the marker (and for a
+    # multi-frame ID vote later, M-E); the velocity loop brakes the
+    # 0.5 m/s cruise in ~1 s, so the drone truly stands still for the
+    # remainder.
+    waypoint_hover_seconds: float = 3.0
     waypoint_arrival_dist: float = 0.5     # m, distance to the current target node
     return_arrival_dist: float = 0.3
     snap_max_err: float = 2.0              # m, beyond this snap is refused
