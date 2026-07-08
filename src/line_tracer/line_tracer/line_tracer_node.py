@@ -71,6 +71,14 @@ from .dead_reckoning import (
 from .geom import CameraIntrinsics
 from .grid import Grid
 from .perception import PerceptionConfig, PerceptionResult, process_image, draw_debug_overlay
+from .side_camera import (
+    CandidateTracker,
+    MountExtrinsics,
+    SideCameraConfig,
+    detect_aruco_side,
+    draw_lookahead_overlay,
+    project_pixel_to_ground,
+)
 from .state_machine import MissionContext, StateMachine, StateName
 
 
@@ -80,6 +88,13 @@ SENSOR_QOS = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=5,
     durability=QoSDurabilityPolicy.VOLATILE,
+)
+
+# States in which the lookahead camera is processed. Search phases only:
+# once retrieval starts the candidate knowledge can no longer change the
+# mission, so the detection CPU is skipped for the whole ARRANGE tour.
+_LOOKAHEAD_ACTIVE_STATES = frozenset(
+    {StateName.LINE_FOLLOW, StateName.WAYPOINT_VISIT}
 )
 
 
@@ -225,6 +240,22 @@ class LineTracerNode(Node):
         self.declare_parameter("return_arrival_dist", 1.0)
         self.declare_parameter("takeoff_alt_threshold", 1.8)
         self.declare_parameter("snap_max_err", 2.0)
+        # Sideways lookahead camera (OV9281+6mm model in model.sdf).
+        # Detections become navigation CANDIDATES (fly there, then let
+        # the downward camera record), never records themselves. Mount
+        # extrinsics mirror the SDF sensor pose; keep them in sync.
+        self.declare_parameter("lookahead_enable", True)
+        self.declare_parameter("lookahead_mount_yaw", 1.5707963267948966)
+        self.declare_parameter("lookahead_mount_pitch", 0.384)
+        self.declare_parameter("lookahead_mount_tx", 0.0)
+        self.declare_parameter("lookahead_mount_ty", 0.05)
+        self.declare_parameter("lookahead_mount_tz", -0.03)
+        # 3 sightings agreeing on the same intersection promote it to a
+        # candidate: at 10 Hz that is 0.3 s of the ~5 s an intersection
+        # spends in the reliable band at 0.5 m/s cruise — early enough,
+        # and enough to reject one-frame ID misreads at 6 px/module.
+        self.declare_parameter("lookahead_vote_threshold", 3)
+        self.declare_parameter("lookahead_max_range", 12.0)
 
         target_alt = float(self.get_parameter("target_altitude").value)
         self._gains = Gains(
@@ -288,6 +319,33 @@ class LineTracerNode(Node):
         self._external_pixel_error: Optional[Vector3] = None
         self._external_pixel_error_t: Optional[float] = None
         self._fsm_state_prev: Optional[StateName] = None
+
+        # --- lookahead camera state -------------------------------------
+        self._lookahead_enable = bool(self.get_parameter("lookahead_enable").value)
+        self._lookahead_intrinsics: Optional[CameraIntrinsics] = None
+        self._lookahead_mount = MountExtrinsics(
+            yaw=float(self.get_parameter("lookahead_mount_yaw").value),
+            pitch=float(self.get_parameter("lookahead_mount_pitch").value),
+            tx=float(self.get_parameter("lookahead_mount_tx").value),
+            ty=float(self.get_parameter("lookahead_mount_ty").value),
+            tz=float(self.get_parameter("lookahead_mount_tz").value),
+        )
+        self._side_cfg = SideCameraConfig()
+        self._tracker = CandidateTracker(
+            snap_max_err=float(self.get_parameter("snap_max_err").value)
+        )
+        self._lookahead_vote_threshold = int(
+            self.get_parameter("lookahead_vote_threshold").value
+        )
+        self._lookahead_max_range = float(
+            self.get_parameter("lookahead_max_range").value
+        )
+        # Live roll/pitch for the ground ray-cast (sim: /odom_truth
+        # quaternion; hardware would substitute the FC attitude here).
+        self._odom_truth_rp: Optional[Tuple[float, float]] = None
+        # Last logged (id -> node) so >> CANDIDATE lines fire once per
+        # promotion / node change, not every frame.
+        self._logged_candidates: dict = {}
 
         # FC setpoint shaping constants (cached from params)
         self._hover_thrust_norm = float(self.get_parameter("hover_thrust_norm").value)
@@ -386,6 +444,19 @@ class LineTracerNode(Node):
         self._sub_pixel_err = self.create_subscription(
             Vector3, "/line_tracer/pixel_error", self._on_pixel_error_external, 10
         )
+        if self._lookahead_enable:
+            self._sub_lookahead = self.create_subscription(
+                Image, "/camera/lookahead/image_raw", self._on_lookahead, SENSOR_QOS
+            )
+            self._sub_lookahead_info = self.create_subscription(
+                CameraInfo,
+                "/camera/lookahead/camera_info",
+                self._on_lookahead_info,
+                SENSOR_QOS,
+            )
+            self._pub_lookahead_debug = self.create_publisher(
+                Image, "/line_tracer/lookahead_debug_image", 10
+            )
         # /odom_truth is the sim stand-in for the lidar+IMU Z estimator
         # called out in the team proposal. Real-flight builds set
         # use_odom_truth_altitude=false and rely on the depth-camera median
@@ -473,6 +544,107 @@ class LineTracerNode(Node):
         self._external_pixel_error = msg
         self._external_pixel_error_t = self.get_clock().now().nanoseconds * 1e-9
 
+    # ------------------------------------------------------------------
+    # Lookahead (side) camera
+    # ------------------------------------------------------------------
+
+    def _on_lookahead_info(self, msg: CameraInfo) -> None:
+        if self._lookahead_intrinsics is None:
+            self._lookahead_intrinsics = CameraIntrinsics.from_camera_info(msg)
+            self.get_logger().info(
+                f"lookahead camera_info: fx={self._lookahead_intrinsics.fx:.2f} "
+                f"size={self._lookahead_intrinsics.width}x{self._lookahead_intrinsics.height}"
+            )
+
+    def _on_lookahead(self, msg: Image) -> None:
+        # Only worth the CPU while searching: candidates cannot change
+        # the mission once retrieval starts, and TAKEOFF/LAND attitudes
+        # are outside the projection's small-angle comfort zone anyway.
+        if self._fsm.state not in _LOOKAHEAD_ACTIVE_STATES:
+            return
+        grid = self._fsm.context.grid
+        if (
+            self._lookahead_intrinsics is None
+            or self._altitude_m is None
+            or grid is None
+        ):
+            return
+        try:
+            gray = self._bridge.imgmsg_to_cv2(msg, desired_encoding="mono8")
+        except Exception as e:                                # pragma: no cover
+            self.get_logger().warn(f"lookahead conversion failed: {e}")
+            return
+        detections = detect_aruco_side(gray, self._side_cfg)
+        stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+        s = self._dr.state
+        # Roll/pitch: /odom_truth quaternion in sim; (0, 0) fallback is
+        # the no-estimate case (hardware without an attitude feed) —
+        # the vote-on-node quantization absorbs the residual error.
+        roll, pitch = self._odom_truth_rp if self._odom_truth_rp else (0.0, 0.0)
+        projections: dict = {}
+        for det in detections:
+            hit = project_pixel_to_ground(
+                det.center_uv[0],
+                det.center_uv[1],
+                self._lookahead_intrinsics,
+                self._lookahead_mount,
+                (s.x, s.y, self._altitude_m),
+                (roll, pitch, s.yaw),
+                max_range=self._lookahead_max_range,
+            )
+            if hit is None:
+                continue
+            xw, yw, slant = hit
+            projections[det.id] = (xw, yw)
+            self._tracker.observe(det.id, xw, yw, slant, stamp, grid)
+
+        candidates = self._tracker.snapshot(self._lookahead_vote_threshold, grid)
+        for cid, cand in candidates.items():
+            if self._logged_candidates.get(cid) != cand.node:
+                self._logged_candidates[cid] = cand.node
+                self.get_logger().info(
+                    f">> CANDIDATE id={cid} node={cand.node} "
+                    f"xy=({cand.xy[0]:+.2f}, {cand.xy[1]:+.2f}) "
+                    f"votes={cand.votes} range={cand.best_range:.1f}"
+                )
+        if candidates:
+            self._publish_candidate_markers(candidates, msg.header.stamp)
+
+        if bool(self.get_parameter("publish_debug_image").value):
+            try:
+                debug_bgr = draw_lookahead_overlay(gray, detections, projections)
+                debug_msg = self._bridge.cv2_to_imgmsg(debug_bgr, encoding="bgr8")
+                debug_msg.header = msg.header
+                self._pub_lookahead_debug.publish(debug_msg)
+            except Exception as e:                            # pragma: no cover
+                self.get_logger().warn(f"lookahead debug publish failed: {e}")
+
+    def _publish_candidate_markers(self, candidates: dict, stamp) -> None:
+        """Cyan spheres for believed-but-unvisited marker positions —
+        distinct from the yellow ns "aruco" spheres of the downward
+        camera so RViz shows which knowledge came from which pipeline."""
+        ma = MarkerArray()
+        for cid, cand in candidates.items():
+            m = Marker()
+            m.header.frame_id = "world"
+            m.header.stamp = stamp
+            m.ns = "aruco_candidate"
+            m.id = int(cid)
+            m.type = Marker.SPHERE
+            m.action = Marker.ADD
+            m.pose.position.x = float(cand.xy[0])
+            m.pose.position.y = float(cand.xy[1])
+            m.pose.position.z = 0.0
+            m.pose.orientation.w = 1.0
+            m.scale.x = m.scale.y = m.scale.z = 0.5
+            m.color.r = 0.0
+            m.color.g = 1.0
+            m.color.b = 1.0
+            m.color.a = 0.85
+            m.lifetime.sec = 5
+            ma.markers.append(m)
+        self._pub_markers.publish(ma)
+
     def _on_odom_truth(self, msg: Odometry) -> None:
         """Sim-only altitude + vz override.
 
@@ -556,6 +728,16 @@ class LineTracerNode(Node):
         self._odom_truth_yaw = math.atan2(
             2.0 * (qw * qz + qx * qy),
             1.0 - 2.0 * (qy * qy + qz * qz),
+        )
+        # Roll/pitch (standard ZYX extraction) feed the lookahead
+        # camera's ground ray-cast: an oblique ray moves its ground hit
+        # ~10 m per rad of attitude at the near band, so the projection
+        # must see the live attitude, not just the mount angle.
+        sinp = 2.0 * (qw * qy - qz * qx)
+        sinp = max(-1.0, min(1.0, sinp))
+        self._odom_truth_rp = (
+            math.atan2(2.0 * (qw * qx + qy * qz), 1.0 - 2.0 * (qx * qx + qy * qy)),
+            math.asin(sinp),
         )
 
     def _handle_set_state(self, request, response):

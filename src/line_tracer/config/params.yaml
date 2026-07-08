@@ -40,5 +40,18 @@
     # ---- ArUco ----
     marker_size: 0.5          # [m]; reserved for future PnP-based pose
 
+    # ---- Lookahead (sideways OV9281+6mm) ----
+    lookahead_enable: true
+    # Mount extrinsics — MUST mirror the lookahead <sensor> pose in
+    # world/models/uav26_quad/model.sdf: yaw pi/2 (boresight +Y_body),
+    # pitch 0.384 (22 deg depression), 5 cm left / 3 cm down.
+    lookahead_mount_yaw: 1.5707963267948966
+    lookahead_mount_pitch: 0.384
+    lookahead_mount_tx: 0.0
+    lookahead_mount_ty: 0.05
+    lookahead_mount_tz: -0.03
+    lookahead_vote_threshold: 3   # sightings on one node before candidate
+    lookahead_max_range: 12.0     # [m] slant; beyond this a hit is noise
+
     # ---- Initial conditions ----
     default_altitude: 0.0

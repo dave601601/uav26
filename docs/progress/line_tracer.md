@@ -2,6 +2,41 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## In progress (2026-07-08 — lookahead candidates, M-D)
+
+### side_camera.py — lookahead perception + candidate tracker
+
+Pure module (no rclpy) for the new sideways OV9281+6mm camera
+(world.md entry has the mount geometry and why sideways beats
+forward under the +X yaw lock):
+
+- `MountExtrinsics.rotation_body_optical()` = Rz(yaw)*Ry(pitch)*R_so,
+  the same extrinsic-rpy composition as the SDF sensor pose. The
+  downward camera is the (0, pi/2) degenerate case and reproduces the
+  node's hardcoded `xb=-yc, yb=-xc` optical->body map — pinned by
+  test.
+- `project_pixel_to_ground`: attitude-compensated ray-cast onto z=0.
+  Not the downward camera's depth=altitude shortcut — an oblique
+  ray's ground hit moves ~h/sin^2(depression) per rad of attitude
+  (~10 m/rad at the near band), so live roll/pitch (new: extracted
+  from the /odom_truth quaternion) and yaw enter the rotation.
+  Near-horizon rays (down-component < 0.02) and hits beyond
+  lookahead_max_range are refused.
+- `detect_aruco_side`: DetectorParameters tuned for the ~6 px/module
+  foreshortened far quads (win step 4, perimeter rate 0.02, polygon
+  accuracy 0.05, SUBPIX corners, errorCorrectionRate 0.8).
+- `CandidateTracker`: votes per (id, nearest-intersection) pair;
+  majority node wins, ties to most recent. Vote-on-node absorbs
+  projection error the same way snap_to_intersection does (2 m
+  tolerance). Deliberately ignorant of records/drops — that
+  filtering is FSM-owned.
+- Node wiring is passive this commit: subscribe, detect, project,
+  vote, publish `/line_tracer/lookahead_debug_image` + cyan
+  `aruco_candidate` spheres, log `>> CANDIDATE` on promotion. No
+  flight-behavior change; detections do NOT enter PerceptionResult
+  (the FSM treats `perception.aruco` as "marker below" — merging
+  would snap-record 5 m off).
+
 ## Current state (2026-07-08 end — r57/r60 full 4-marker mission, video-verified)
 
 r57 and r60 fly the complete competition flow (seed 42, ~12 min):
