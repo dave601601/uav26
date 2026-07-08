@@ -22,6 +22,14 @@ services:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
       - XDG_RUNTIME_DIR=/tmp/runtime-root
+      # DDS isolation. network_mode:host + default domain 0 lets any
+      # ROS node on this machine (other containers, host tools,
+      # orphaned nodes) discover and collide with the sim graph — all
+      # load-bearing topics are absolute names (/fc/setpoint,
+      # /uav26_quad/command/motor_speed). Pin a project domain and
+      # keep DDS on localhost.
+      - ROS_DOMAIN_ID=26
+      - ROS_LOCALHOST_ONLY=1
       # NVIDIA GPU 쓸 거면
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all

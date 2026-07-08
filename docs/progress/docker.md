@@ -2,6 +2,27 @@
 
 Build environment for the workspace.
 
+## Process hygiene (2026-07-08) — read before running missions
+
+- `pkill -9 -f 'ros2 launch'` ORPHANS the launch's children: SIGKILL
+  is uncatchable, so launch never propagates shutdown to its nodes.
+  Orphaned `fc_sim_node` + `parameter_bridge` re-activate on the next
+  run's /clock+/imu (topics are absolute) and fight the new FC for
+  the drone. This accumulated one zombie FC pair per run and poisoned
+  r42..r51 — every "physics mystery" in that range was multi-FC
+  interference. Same lesson as the r19-r22 zombie containers, one
+  level down.
+- Teardown contract, codified in `scripts/run_mission.sh`: sweep
+  strays BEFORE starting (fail loud if any survive), SIGINT the
+  launches first, then pkill stragglers BY NAME including fc_sim_node
+  and parameter_bridge. fc_sim also fatals + zeroes output if it sees
+  a second publisher on the motor topic.
+- `compose.yml` pins `ROS_DOMAIN_ID=26` + `ROS_LOCALHOST_ONLY=1`:
+  with network_mode host and default domain 0, any ROS node on the
+  machine (other containers, host tools, orphans) joins the sim
+  graph. Recreating the container drops `/workspace/install` (not a
+  mounted volume) — rebuild after `docker compose up -d`.
+
 ## Status
 
 - Image: `uav-aruco:latest`, built from `Dockerfile` at repo root. Base: `ros:jazzy`.
