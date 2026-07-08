@@ -22,6 +22,16 @@ Build environment for the workspace.
   machine (other containers, host tools, orphans) joins the sim
   graph. Recreating the container drops `/workspace/install` (not a
   mounted volume) — rebuild after `docker compose up -d`.
+- GUI under Docker Desktop (WSL2): absolute bind-mount paths resolve
+  inside the docker-desktop utility VM, so `/tmp/.X11-unix` grabs the
+  VM's own invisible Xwayland — gz renders happily into a ghost
+  session and no window ever appears. The real per-user WSLg socket
+  is bridged through the cross-distro `/mnt/wsl` tmpfs
+  (`mount --bind /mnt/wslg/.X11-unix /mnt/wsl/wslg-x11`, then compose
+  mounts that). `scripts/dev.sh gui` creates the bridge (sudo),
+  recreates the container if it predates the bridge, rebuilds if
+  install/ is gone, and launches sim + tracer with Ctrl+C teardown.
+  `scripts/dev.sh mission rNN [dur]` is the headless equivalent.
 
 ## Status
 

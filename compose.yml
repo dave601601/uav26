@@ -13,13 +13,24 @@ services:
       - ./src:/workspace/src
       - ./build:/workspace/build
       - ./ros:/workspace/ros
-      # GUI (Gazebo, rqt, rviz)
-      - /tmp/.X11-unix:/tmp/.X11-unix
+      # GUI (Gazebo, rqt, rviz) via WSLg under DOCKER DESKTOP.
+      # Absolute host paths in bind mounts resolve inside the
+      # docker-desktop utility VM, NOT the user's WSL distro — mounting
+      # /tmp/.X11-unix grabs the VM's own (invisible) Xwayland and gz
+      # renders into a ghost session: no window ever appears. Bridge
+      # the real per-user WSLg socket through /mnt/wsl, the tmpfs
+      # shared by every WSL2 distro including docker-desktop. One-time
+      # setup per WSL boot (run in the user distro):
+      #   sudo mkdir -p /mnt/wsl/wslg-x11
+      #   sudo mount --bind /mnt/wslg/.X11-unix /mnt/wsl/wslg-x11
+      # (persist via /etc/wsl.conf [boot] command if desired). Run the
+      # bind BEFORE (re)creating this container.
+      - /mnt/wsl/wslg-x11:/tmp/.X11-unix
 
     working_dir: /workspace
 
     environment:
-      - DISPLAY=${DISPLAY}
+      - DISPLAY=${DISPLAY:-:0}
       - QT_X11_NO_MITSHM=1
       - XDG_RUNTIME_DIR=/tmp/runtime-root
       # DDS isolation. network_mode:host + default domain 0 lets any
