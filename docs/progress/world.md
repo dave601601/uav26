@@ -4,6 +4,21 @@ Gazebo Harmonic simulation package: arena, drone model, sensor plugins, bridge, 
 
 ## Done (recent)
 
+### Marker textures gain the ArUco quiet zone (2026-07-09)
+
+- aruco.py generated the code flush to the texture edge — no white
+  quiet zone. A marker on a grid intersection therefore FUSES with
+  the black grid cross into one blob and the detector cannot form a
+  candidate quad. The nadir camera survived by scale luck (adaptive
+  threshold separates the thin lines at its resolution); every
+  oblique side-camera detection in r61/r63 died this way — verified
+  by a held-pose render test: 0/10 detections without the margin,
+  10/10 with it (id 1 from lateral 4.5 m, the row-skip design point).
+- Textures are now a 1-module white margin around the code (plate
+  stays 0.5 m; code 0.4 m — how a real 0.5 m sheet is printed; the
+  detector's documented requirement is a light quiet zone). Nadir
+  detection keeps ~12 px/module and also benefits from the margin.
+
 ### Sideways lookahead camera — OV9281 + 6 mm model (2026-07-08)
 
 - New `lookahead` camera sensor on `uav26_quad`: boresight = +Y_body

@@ -14,6 +14,7 @@ import os
 
 import cv2
 import cv2.aruco as aruco
+import numpy as np
 
 DICTIONARY = aruco.DICT_6X6_250
 
@@ -54,11 +55,34 @@ def parse_ids_from_yaml(path: str) -> list[int]:
     return ids
 
 
-def generate_marker_png(marker_id: int, size_px: int, out_path: str) -> None:
+def generate_marker_png(
+    marker_id: int, size_px: int, out_path: str, margin_modules: float = 1.0
+) -> None:
+    """Marker code centered on a white quiet zone.
+
+    generateImageMarker emits the black border flush to the image edge,
+    but the ArUco detector REQUIRES a light quiet zone around the code
+    to isolate the quad contour — a real printed marker always has one.
+    Without it, a marker sitting on a grid intersection fuses with the
+    black grid lines into one blob and the detector never even forms a
+    candidate quad (this killed every oblique side-camera detection in
+    r61/r63; the nadir camera survived only because at its scale the
+    adaptive threshold happened to separate the thin lines).
+
+    The plate stays size_px (0.5 m in the world); the code shrinks to
+    8/(8 + 2*margin_modules) of it — 0.4 m for the default 1-module
+    margin, mirroring how a 0.5 m sheet would actually be printed.
+    """
     aruco_dict = aruco.getPredefinedDictionary(DICTIONARY)
-    img = aruco.generateImageMarker(aruco_dict, marker_id, size_px)
+    modules = 8  # 6x6 code + 1-module black border each side
+    total = modules + 2.0 * margin_modules
+    code_px = int(round(size_px * modules / total))
+    img = aruco.generateImageMarker(aruco_dict, marker_id, code_px)
+    canvas = 255 * np.ones((size_px, size_px), dtype=np.uint8)
+    pad = (size_px - code_px) // 2
+    canvas[pad:pad + code_px, pad:pad + code_px] = img
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
-    cv2.imwrite(out_path, img)
+    cv2.imwrite(out_path, canvas)
 
 
 def main() -> None:
