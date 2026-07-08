@@ -67,7 +67,9 @@ Rules:
 Do not add `Co-authored-by: Claude` or any AI-attribution trailer to commit messages.
 
 ### Push policy
-Do not push automatically. Commit locally; I'll push when ready.
+Push only when the user explicitly requests it in the current conversation.
+Never push on your own initiative — not after commits, not at session end.
+Commit locally and wait for a push request.
 
 ---
 
