@@ -180,12 +180,22 @@ class MissionContext:
     start_yaw: Optional[float] = None     # captured on first tick for yaw-lock
     return_path_start_t: Optional[float] = None
     return_path_timeout: float = 30.0     # force LAND if return doesn't arrive in time
-    # World-frame distance the drone tracks along start_yaw during
-    # LINE_FOLLOW. Without a target the drone open-loop cruises and
-    # drifts off-axis (firmware drift > yawrate clamp); with a target
-    # the same world_to_body rotation already used by ARRANGE_BY_ID
-    # keeps the track aligned regardless of yaw.
-    line_follow_distance: float = 25.0
+    # ARRANGE_BY_ID stall guard: node advancement requires a tick to
+    # sample the drone inside waypoint_arrival_dist of the current
+    # node; an overshoot can orbit a node forever with no counterpart
+    # to return_path_timeout. On timeout, fall through to RETURN_PATH
+    # (still try to get home) rather than LAND-in-place.
+    arrange_start_t: Optional[float] = None
+    arrange_timeout: float = 60.0
+    # LINE_FOLLOW cruises toward a MOVING world-frame target
+    # (drone_x + lookahead, start_y). The lookahead sets how hard the
+    # velocity vector leans into cross-track error: with the old fixed
+    # far target (start_x + 25, start_y) the direction was ~unit +X, so
+    # a 1 m takeoff drift decayed over tens of metres and the drone
+    # cruised past marker row outside the camera footprint (r42).
+    # lookahead 2.0 m makes a 1 m cross error steer ~27 degrees toward
+    # the line while still advancing.
+    line_follow_lookahead: float = 2.0
 
     # Transition counters
     takeoff_alt_streak: int = 0
@@ -273,14 +283,14 @@ class StateMachine:
             snapped_record = self._tick_waypoint_visit(now, dr_state)
 
         elif self._state is StateName.ARRANGE_BY_ID:
-            self._tick_arrange(dr_state)
+            self._tick_arrange(now, dr_state)
 
         elif self._state is StateName.RETURN_PATH:
             self._tick_return(now, dr_state)
 
         # LAND is terminal; no transition logic.
 
-        target_xy = self._current_target_xy()
+        target_xy = self._current_target_xy(dr_state, altitude)
 
         return TickResult(
             state=self._state,
@@ -344,13 +354,28 @@ class StateMachine:
             self._state = StateName.LINE_FOLLOW
         return snapped_record
 
-    def _tick_arrange(self, dr_state: State) -> None:
+    def _tick_arrange(self, now: float, dr_state: State) -> None:
         ctx = self._context
         if not ctx.retrieval_path or ctx.grid is None:
+            # Nothing was planned (mis-config) — no path to follow and
+            # no basis for a return leg either.
             self._state = StateName.LAND
             return
+        if ctx.arrange_start_t is None:
+            ctx.arrange_start_t = now
+        if (now - ctx.arrange_start_t) >= ctx.arrange_timeout:
+            self._state = StateName.RETURN_PATH
+            return
+        # Path exhausted -> RETURN_PATH, never straight to LAND. The
+        # return leg homes on the exact start_xy independently of the
+        # node list, so this also covers the degenerate length-1 path:
+        # when marker node == start node == current node, dedup in
+        # visit_in_order collapses the plan to one node and the old
+        # `if idx >= len: LAND` pre-empted the `elif idx == len-1:
+        # RETURN_PATH` branch — r52 skipped the whole return leg and
+        # landed on the marker.
         if ctx.retrieval_idx >= len(ctx.retrieval_path):
-            self._state = StateName.LAND
+            self._state = StateName.RETURN_PATH
             return
 
         target_node = ctx.retrieval_path[ctx.retrieval_idx]
@@ -358,7 +383,7 @@ class StateMachine:
         if hypot(tx - dr_state.x, ty - dr_state.y) < ctx.waypoint_arrival_dist:
             ctx.retrieval_idx += 1
             if ctx.retrieval_idx >= len(ctx.retrieval_path):
-                self._state = StateName.LAND
+                self._state = StateName.RETURN_PATH
             elif ctx.retrieval_idx == len(ctx.retrieval_path) - 1:
                 # Last node is the start coordinate -> mark final leg.
                 self._state = StateName.RETURN_PATH
@@ -375,15 +400,19 @@ class StateMachine:
         if (now - ctx.return_path_start_t) >= ctx.return_path_timeout:
             self._state = StateName.LAND
             return
-        if not ctx.retrieval_path or ctx.grid is None:
-            self._state = StateName.LAND
-            return
-        if ctx.retrieval_idx >= len(ctx.retrieval_path):
+        if ctx.start_xy is None:
+            # Nothing to home on (never captured) — land in place.
             self._state = StateName.LAND
             return
 
-        target_node = ctx.retrieval_path[ctx.retrieval_idx]
-        tx, ty = ctx.grid.world(target_node)
+        # The return target is the EXACT start position, not its nearest
+        # grid node — spawn can sit up to half a cell (2 m) from any
+        # intersection, and the mission is scored on landing where the
+        # drone took off (r41 landed on the (0,0) node, 4 m from spawn).
+        # No retrieval_path/idx guards here: RETURN_PATH is reachable
+        # with idx == len(path) (ARRANGE exhaustion) and the node list
+        # is irrelevant to the homing leg.
+        tx, ty = ctx.start_xy
         if hypot(tx - dr_state.x, ty - dr_state.y) < ctx.return_arrival_dist:
             self._state = StateName.LAND
 
@@ -408,23 +437,44 @@ class StateMachine:
         cur = ctx.grid.nearest_node(dr_state.x, dr_state.y)
         ctx.retrieval_path = visit_in_order(ctx.grid, cur, waypoints)
         ctx.retrieval_idx = 0
+        # Fresh mission-phase timers: without these resets a re-plan
+        # (set_state or a second mission) inherits a stale
+        # return_path_start_t and the 30 s timeout fires instantly.
+        ctx.arrange_start_t = None
+        ctx.return_path_start_t = None
         self._state = StateName.ARRANGE_BY_ID
 
-    def _current_target_xy(self) -> Optional[Tuple[float, float]]:
+    def _current_target_xy(
+        self, dr_state: State, altitude: float
+    ) -> Optional[Tuple[float, float]]:
         ctx = self._context
+        if self._state is StateName.TAKEOFF:
+            # Position hold over the start point while climbing —
+            # but only once airborne. Commanding lateral attitude
+            # during the ground-contact burst phase shoves the sphere
+            # collision and flings the drone (r43: 4 m/s lateral, yaw
+            # spin, 60 m runaway). Below the gate the drone stays
+            # level; above it the hold brakes the takeoff drift that
+            # walked r42 a metre off the marker row.
+            if altitude < 0.5:
+                return None
+            return ctx.start_xy
         if self._state is StateName.LINE_FOLLOW:
-            # Project a world-frame target a fixed distance along the
-            # world +X axis (the grid is laid out so markers fall on
-            # +X-aligned grid lines, and using start_yaw caused r31 to
-            # mis-aim because the drone's spawn yaw was captured a
-            # fraction off from 0). Anchors the cruise track even when
-            # the firmware-side yaw drift exceeds the yawrate clamp.
+            # Moving lookahead target along the world +X grid row the
+            # mission started on (markers sit on +X-aligned lines;
+            # start_yaw mis-aimed r31 because spawn yaw is captured a
+            # fraction off zero). See line_follow_lookahead.
             if ctx.start_xy is None:
                 return None
             sx, sy = ctx.start_xy
-            return (sx + ctx.line_follow_distance, sy)
+            return (dr_state.x + ctx.line_follow_lookahead, sy)
         if self._state not in (StateName.ARRANGE_BY_ID, StateName.RETURN_PATH):
             return None
+        if self._state is StateName.RETURN_PATH and ctx.start_xy is not None:
+            # Final leg homes on the exact start position (see
+            # _tick_return); grid nodes are only used to route the
+            # ARRANGE_BY_ID traversal.
+            return ctx.start_xy
         if not ctx.retrieval_path or ctx.grid is None:
             return None
         if ctx.retrieval_idx >= len(ctx.retrieval_path):

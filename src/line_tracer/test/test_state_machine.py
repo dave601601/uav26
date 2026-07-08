@@ -232,6 +232,55 @@ class TestMissionTick:
         r = sm.tick(0.05, State(x=8.3, y=3.8, z=2.0), _empty_perception(), 2.0)
         # Marker recorded at snapped intersection, not the noisy DR pose.
         assert sm.context.records[0] == (8.0, 4.0)
+
+    def test_degenerate_single_node_path_still_returns(self):
+        """r52 regression: marker node == start node == current node
+        collapses the retrieval path to length 1 after dedup; the FSM
+        must still pass through RETURN_PATH (which homes on the exact
+        start_xy) instead of landing on the marker."""
+        ctx = MissionContext(
+            grid=Grid.from_extents(width=30.0, depth=20.0, cell=4.0,
+                                   marker_xy={2: (4.0, 4.0)}),
+            max_records=1,
+            waypoint_arrival_dist=1.2,
+            return_arrival_dist=1.0,
+        )
+        sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
+        ctx.start_xy = (2.1, 4.0)   # nearest node ties toward (4, 4)
+        ctx.start_yaw = 0.0
+        ctx.records[2] = (4.0, 4.0)
+        # Next LINE_FOLLOW tick plans retrieval from on top of the marker.
+        r = sm.tick(0.0, State(x=4.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        assert r.state is StateName.ARRANGE_BY_ID
+        assert len(ctx.retrieval_path) == 1
+        # Standing on the single node: must go to RETURN_PATH, not LAND.
+        r = sm.tick(0.05, State(x=4.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        assert r.state is StateName.RETURN_PATH
+        # RETURN homes on the exact start point.
+        assert r.target_xy_world == (2.1, 4.0)
+        # Arriving near start_xy -> LAND.
+        r = sm.tick(0.10, State(x=2.2, y=4.0, z=2.0), _empty_perception(), 2.0)
+        assert r.state is StateName.LAND
+
+    def test_arrange_timeout_falls_through_to_return(self):
+        """ARRANGE stall guard: if the drone never samples inside
+        waypoint_arrival_dist of the current node, the FSM must not
+        orbit forever — after arrange_timeout it moves to RETURN_PATH."""
+        ctx = self._ctx()
+        ctx.arrange_timeout = 5.0
+        sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
+        ctx.start_xy = (2.0, 4.0)
+        ctx.start_yaw = 0.0
+        for mid, xy in {0: (8.0, 4.0), 1: (12.0, 8.0),
+                        2: (20.0, 8.0), 3: (24.0, 16.0)}.items():
+            ctx.records[mid] = xy
+        r = sm.tick(0.0, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        assert r.state is StateName.ARRANGE_BY_ID
+        # Drone far from every node for longer than the timeout.
+        r = sm.tick(1.0, State(x=2.5, y=5.5, z=2.0), _empty_perception(), 2.0)
+        assert r.state is StateName.ARRANGE_BY_ID
+        r = sm.tick(6.1, State(x=2.5, y=5.5, z=2.0), _empty_perception(), 2.0)
+        assert r.state is StateName.RETURN_PATH
         assert r.snapped_record is None or r.snapped_record[0] == 0
 
     def test_same_marker_seen_twice_does_not_double_record(self):
@@ -347,9 +396,8 @@ class TestMissionTickEdgeCases:
         """If somehow the FSM has no Grid (mis-configured node), it can
         still capture markers but should NOT crash trying to plan a
         retrieval path; the safe behaviour is to stay put. LINE_FOLLOW
-        emits a world-frame anchor (start_xy + line_follow_distance
-        along start_yaw) regardless of grid presence — that's the
-        cruise anchor introduced in r28."""
+        emits a moving world-frame lookahead target (drone_x +
+        line_follow_lookahead, start_y) regardless of grid presence."""
         ctx = MissionContext(grid=None, max_records=2,
                              waypoint_hover_seconds=0.05)
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
@@ -360,17 +408,26 @@ class TestMissionTickEdgeCases:
         r = sm.tick(0.0, State(x=4.0, y=4.0, z=2.0), _empty_perception(), 2.0)
         # No crash; FSM stays in LINE_FOLLOW (planner needs the grid).
         assert r.state is StateName.LINE_FOLLOW
-        # LINE_FOLLOW anchor along start_yaw = 0 -> (2 + 25, 4) = (27, 4).
-        assert r.target_xy_world == (27.0, 4.0)
+        # Moving lookahead from drone x=4 -> (4 + 2, 4) = (6, 4).
+        assert r.target_xy_world == (
+            4.0 + ctx.line_follow_lookahead, 4.0
+        )
 
-    def test_target_xy_world_only_after_takeoff_or_waypoint(self):
-        """TAKEOFF and WAYPOINT_VISIT do not emit world-frame targets;
-        the node falls back to perception / hover paths. LINE_FOLLOW
-        and ARRANGE_BY_ID / RETURN_PATH do emit them."""
+    def test_target_xy_world_per_state(self):
+        """TAKEOFF holds position over the captured start point;
+        WAYPOINT_VISIT emits no world target (the node hovers on
+        perception centering); LINE_FOLLOW / ARRANGE_BY_ID /
+        RETURN_PATH emit world targets."""
         ctx = MissionContext(grid=self._grid())
         sm = StateMachine(initial=StateName.TAKEOFF, context=ctx)
-        r = sm.tick(0.0, State(z=0.5), _empty_perception(), 0.5)
+        # On the ground (below the 0.5 m airborne gate): stay level, no
+        # world target — lateral attitude during the burst flings the
+        # drone off the sphere contact (r43).
+        r = sm.tick(0.0, State(x=2.0, y=4.0, z=0.1), _empty_perception(), 0.1)
         assert r.target_xy_world is None
+        # Airborne: hold the captured start point.
+        r = sm.tick(0.1, State(x=2.0, y=4.0, z=1.0), _empty_perception(), 1.0)
+        assert r.target_xy_world == (2.0, 4.0)
         sm._state = StateName.WAYPOINT_VISIT
         sm.context.waypoint_visit_id = 99
         sm.context.waypoint_visit_start_t = 0.0

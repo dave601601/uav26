@@ -2,7 +2,34 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
-## Current state (2026-05-25 end-of-session)
+## Current state (2026-07-08 — r54/r55 full mission, twice in a row)
+
+Two consecutive clean headless runs on the 4S power train: TAKEOFF ->
+LINE_FOLLOW -> WAYPOINT_VISIT (marker 2 recorded at exactly (4,4),
+err 0.00 m) -> ARRANGE_BY_ID -> RETURN_PATH -> LAND. Cruise holds
+1.98 m for target 2.0; touchdown 0.5 m from the start point; the
+disarmed drone stays parked (no post-landing drift). No DartSim
+aborts. 159 tests green (141 pytest + 18 gtest).
+
+What changed (root-cause fixes from the four-agent audit, not tuning):
+
+| Root cause | Fix |
+|---|---|
+| `pitch_sp = vx/g` is open loop — with zero drag in gz it commands acceleration, speed integrates unbounded (r39 exited the arena, slid 200 m after touchdown) | Body-velocity loop: `pitch_sp = kp_vel*(vx_cmd - vx_meas)` with vx_meas from the /odom_truth xy derivative (message-stamp dt, alpha-0.5 smoothing) rotated into body frame. Open-loop mapping remains only as the no-measurement fallback. |
+| Altitude loop is P-only, so a feed-forward mis-trim becomes a permanent offset: hover_ff 0.38 (measured on a zombie-contaminated run) vs clean plant 0.334 put every setpoint +0.27 m high — cruise 2.27, LAND parked at 0.27 m forever (r52) | hover_thrust_norm unified at 0.33 (param == dataclass default), and LAND descends on a velocity command (land_descent_vz -0.3 m/s) instead of the P law, so touchdown is trim-independent. Touchdown cutoff (<0.12 m) zeroes thrust and disarms. |
+| Retrieval path collapses to length 1 when marker node == start node == current node (start (2,4) ties between x-nodes 0 and 4); `if idx >= len: LAND` pre-empted the `elif -> RETURN_PATH` branch — r52 skipped the whole return leg | ARRANGE exhaustion now always goes to RETURN_PATH, which homes on the EXACT start_xy (not its nearest node) with the existing 30 s timeout; obsolete path/idx guards removed from `_tick_return`. Plus: arrange_timeout 60 s stall guard, mission-phase timer resets in `_plan_retrieval`. |
+| Takeoff drift walked the cruise off the marker row (r42 missed detection 1 m off-line); ground-phase position hold flung the drone off the sphere contact (r43) | TAKEOFF holds start_xy only above 0.5 m; LINE_FOLLOW uses a moving 2 m lookahead target so cross-track error steers ~27 deg instead of decaying over tens of metres. |
+| FSM captured start_xy from the DR default (0,0) before the first odom fix (r41 returned to the wrong corner) | Sim builds gate the whole DR tick on the first /odom_truth pose. |
+
+Operational prerequisites for reproducing (see docker.md): zombie-free
+container (`scripts/run_mission.sh` sweep contract), ROS_DOMAIN_ID
+pinned in compose.
+
+Remaining for M-B/M-C: mission_max_records back to 4 + grid sweep for
+off-axis corners; XY accuracy target <0.5 m per marker; retrieval
+order + per-WP Z.
+
+## Superseded state (2026-05-25 end-of-session)
 
 ### Algorithm: ✅ done
 

@@ -65,33 +65,67 @@ class BodyVelocity:
 @dataclass(frozen=True)
 class AttiThrCmd:
     """Attitude + thrust setpoint, in the FC's reference frame. The
-    rclpy node copies these fields into an fc_sim_msgs/Setpoint."""
+    rclpy node copies these fields into an fc_sim_msgs/Setpoint.
+    ``armed=False`` means touchdown is complete: motors off, no
+    attitude authority requested."""
     pitch_sp: float
     roll_sp: float
     yawrate_sp: float
     thrust_norm: float
+    armed: bool = True
 
 
 @dataclass(frozen=True)
 class SetpointGains:
-    hover_thrust_norm: float = 0.50      # sim hover point
-    kp_alt_thrust: float = 0.25          # thrust_norm per metre of alt_err
-    kd_alt_thrust: float = 0.30          # thrust_norm per (m/s) of vz
+    # thrust_norm scale: the 2212-920KV/4S power train delivers 35.3 N
+    # at thrust_norm=1.0 (900 gf x 4, fc_core max_thrust_g_per_motor).
+    # Hover for the 1.182 kg frame sits at 0.33. All norms here are the
+    # pre-2026-07 600 g-train values rescaled by 0.667 so the commanded
+    # forces (in newtons) are unchanged.
+    hover_thrust_norm: float = 0.33      # sim hover point
+    kp_alt_thrust: float = 0.17          # thrust_norm per metre of alt_err
+    kd_alt_thrust: float = 0.20          # thrust_norm per (m/s) of vz
     max_atti_setpoint_rad: float = 0.15  # roll / pitch clamp (~8.6°)
-    thrust_min: float = 0.42
-    thrust_max: float = 0.70
+    thrust_min: float = 0.28
+    # 0.60 = 21 N = 1.8x weight. The old force-parity value (0.47,
+    # matching the 600 g train's 0.70) could not reliably arrest a
+    # fast descent (r48 sank from 2.4 m into the floor); the 4S train
+    # has 3x hover headroom, so use some of it for braking authority.
+    thrust_max: float = 0.60
     # Takeoff burst — mirrors fc_sim/scripts/hover_pub.py. Plain PD at
-    # thrust_max=0.70 turned out to be insufficient to break the sphere
+    # thrust_max turned out to be insufficient to break the sphere
     # body_collision contact against the ground_plane in DartSim. When
     # the drone is on the floor and barely moving, we open-loop a
     # stronger thrust until vz indicates liftoff; the PD takes over once
-    # the drone is rising or above takeoff_z_threshold. r24 showed 0.85
-    # / 0.30 left ~3 m/s upward momentum that the PD clamp at 0.42
-    # couldn't brake — drone overshot to 10 m. Tightened to 0.65 / 0.15:
-    # still enough to overcome ground contact (well above hover ~0.53),
-    # exits the burst with much less upward momentum to clean up.
+    # the drone is rising or above takeoff_z_threshold. r24 showed that
+    # bursting over a 0.30 m gap left ~3 m/s upward momentum that the
+    # PD clamp couldn't brake — drone overshot to 10 m. The 0.43 / 0.15
+    # pair (15.3 N, well above the 11.6 N weight) matches the force of
+    # the proven 0.65 / 0.15 tuning on the old train.
     takeoff_z_threshold: float = 0.15
-    takeoff_thrust_norm: float = 0.65
+    takeoff_thrust_norm: float = 0.43
+    # Body-velocity feedback: attitude rad per (m/s) of velocity error.
+    # pitch_sp = kp_vel * (vx_cmd - vx_meas) closes the loop that the
+    # open-loop pitch_sp = vx/g mapping leaves open — with zero drag in
+    # gz, attitude proportional to *commanded velocity* is an
+    # acceleration command, so speed integrates without bound (r39: the
+    # drone exited the arena and slid 200 m along the ground after
+    # touchdown). tau = 1/(g*kp_vel) ~= 1.0 s.
+    kp_vel: float = 0.10
+    # Touchdown cutoff: once LAND (target_alt ~ 0) has brought the
+    # drone below this altitude, cut thrust entirely and disarm.
+    # Without it the thrust clamp floor keeps the props near hover
+    # force after touchdown and the near-weightless drone skates on
+    # ground contact (r40: ~0.25 m/s creep after landing).
+    land_cutoff_alt: float = 0.12
+    # LAND descends on a VELOCITY command, not the altitude P law.
+    # The altitude loop is P-only, so any feed-forward mis-trim turns
+    # into a permanent offset: with hover_thrust_norm 0.046 above the
+    # plant's true hover, every setpoint realized at target+0.27 m and
+    # LAND parked at 0.27 m forever, above the cutoff (r52). Tracking
+    # a descent rate instead is trim-independent: thrust settles at
+    # whatever value actually sustains -0.3 m/s.
+    land_descent_vz: float = -0.30
 
 
 def body_vel_to_atti_thr(
@@ -100,6 +134,8 @@ def body_vel_to_atti_thr(
     altitude: float,
     vz_truth: float,
     gains: SetpointGains,
+    vx_meas: float | None = None,
+    vy_meas: float | None = None,
 ) -> AttiThrCmd:
     """Map a body-frame velocity intent to (pitch, roll, yawrate, thrust).
 
@@ -111,10 +147,31 @@ def body_vel_to_atti_thr(
     burst is the one path that bypasses the clamp — without it the PD
     saturates at thrust_max which is calibrated for in-flight altitude
     hold, not for breaking ground contact (see hover_pub.py:86).
+
+    When a measured body velocity (vx_meas, vy_meas) is available the
+    attitude command is a P on the *velocity error*, which is a real
+    velocity loop: level attitude once the drone moves at the commanded
+    speed, opposing attitude when it overshoots (this is what brakes
+    the drone in LAND). Without a measurement the legacy open-loop
+    vx/g mapping applies — that path commands a constant acceleration
+    per unit of commanded velocity and must only be used where drag or
+    short exposure bounds the speed.
     """
     g = 9.80665
-    pitch_sp = +vel.vx / g
-    roll_sp = -vel.vy / g
+    # Touchdown: LAND drives target_alt to 0; once the drone is on the
+    # floor there is nothing left to control — motors off. Ordered
+    # before everything else so no clamp can resurrect the thrust.
+    if target_alt <= 0.05 and altitude <= gains.land_cutoff_alt:
+        return AttiThrCmd(
+            pitch_sp=0.0, roll_sp=0.0, yawrate_sp=0.0,
+            thrust_norm=0.0, armed=False,
+        )
+    if vx_meas is not None and vy_meas is not None:
+        pitch_sp = +gains.kp_vel * (vel.vx - vx_meas)
+        roll_sp = -gains.kp_vel * (vel.vy - vy_meas)
+    else:
+        pitch_sp = +vel.vx / g
+        roll_sp = -vel.vy / g
     pitch_sp = clamp(pitch_sp,
                      -gains.max_atti_setpoint_rad,
                      +gains.max_atti_setpoint_rad)
@@ -122,6 +179,19 @@ def body_vel_to_atti_thr(
                     -gains.max_atti_setpoint_rad,
                     +gains.max_atti_setpoint_rad)
     alt_err = target_alt - altitude
+    # LAND (target ~ ground): track a fixed descent rate instead of the
+    # P law — see SetpointGains.land_descent_vz. Horizontal braking
+    # (pitch/roll above) still applies during the descent.
+    if target_alt <= 0.05:
+        thrust = (gains.hover_thrust_norm
+                  + gains.kd_alt_thrust * (gains.land_descent_vz - vz_truth))
+        thrust = clamp(thrust, gains.thrust_min, gains.thrust_max)
+        return AttiThrCmd(
+            pitch_sp=pitch_sp,
+            roll_sp=roll_sp,
+            yawrate_sp=vel.wz,
+            thrust_norm=thrust,
+        )
     # Burst fires when drone is below threshold AND not already rising.
     # The earlier `abs(vz_truth) < 0.2` guard worked when vz_truth was
     # the (wrong-frame) gz twist value: small at startup so burst fired.

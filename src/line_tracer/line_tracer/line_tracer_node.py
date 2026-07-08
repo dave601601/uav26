@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from typing import Deque, Optional
+from typing import Deque, Optional, Tuple
 
 import numpy as np
 import rclpy
@@ -146,27 +146,34 @@ class LineTracerNode(Node):
         self.declare_parameter("dr_dt", 0.05)            # 20 Hz integrator
         self.declare_parameter("external_override_ttl", 0.5)
         self.declare_parameter("publish_debug_image", True)
-        # FC setpoint shaping. hover_thrust_norm sits a hair above the sim's
-        # empirical hover point (~0.50) so the altitude controller defaults
-        # to "slightly climbing" and the P+D fight altitude error harder.
-        # thrust_min/_max clamp to the same band flight_demo uses (proven
-        # stable with the firmware's 0.80 atti gain): the unclamped P term
-        # at start-up alt_err=2 m would command full thrust 0.97 and the
-        # high-gain attitude loop slams into limits before settling.
-        self.declare_parameter("hover_thrust_norm", 0.52)
-        self.declare_parameter("kp_alt_thrust", 0.25)        # thrust_norm per metre
-        self.declare_parameter("kd_alt_thrust", 0.30)        # thrust_norm per (m/s vz)
-        self.declare_parameter("thrust_min", 0.42)
-        self.declare_parameter("thrust_max", 0.70)
+        # FC setpoint shaping. thrust_norm scale is the 2212-920KV/4S
+        # power train (35.3 N at norm=1.0; fc_core max_thrust_g_per_motor
+        # = 900). All norms are the proven 600 g-train values rescaled
+        # by 0.667 so commanded forces are unchanged. hover_thrust_norm
+        # MUST match SetpointGains' default and the clean plant's hover
+        # (r52 measured 0.334; theory 0.328): the altitude loop is
+        # P-only, so a feed-forward error e shows up as a permanent
+        # e/kp_alt_thrust altitude offset on EVERY setpoint (the r52
+        # +0.27 m cruise/land offset came from the stale 0.38 trim,
+        # measured on a zombie-contaminated run).
+        self.declare_parameter("hover_thrust_norm", 0.33)
+        self.declare_parameter("kp_alt_thrust", 0.17)        # thrust_norm per metre
+        self.declare_parameter("kd_alt_thrust", 0.20)        # thrust_norm per (m/s vz)
+        self.declare_parameter("thrust_min", 0.28)
+        self.declare_parameter("thrust_max", 0.60)
         self.declare_parameter("max_atti_setpoint_rad", 0.15)   # ~8.6°
         # Takeoff burst: open-loop thrust to break ground contact when
         # the drone is sitting on the floor. Mirrors hover_pub.py.
-        # r24 showed 0.85 thrust over a 0.30 m gap left too much upward
-        # momentum for the PD to brake (drone overshot to 10 m). 0.65
-        # is still well above hover (~0.53) so the burst lifts the drone
-        # off the sphere; threshold 0.15 m exits sooner.
+        # 0.43 = 15.3 N, same force as the proven 0.65 on the old train,
+        # well above hover (~0.33) so the burst lifts the drone off the
+        # sphere; threshold 0.15 m exits sooner.
         self.declare_parameter("takeoff_z_threshold", 0.15)
-        self.declare_parameter("takeoff_thrust_norm", 0.65)
+        self.declare_parameter("takeoff_thrust_norm", 0.43)
+        # Body-velocity feedback (sim: /odom_truth xy derivative). See
+        # SetpointGains.kp_vel — closes the velocity loop so LAND can
+        # brake and retrieval waypoints converge instead of orbiting.
+        self.declare_parameter("kp_vel", 0.10)
+        self.declare_parameter("use_body_vel_feedback", True)
         # /odom_truth sanity gates: DartSim occasionally spits garbage
         # contact frames (|z| in the millions, |vz| in the thousands).
         # If those frames are accepted, the kd_alt_thrust term blows up
@@ -204,16 +211,13 @@ class LineTracerNode(Node):
         # visits the off-axis corners — left as M-B work.
         self.declare_parameter("mission_max_records", 1)
         self.declare_parameter("waypoint_hover_seconds", 1.5)
-        # arrival_dist widened from 0.6/0.4 to 5.0/3.0: the drone has no
-        # body-velocity feedback so it accumulates inertia and overshoots
-        # any tight retrieval waypoint (r34..r36 looped past targets
-        # without ever entering the 0.6 m circle). A wider tolerance lets
-        # LAND fire as the drone crosses the target neighborhood during
-        # one of its loops. Tightening this back requires implementing
-        # body-velocity damping (PD on body vx/vy from /odom_truth
-        # derivative) — left as M-B work.
-        self.declare_parameter("waypoint_arrival_dist", 5.0)
-        self.declare_parameter("return_arrival_dist", 3.0)
+        # arrival_dist: with body-velocity feedback (kp_vel) the drone
+        # tracks its commanded speed instead of accumulating inertia, so
+        # the loose 5.0/3.0 r38-demo tolerances tighten back toward the
+        # rules' accuracy budget. 1.2/1.0 leaves margin for the velocity
+        # loop's first-order lag (tau ~ 1 s at 0.2 m/s -> ~0.2 m).
+        self.declare_parameter("waypoint_arrival_dist", 1.2)
+        self.declare_parameter("return_arrival_dist", 1.0)
         self.declare_parameter("takeoff_alt_threshold", 1.8)
         self.declare_parameter("snap_max_err", 2.0)
 
@@ -292,6 +296,10 @@ class LineTracerNode(Node):
         self._takeoff_thrust_norm = float(
             self.get_parameter("takeoff_thrust_norm").value
         )
+        self._kp_vel = float(self.get_parameter("kp_vel").value)
+        self._use_body_vel_feedback = bool(
+            self.get_parameter("use_body_vel_feedback").value
+        )
         self._odom_truth_max_alt = float(
             self.get_parameter("odom_truth_max_alt").value
         )
@@ -313,6 +321,13 @@ class LineTracerNode(Node):
         # twist.twist.linear.z.
         self._odom_truth_prev_z: float = 0.0
         self._odom_truth_prev_t: Optional[float] = None
+        # World-frame xy velocity from the same finite difference,
+        # exponentially smoothed. Feeds the body-velocity loop in
+        # _build_setpoint (sim stand-in for optical-flow / EKF velocity
+        # on hardware). None until two good odom frames arrive.
+        self._latest_vxy_world: Optional[Tuple[float, float]] = None
+        self._latest_vxy_t: Optional[float] = None
+        self._odom_truth_prev_xy: Optional[Tuple[float, float]] = None
         # Sim-only yaw inject: the firmware's residual mixer asymmetry
         # rotates the actual drone over a takeoff (~0.4 rad in r17), but
         # line_tracer has no IMU subscription so DR.yaw never sees it.
@@ -478,15 +493,41 @@ class LineTracerNode(Node):
                 or abs(x) > self._odom_truth_max_xy
                 or abs(y) > self._odom_truth_max_xy):
             return
-        now = self.get_clock().now().nanoseconds * 1e-9
+        # dt for the finite differences comes from the MESSAGE STAMP,
+        # not the node clock: callback-arrival spacing races the /clock
+        # subscription (dt reads ~0 between clock ticks, garbage across
+        # clock jumps). fc_sim hit exactly this in its prime vz estimate
+        # and switched to header.stamp; same contract here.
+        stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
         if self._odom_truth_prev_t is not None:
-            dt = now - self._odom_truth_prev_t
+            dt = stamp - self._odom_truth_prev_t
             if 1e-3 < dt < 0.5:    # ignore unphysical timestep skips
                 vz = (z - self._odom_truth_prev_z) / dt
                 if abs(vz) <= self._odom_truth_max_vz:
                     self._latest_vz = vz
-        self._odom_truth_prev_t = now
+                if self._odom_truth_prev_xy is not None:
+                    vx_w = (x - self._odom_truth_prev_xy[0]) / dt
+                    vy_w = (y - self._odom_truth_prev_xy[1]) / dt
+                    # Same sanity band as vz; garbage frames are already
+                    # rejected above, this guards the derivative itself.
+                    if (abs(vx_w) <= self._odom_truth_max_vz
+                            and abs(vy_w) <= self._odom_truth_max_vz):
+                        if self._latest_vxy_world is None:
+                            self._latest_vxy_world = (vx_w, vy_w)
+                        else:
+                            # Exponential smoothing: the finite difference
+                            # of a ~50 Hz pose is step-quantized; alpha 0.5
+                            # halves that noise with ~1-frame lag, well
+                            # inside the velocity loop's ~1 s time constant.
+                            px, py = self._latest_vxy_world
+                            self._latest_vxy_world = (
+                                0.5 * px + 0.5 * vx_w,
+                                0.5 * py + 0.5 * vy_w,
+                            )
+                        self._latest_vxy_t = stamp
+        self._odom_truth_prev_t = stamp
         self._odom_truth_prev_z = z
+        self._odom_truth_prev_xy = (x, y)
         self._altitude_m = z
         self._truth_x = x
         self._truth_y = y
@@ -554,11 +595,18 @@ class LineTracerNode(Node):
         # drone actually has. Real-flight builds set
         # use_odom_truth_altitude=false and never enter this branch.
         if self._use_odom_truth_altitude:
+            if self._odom_truth_pose_xy is None:
+                # No ground truth yet: the FSM's first tick would
+                # capture start_xy from the DR default (0, 0) instead
+                # of the spawn point, and ARRANGE/RETURN would then
+                # navigate home to the wrong corner (r41 landed 4 m
+                # off at the (0,0) grid node). fc_sim's auto-hover
+                # prime covers the FC until we engage.
+                return
             if self._odom_truth_yaw is not None:
                 self._dr.state.yaw = self._odom_truth_yaw
-            if self._odom_truth_pose_xy is not None:
-                self._dr.state.x = self._odom_truth_pose_xy[0]
-                self._dr.state.y = self._odom_truth_pose_xy[1]
+            self._dr.state.x = self._odom_truth_pose_xy[0]
+            self._dr.state.y = self._odom_truth_pose_xy[1]
 
         # --- altitude resolution + FSM tick ---
         z_hat = self._dr.state.z
@@ -715,17 +763,36 @@ class LineTracerNode(Node):
             thrust_max=self._thrust_max,
             takeoff_z_threshold=self._takeoff_z_threshold,
             takeoff_thrust_norm=self._takeoff_thrust_norm,
+            kp_vel=self._kp_vel,
         )
+        # Measured body velocity for the velocity loop: rotate the
+        # smoothed world-frame /odom_truth derivative into body FLU.
+        # Falls back to the open-loop vx/g mapping when the measurement
+        # is missing or stale (>0.5 s), e.g. real hardware without an
+        # estimator, or before the first odom frames arrive.
+        vx_meas = vy_meas = None
+        if (self._use_body_vel_feedback
+                and self._latest_vxy_world is not None
+                and self._latest_vxy_t is not None):
+            now = self.get_clock().now().nanoseconds * 1e-9
+            if (now - self._latest_vxy_t) <= 0.5:
+                vx_meas, vy_meas = world_to_body(
+                    self._latest_vxy_world[0],
+                    self._latest_vxy_world[1],
+                    self._dr.state.yaw,
+                )
         cmd = body_vel_to_atti_thr(
             vel=vel,
             target_alt=float(target_altitude),
             altitude=float(self._altitude_m if self._altitude_m is not None else 0.0),
             vz_truth=float(self._latest_vz),
             gains=gains,
+            vx_meas=vx_meas,
+            vy_meas=vy_meas,
         )
         sp = Setpoint()
         sp.mode = Setpoint.MODE_ATTITHR
-        sp.arm = True
+        sp.arm = cmd.armed
         sp.roll_sp = cmd.roll_sp
         sp.pitch_sp = cmd.pitch_sp
         sp.yawrate_sp = cmd.yawrate_sp

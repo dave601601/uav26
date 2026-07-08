@@ -56,8 +56,11 @@ from line_tracer.state_machine import (
 
 GRAVITY = 9.80665
 DRONE_MASS = 1.182
-THRUST_FULL_NORM_TO_N = 4.0 * 0.6 * GRAVITY      # fc_core's mapping; thrust_norm=1.0 -> this many N
-HOVER_NORM = DRONE_MASS * GRAVITY / THRUST_FULL_NORM_TO_N    # ~0.4923
+# fc_core's mapping; thrust_norm=1.0 -> this many N. 900 gf per motor
+# matches the 2212-920KV / 4S power train (controller.c
+# max_thrust_g_per_motor).
+THRUST_FULL_NORM_TO_N = 4.0 * 0.9 * GRAVITY
+HOVER_NORM = DRONE_MASS * GRAVITY / THRUST_FULL_NORM_TO_N    # ~0.328
 
 
 # ---------------------------------------------------------------------------
@@ -76,10 +79,13 @@ class MockDrone:
         ay_body = -g * roll_sp      (so +roll  -> -Y_body acceleration)
 
     Yaw integrates the commanded ``yawrate_sp`` directly. Linear drag
-    (``drag_coef`` per (m/s)) gives the drone a finite cruise speed and
-    a sane brake distance — without it, "no body command" in LAND lets
-    the drone coast forever at its last velocity, which is unrealistic
-    for any multicopter with rotors spinning in air.
+    (``drag_coef`` per (m/s)) is kept SMALL on purpose: the gz model has
+    rotorDragCoefficient=0, so a mock with strong drag validates a
+    braking behaviour the real sim doesn't have. r39 proved the point —
+    the old drag_coef=1.0 mock passed missions while the gz drone
+    exited the arena and slid 200 m after touchdown. Convergence must
+    come from the velocity feedback in body_vel_to_atti_thr, not from
+    the mock's aerodynamics.
     """
     x: float = 0.0
     y: float = 0.0
@@ -88,7 +94,7 @@ class MockDrone:
     vy: float = 0.0
     vz: float = 0.0
     yaw: float = 0.0
-    drag_coef: float = 1.0    # 1/s; rough match for sim's effective drag.
+    drag_coef: float = 0.1    # 1/s; token residual air drag only.
 
     def step(self, cmd: AttiThrCmd, dt: float) -> None:
         ax_body = +GRAVITY * math.sin(cmd.pitch_sp)
@@ -254,12 +260,17 @@ def run_mission(
             target_altitude=behavior.target_altitude,
         )
         vel = compute_body_velocity(dx_body, dy_body, psi, drone.z, gains_now)
+        # Measured body velocity — mirrors line_tracer_node._build_setpoint
+        # (world /odom_truth derivative rotated into body FLU).
+        vx_meas, vy_meas = world_to_body(drone.vx, drone.vy, drone.yaw)
         cmd = body_vel_to_atti_thr(
             vel=vel,
             target_alt=behavior.target_altitude,
             altitude=drone.z,
             vz_truth=drone.vz,
             gains=sp_gains,
+            vx_meas=vx_meas,
+            vy_meas=vy_meas,
         )
         drone.step(cmd, dt)
         # Synthetic firmware-side yaw drift, applied AFTER the
@@ -394,6 +405,52 @@ class TestAttiThrSign:
         )
         assert cmd.roll_sp < 0, "vy=+0.5 must map to -roll_sp"
 
+    def test_velocity_feedback_brakes_overshoot(self):
+        """Command zero velocity while the drone still moves forward:
+        the velocity loop must pitch BACK (negative) to brake. The
+        open-loop mapping can't do this — it commanded level attitude
+        for vx=0 and let the drone coast (r39: 200 m ground slide)."""
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.0, vy=0.0, vz=0.0, wz=0.0),
+            target_alt=2.0, altitude=2.0, vz_truth=0.0, gains=self._gains(),
+            vx_meas=1.0, vy_meas=0.0,
+        )
+        assert cmd.pitch_sp < 0, (
+            "vx_cmd=0 with vx_meas=+1 must command negative pitch to brake"
+        )
+
+    def test_velocity_feedback_level_when_tracking(self):
+        """At the commanded speed the attitude must return to level —
+        that is what makes it a velocity loop instead of an
+        acceleration command."""
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.5, vy=0.0, vz=0.0, wz=0.0),
+            target_alt=2.0, altitude=2.0, vz_truth=0.0, gains=self._gains(),
+            vx_meas=0.5, vy_meas=0.0,
+        )
+        assert math.isclose(cmd.pitch_sp, 0.0, abs_tol=1e-9)
+        assert math.isclose(cmd.roll_sp, 0.0, abs_tol=1e-9)
+
+    def test_velocity_feedback_roll_sign(self):
+        """+vy error (commanded left faster than measured) -> -roll_sp,
+        same sign convention as the open-loop path."""
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.0, vy=0.5, vz=0.0, wz=0.0),
+            target_alt=2.0, altitude=2.0, vz_truth=0.0, gains=self._gains(),
+            vx_meas=0.0, vy_meas=0.0,
+        )
+        assert cmd.roll_sp < 0
+
+    def test_open_loop_fallback_without_measurement(self):
+        """No measurement (hardware without an estimator, or stale
+        odom) -> legacy vx/g mapping still applies."""
+        g = self._gains()
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.5, vy=0.0, vz=0.0, wz=0.0),
+            target_alt=2.0, altitude=2.0, vz_truth=0.0, gains=g,
+        )
+        assert math.isclose(cmd.pitch_sp, 0.5 / 9.80665, rel_tol=1e-6)
+
     def test_pitch_clamped_to_max(self):
         cmd = body_vel_to_atti_thr(
             vel=BodyVelocity(vx=100.0, vy=0.0, vz=0.0, wz=0.0),
@@ -506,6 +563,45 @@ class TestTakeoffBurst:
             target_alt=0.0, altitude=0.10, vz_truth=0.0, gains=g,
         )
         assert cmd.thrust_norm <= g.thrust_max
+
+
+class TestLandCutoff:
+    """Touchdown must kill the motors. r40 showed the thrust clamp
+    floor keeping the landed drone near-weightless — it skated along
+    the ground at ~0.25 m/s indefinitely."""
+
+    def _gains(self) -> SetpointGains:
+        return SetpointGains()
+
+    def test_cutoff_on_touchdown(self):
+        g = self._gains()
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.0, vy=0.0, vz=0.0, wz=0.0),
+            target_alt=0.0, altitude=0.05, vz_truth=0.0, gains=g,
+        )
+        assert cmd.thrust_norm == 0.0
+        assert cmd.armed is False
+        assert cmd.pitch_sp == 0.0 and cmd.roll_sp == 0.0
+
+    def test_no_cutoff_while_descending_in_air(self):
+        g = self._gains()
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.0, vy=0.0, vz=0.0, wz=0.0),
+            target_alt=0.0, altitude=0.50, vz_truth=-0.3, gains=g,
+        )
+        assert cmd.armed is True
+        assert cmd.thrust_norm >= g.thrust_min
+
+    def test_no_cutoff_during_takeoff_on_ground(self):
+        """TAKEOFF (target well above ground) at spawn altitude must
+        burst, not cut off — the cutoff is exclusively a LAND path."""
+        g = self._gains()
+        cmd = body_vel_to_atti_thr(
+            vel=BodyVelocity(vx=0.0, vy=0.0, vz=0.0, wz=0.0),
+            target_alt=2.0, altitude=0.05, vz_truth=0.0, gains=g,
+        )
+        assert cmd.armed is True
+        assert math.isclose(cmd.thrust_norm, g.takeoff_thrust_norm)
 
 
 class TestYawLock:
