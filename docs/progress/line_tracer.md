@@ -2,6 +2,50 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Current state (2026-07-09 — r64 candidate-directed mission verified)
+
+r64 (seed 42) is the first mission where the sideways lookahead
+camera drives the search end to end: row-4 sweep records id2/id0 with
+the downward camera, the row-12 leg promotes candidates for both
+row-16 markers from 4 m away (side camera, vote threshold 3), the
+short-circuit abandons the sweep the moment records+candidates cover
+all four, GOTO_CANDIDATE tours the two candidates, and the downward
+camera records them at their exact GT cells. Rows 8 and 16 are never
+flown; row 12 is abandoned at x~4. No fallback, no gz aborts, yaw
+held at 0.00 the whole flight, all four records err 0.00 m.
+
+Search-phase A/B (sim seconds, measured by counting the 0.5 s
+throttled status lines between the first LINE_FOLLOW and
+ARRANGE_BY_ID):
+
+| run | search | total to LAND | notes |
+|---|---|---|---|
+| r60 | 221.0 | 486.5 | full 4-row serpentine (pre-lookahead baseline) |
+| r61 | 235.0 | 500.5 | camera blind (yaw flipped 180) -> skipped-row fallback |
+| r64 | 163.5 | 389.0 | candidate-directed — search -26%, total -20% |
+
+(r64 total also gains on the tour: the search ends on top of the
+last candidate, which is already a tour node.) Landing 0.32 m from
+spawn; max |yaw| over the whole flight 0.000 rad — the yaw actuation
+sign fix plus lock override hold the heading exactly where every
+prior run silently wandered to 180 deg.
+
+The saving generalizes better than seed 42 shows: this layout puts
+markers only on the first/last rows (near worst case — the candidate
+tour re-flies row 16 that the serpentine would have swept anyway).
+Layouts with markers on middle rows skip more of the arena.
+
+r64 event timeline: RECORD id2 t=5.5, id0 t=46.0 (row 4);
+CANDIDATE id3 t=75.5, id1 t=113.0 (row-12 leg, range 5.4 m);
+short-circuit + GOTO same tick as the second candidate; RECORD id1
+t=121.5, id3 t=161.5; ARRANGE t=164.5.
+
+Three platform defects had to fall to get here — each invisible to
+the position-controlled downward-only missions and exposed by making
+yaw direction and oblique rendering load-bearing (entries below):
+yawrate NED sign reversal, mod-pi yaw-lock blindness, and the
+missing ArUco quiet zone on the marker textures.
+
 ## In progress (2026-07-08 — lookahead candidates, M-D)
 
 ### Yaw actuation sign was REVERSED end-to-end (r62 -> measured fix)

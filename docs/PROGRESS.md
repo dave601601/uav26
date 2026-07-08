@@ -13,21 +13,27 @@ Index. Each topic file holds the actual work log. Entries go newest-first inside
 
 ## Open
 
-### Where to resume (2026-07-08 end — mission verified, incl. on video)
+### Where to resume (2026-07-09 end — lookahead camera verified, M-D cut 26%)
 
-The full competition flow works and is visually verified: r57/r60
-(seed 42, ~12 min) sweep the grid serpentine, record all four markers
-at their exact GT cells (err 0.00 m), hover 3 s over each with the
-ArUco overlay visible, tour them in ID order, home, and park ~0.5 m
-from spawn. r60's downward-camera feed is archived as a 10x video via
-the new recorder tool. Platform root-cause fixes from the four-agent
-audit are logged per topic: [line_tracer](progress/line_tracer.md)
-(sweep, velocity loop, velocity-mode landing, FSM guards),
-[world](progress/world.md) (4S motors, four-feet contact),
-[fc_sim](progress/fc_sim.md) (prime altitude hold, disarm,
-single-writer guard), [fc_core](progress/fc_core.md) (900 g thrust
-scale), [docker](progress/docker.md) (zombie-FC teardown contract +
-Docker Desktop WSLg GUI plumbing — read before running anything).
+r64 (seed 42) is the new reference mission: a sideways OV9281+6mm
+lookahead camera (boresight +Y, 22 deg depression) lets the
+serpentine fly only rows {4, 12}; the side camera votes markers on
+the skipped rows onto grid nodes (candidates), the sweep
+short-circuits once records+candidates cover all four, and
+GOTO_CANDIDATE tours them for the downward-camera record. Search
+phase 221 -> 163.5 sim s (-26%), all records err 0.00 m, no fallback,
+yaw held at 0.00. Three latent platform defects fell en route (all in
+[line_tracer](progress/line_tracer.md) + [world](progress/world.md)):
+yawrate_sp NED sign reversal (every prior mission silently flew at
+yaw ~ pi), mod-pi yaw-lock blindness to 90/180-deg flips, and marker
+textures missing the ArUco quiet zone (fused with grid lines from
+oblique views). 192 tests green (183 line_tracer pytest + 18 fc_core
+gtest — see line_tracer.md for the new side_camera/candidate suites).
+
+Older baseline (r57/r60 full-serpentine, downward-only) remains
+described in [line_tracer](progress/line_tracer.md); operational
+contracts unchanged: [docker](progress/docker.md) zombie-FC teardown
++ WSLg GUI plumbing — read before running anything.
 
 Daily driver is `scripts/dev.sh`: `gui` (Gazebo window + tracer),
 `view` (rqt_image_view on the detection overlay), `mission rNN 900`
@@ -41,9 +47,19 @@ recreation, and the zombie-sweep contract.
       is the real M-B risk, revisit with the LIDAR/flow estimator).
 - [ ] M-C: retrieval order verification output (40 pt) + per-WP Z
       (20 pt).
-- [ ] M-D: mission time (sweep revisits empty rows; ~12 min now).
-- [ ] M-E: robustness (multi-frame ID voting, lost-line yaw search;
-      the 3 s hover already gives the voting window).
+- [x] M-D: search time — sideways lookahead camera + row-skip sweep
+      + candidate short-circuit (r64: search 221 -> 163.5 sim s;
+      further cuts would come from cruise speed, not coverage).
+- [ ] M-E: robustness. Partly landed via M-D work (per-(id,node)
+      multi-frame voting on the side camera; yaw-lock override).
+      Remaining: mask ArUco quads before the Hough line detection
+      (marker edges hijacked psi_err and spun the drone in r61),
+      multi-frame ID voting on the DOWNWARD record path, lost-line
+      recovery.
+- [ ] Lookahead v2 (deferred by design): IPM rectification for the
+      +8 m opportunistic band, full-res (1280x800) sensor if RTF
+      allows, hardware bracket at 22 deg + intrinsics/extrinsics
+      calibration for the real OV9281.
 - [ ] Test-reality gap (audit findings): run_mission test driver
       calls the real node methods instead of reimplementing them;
       MockDrone gets attitude lag + drag=0; one launch_testing
