@@ -148,8 +148,10 @@ class SideCameraConfig:
     """ArUco detection tuned for the oblique side view.
 
     Markers appear foreshortened (vertical extent ~ sin(depression)) and
-    small: the +3 m row at 640x400 / f=1000 is ~46 px tall (~7.6 px per
-    module with the 0.3 m DICT_4X4 code inside the 0.4 m sheet).
+    small: the +3 m row at 640x400 / f=1000 is ~61 px tall (~10.2 px per
+    module — the code now fills the 0.4 m sheet edge to edge, so the
+    module pitch is 0.4/6 = 6.67 cm, a third coarser than the old
+    1-module-margin texture and correspondingly easier to read far off).
     Deviations from OpenCV defaults:
       - adaptiveThreshWinSizeStep 10 -> 4: more threshold scales so the
         thin foreshortened quad survives binarization.
@@ -158,15 +160,17 @@ class SideCameraConfig:
         deviate more from a square's polygon fit.
       - cornerRefinementMethod SUBPIX: center accuracy feeds the ground
         projection (1 px ~= 6 cm at the near band).
-      - errorCorrectionRate 0.6 -> 0.8: bits sampled at ~7 px/module
+      - errorCorrectionRate 0.6 -> 0.8: bits sampled at ~10 px/module
         flip more easily; the vote threshold filters residual misreads.
+        Note DICT_4X4_50 has maxCorrectionBits=1, so int(1*0.8)=0 bits
+        are actually corrected — the rate buys nothing here and every
+        accepted quad is an exact codeword match.
     """
     aruco_dict: int = ARUCO_DICTS[DEFAULT_ARUCO_DICT]
-    # Same physical sheet as the downward camera sees: BLACK background,
-    # WHITE marker (official spec). Negate before detecting — see
-    # perception.PerceptionConfig.aruco_white_on_black for why this beats
-    # DetectorParameters.detectInvertedMarker.
-    aruco_white_on_black: bool = True
+    # Same physical sheet the downward camera sees: a standard ArUco
+    # (black field, white cells), so no negation. See
+    # perception.PerceptionConfig.aruco_white_on_black.
+    aruco_white_on_black: bool = False
     adaptive_thresh_win_min: int = 3
     adaptive_thresh_win_max: int = 23
     adaptive_thresh_win_step: int = 4

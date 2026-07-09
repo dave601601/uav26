@@ -161,23 +161,22 @@ class TestProjection:
 
 def _render_oblique_marker(
     marker_id: int,
-    width_px: int = 84,
+    width_px: int = 111,
     squash: float = 0.55,
     image_size=(400, 640),
 ):
-    """Marker code as the side camera sees it at the +3 m band: the
-    0.3 m DICT_4X4_50 code at slant 3.59 m / f=1000 is ~84 px wide,
-    vertically squashed by sin(33.3 deg) ~ 0.55, mild trapezoid.
+    """Marker code as the side camera sees it at the +3 m band: the code
+    fills the 0.4 m sheet, so at slant 3.59 m / f=1000 it is ~111 px
+    wide, vertically squashed by sin(33.3 deg) ~ 0.55, mild trapezoid.
 
-    Rendered white-on-black per the official spec (the sheet is black),
-    on a black field, which is what detect_aruco_side negates before
-    detecting.
+    A plain ArUco (black field, white cells) on a light surround, which
+    is what the grass floor provides in flight.
     Returns (mono image, expected center uv)."""
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     src_px = 256
-    marker = 255 - cv2.aruco.generateImageMarker(aruco_dict, marker_id, src_px)
+    marker = cv2.aruco.generateImageMarker(aruco_dict, marker_id, src_px)
     h, w = image_size
-    img = np.zeros((h, w), dtype=np.uint8)
+    img = np.full((h, w), 255, dtype=np.uint8)
     cx_, cy_ = w / 2.0, h / 2.0
     half_w = width_px / 2.0
     half_h = width_px * squash / 2.0
@@ -198,9 +197,9 @@ def _render_oblique_marker(
     warped = cv2.warpPerspective(
         marker, m, (w, h),
         flags=cv2.INTER_AREA,
-        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=255,
     )
-    img = np.maximum(img, warped)
+    img = np.minimum(img, warped)
     return img, (cx_, cy_)
 
 

@@ -73,39 +73,38 @@ def generate_marker_png(
     size_px: int,
     out_path: str,
     dict_name: str = DEFAULT_DICT,
-    margin_modules: float = 1.0,
 ) -> None:
-    """White marker code centered on a black quiet zone.
+    """A plain ArUco marker: the code fills the whole 0.4 m sheet.
 
-    Official spec (2026-07 survey notice): "색상 : (바탕) 검정색, (마커)
-    하얀색" — the 0.4 m sheet is BLACK and the marker is drawn in WHITE.
-    That is an inverted ArUco: generateImageMarker's output is negated,
-    so the code's border ring becomes white and the sheet supplies a
-    dark quiet zone. line_tracer inverts the grayscale once before
-    detection (see perception.aruco_white_on_black), which turns this
-    back into a standard marker for OpenCV.
+    Official spec (2026-07 survey notice): "크기 0.4m x 0.4m", "색상 :
+    (바탕) 검정색, (마커) 하얀색". That describes a STANDARD ArUco, whose
+    own field is black and whose data cells are white — not a negated
+    one. `generateImageMarker` already produces exactly this, so nothing
+    is inverted here and `line_tracer` detects it with OpenCV's default
+    polarity (perception.aruco_white_on_black stays false).
 
-    A quiet zone is still required: the detector isolates the quad by
-    contrast against the ring immediately outside the code. Here the
-    ring is the black sheet against the WHITE grid lines the sheet sits
-    on — the opposite arrangement to the white-sheet era, and a better
-    one. Without any margin the code fuses with its surroundings and no
-    candidate quad forms at all (this killed every oblique side-camera
-    detection in r61/r63).
+    No margin. The sheet IS the code, all `modules` of it edge to edge,
+    which is also how the rules read: 0.4 m is the marker's size. Padding
+    it with extra BLACK would merge with the code's own black border ring
+    — the detector would contour the 0.4 m sheet, then sample a module
+    grid that no longer lines up with the code inside, and decode
+    garbage. Padding it with WHITE is what the pre-2026-07-09 texture
+    did, and the rules say the background is black.
 
-    The sheet stays size_px (0.4 m in the world) and the code shrinks to
-    modules/(modules + 2*margin_modules) of it — 0.3 m for DICT_4X4_50
-    with the default 1-module margin, mirroring how a real 0.4 m sheet
-    is printed.
+    The quiet zone the detector needs is supplied by the FLOOR: the sheet
+    sits on green grass (luma ~83) crossed by white 10 cm ribbons (~245),
+    both far lighter than the code's black border. This is the reverse of
+    the r61/r63 failure, where a black border met black grid lines on a
+    white floor and fused into one blob.
+
+    Side effect worth noting: at 0.4 m the module pitch is 0.4/6 =
+    6.67 cm for DICT_4X4_50, a third larger than the 0.3 m code the
+    1-module-margin texture carried. The lookahead's far band gains from
+    that.
     """
-    dict_const, modules = DICTIONARIES[dict_name]
+    dict_const, _modules = DICTIONARIES[dict_name]
     aruco_dict = aruco.getPredefinedDictionary(dict_const)
-    total = modules + 2.0 * margin_modules
-    code_px = int(round(size_px * modules / total))
-    img = 255 - aruco.generateImageMarker(aruco_dict, marker_id, code_px)
-    canvas = np.zeros((size_px, size_px), dtype=np.uint8)
-    pad = (size_px - code_px) // 2
-    canvas[pad:pad + code_px, pad:pad + code_px] = img
+    canvas = aruco.generateImageMarker(aruco_dict, marker_id, size_px)
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
     cv2.imwrite(out_path, canvas)
 

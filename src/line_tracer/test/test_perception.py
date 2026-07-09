@@ -188,14 +188,14 @@ class TestProcessImage:
 # ---------------------------------------------------------------------------
 
 def _render_aruco_image(
-    marker_id: int, size_px: int = 200, image_size=(480, 640), inverted: bool = True
+    marker_id: int, size_px: int = 200, image_size=(480, 640), inverted: bool = False
 ):
     """Plant a marker sheet on a plain background.
 
-    ``inverted`` renders the official spec — black sheet, white marker —
-    which is what the world's textures now carry. ``inverted=False`` is
-    the legacy black-on-white sheet, kept so the polarity can be pinned
-    from both sides.
+    Default is the world's texture: a plain ArUco, black field and white
+    cells, on a light surround (grass plays that role in flight).
+    ``inverted=True`` negates the code — the marker OpenCV cannot see
+    natively — kept so the polarity can be pinned from both sides.
     """
     # Must match PerceptionConfig's default dictionary (4X4_50 — the
     # working assumption for the rules' "IDs 0..49").
@@ -228,18 +228,20 @@ class TestAruco:
         assert detect_aruco(blank, cfg) == []
 
     def test_polarity_is_pinned_to_the_official_spec(self, cfg):
-        """Black sheet / white marker is the spec. OpenCV only builds
-        candidate quads out of DARK regions and then requires a dark
-        border ring, so the two polarities are mutually exclusive: with
-        aruco_white_on_black the legacy black-on-white sheet must go
-        undetected, and vice versa. Getting this backwards makes every
-        marker invisible, which no other test would catch."""
-        spec, _ = _render_aruco_image(marker_id=7, inverted=True)
-        legacy, _ = _render_aruco_image(marker_id=7, inverted=False)
+        """The rules' "(바탕) 검정색, (마커) 하얀색" is a STANDARD ArUco:
+        black field, white cells. OpenCV builds candidate quads only out
+        of DARK regions and then requires a dark border ring, so the two
+        polarities are mutually exclusive — the default config must see
+        the standard marker and must NOT see a negated one, and flipping
+        aruco_white_on_black must swap exactly that. Getting it backwards
+        makes every marker invisible, which no other test would catch."""
+        assert cfg.aruco_white_on_black is False
+        spec, _ = _render_aruco_image(marker_id=7, inverted=False)
+        negated, _ = _render_aruco_image(marker_id=7, inverted=True)
 
         assert [d.id for d in detect_aruco(spec, cfg)] == [7]
-        assert detect_aruco(legacy, cfg) == []
+        assert detect_aruco(negated, cfg) == []
 
-        flipped = replace(cfg, aruco_white_on_black=False)
-        assert [d.id for d in detect_aruco(legacy, flipped)] == [7]
+        flipped = replace(cfg, aruco_white_on_black=True)
+        assert [d.id for d in detect_aruco(negated, flipped)] == [7]
         assert detect_aruco(spec, flipped) == []

@@ -231,11 +231,11 @@ class LineTracerNode(Node):
         # the rules confirm. Fed to both the downward perception and
         # the lookahead side camera.
         self.declare_parameter("aruco_dict", "4X4_50")
-        # Official spec: "(바탕) 검정색, (마커) 하얀색" — black sheet, white
-        # marker, i.e. an inverted ArUco. Both cameras negate the
-        # grayscale before detection; see PerceptionConfig for why that
-        # beats DetectorParameters.detectInvertedMarker.
-        self.declare_parameter("aruco_white_on_black", True)
+        # Negate the grayscale before ArUco. False here: the rules'
+        # "(바탕) 검정색, (마커) 하얀색" is a STANDARD ArUco (black field,
+        # white cells), which OpenCV detects natively. See
+        # PerceptionConfig.aruco_white_on_black.
+        self.declare_parameter("aruco_white_on_black", False)
         # depth fallback altitude when no depth has arrived yet (TAKEOFF init)
         self.declare_parameter("default_altitude", 0.0)
         self.declare_parameter("altitude_median_window", 5)

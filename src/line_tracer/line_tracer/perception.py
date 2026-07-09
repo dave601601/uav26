@@ -72,26 +72,28 @@ class PerceptionConfig:
     vertical_half_width: float = pi / 6.0     # 30°
     horizontal_half_width: float = pi / 6.0   # 30°
     aruco_dict: int = ARUCO_DICTS[DEFAULT_ARUCO_DICT]
-    # Official spec: BLACK sheet, WHITE marker. OpenCV forms candidate
-    # quads only from DARK regions and then demands their border ring be
-    # dark too, so a white-on-black marker is invisible to it. Negating
-    # the grayscale once, before detection, restores a standard marker
-    # AND lifts the grass above the threshold so grass can no longer
-    # supply a candidate quad at all.
+    # Negate the grayscale before ArUco detection. FALSE for this world:
+    # the rules' "(바탕) 검정색, (마커) 하얀색" describes a STANDARD ArUco
+    # (black field, white cells), which OpenCV detects natively. The knob
+    # exists because a genuinely INVERTED marker — code negated, white
+    # border ring — is invisible to the default detector, and negating
+    # once here is the cheap fix if the rules ever call for one. Prefer
+    # it over DetectorParameters.detectInvertedMarker, which accepts both
+    # polarities and doubles the false-accept surface.
     #
-    # That second effect is the point. r73 recorded a phantom id=17 on a
-    # bare grid crossing 12 m from the real marker: a dark grass quad
-    # (dark border ring — passes the check) whose rectified interior
-    # held a white 2x2 block where a grid line clipped it. That block is
-    # id 17's exact codeword, and DICT_4X4_50 at errorCorrectionRate 0.6
-    # corrects int(1 * 0.6) = 0 bits, so an exact match is the only way
-    # in — and the only way to get one is a white band on dark ground.
-    #
-    # Preferred over DetectorParameters.detectInvertedMarker, which
-    # accepts BOTH polarities (doubling the false-accept surface) and
-    # would additionally offer the black 0.4 m sheet outline itself as a
-    # candidate quad, misaligned with the code grid inside it.
-    aruco_white_on_black: bool = True
+    # Beware what negation silently does here besides fixing polarity: it
+    # lifts the grass above the threshold. OpenCV builds candidate quads
+    # only out of DARK regions and then demands a dark border ring, so on
+    # this grass field a patch bounded by white grid lines is a legal
+    # candidate. That is how r73 recorded a phantom id=17 on a bare
+    # crossing 12 m from the real marker — the rectified interior held a
+    # white 2x2 block where a line clipped it, which is id 17's exact
+    # codeword (DICT_4X4_50 corrects int(1 * 0.6) = 0 bits, so the match
+    # had to be exact). With the standard polarity that hazard is LIVE,
+    # and the mitigation has to be in the record path, not here: the
+    # downward camera still commits a record on one frame's id with no
+    # vote and no size check.
+    aruco_white_on_black: bool = False
 
 
 @dataclass(frozen=True)

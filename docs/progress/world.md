@@ -4,26 +4,41 @@ Gazebo Harmonic simulation package: arena, drone model, sensor plugins, bridge, 
 
 ## Done (recent)
 
-### Marker polarity corrected to the official spec (2026-07-09)
+### Marker polarity: a plain ArUco, code flush to the sheet (2026-07-09)
 
-The survey notice specifies "색상 : (바탕) 검정색, (마커) 하얀색" — the
-0.4 m sheet is BLACK and the marker is WHITE. The world had it inverted
-(white sheet, black code). `aruco.py` now negates the code and paints it
-on a black canvas; all 50 textures regenerated.
+The survey notice says "크기 : 0.4m x 0.4m" and "색상 : (바탕) 검정색,
+(마커) 하얀색". That describes a STANDARD ArUco — its own field is black
+and its data cells are white. It is NOT an instruction to negate the
+code.
 
-This is not cosmetic. OpenCV forms ArUco candidate quads only from dark
-regions with a dark border ring, so a white-on-black marker is invisible
-to the default detector (verified: 0 detections). Both cameras now
-negate the grayscale once before detection (`aruco_white_on_black`),
-which restores a standard marker AND lifts the grass above the
-threshold. Grass was previously a legal candidate quad — dark region,
-dark border — and that is how r73 recorded a phantom id=17 on a bare
-grid crossing. See [line_tracer](line_tracer.md).
+Two wrong readings were tried before the right one. The pre-2026-07-09
+texture put a standard code on a WHITE sheet with a 1-module white
+margin (background white, contradicting the rules). The first correction
+this day over-read the rules and NEGATED the code onto a black sheet,
+producing a white border ring — a marker OpenCV cannot see natively at
+all. `aruco.py` now emits `generateImageMarker` unmodified, filling the
+0.4 m sheet edge to edge; all 50 textures regenerated.
 
-The 1-module quiet zone stays, with its polarity flipped: the black
-sheet is now the dark ring isolating the white code, sitting on the
-white grid lines. That is a better arrangement than the white-sheet era,
-where the sheet's white margin merged with the white ribbons.
+No margin, deliberately. Padding with extra black merges with the code's
+own black border ring: the detector contours the whole 0.4 m sheet, then
+samples a module grid that no longer lines up with the code inside it,
+and decodes garbage. Padding with white contradicts the rules. The quiet
+zone the detector needs comes from the FLOOR — green grass (luma ~83)
+crossed by white 10 cm ribbons (~245), both far lighter than the black
+border. That is the reverse of the r61/r63 failure, where a black border
+met black grid lines on a white floor and fused into one blob.
+
+Consequences, both verified:
+
+- Module pitch grows to 0.4/6 = 6.67 cm, a third coarser than the 0.3 m
+  code the margin texture carried. Oblique detection now holds across
+  the whole lookahead band on a grass surround, out to lateral 7.5 m
+  (slant 7.76 m, 8.7 px/module).
+- The phantom mitigation is GONE. Negation had a side effect: it lifted
+  grass above the detector's threshold, so grass could no longer form a
+  candidate quad. A standard marker forbids negation, so grass is a dark
+  quad with a dark border ring again — exactly the r73 conditions. The
+  fix has to live in the record path. See [line_tracer](line_tracer.md).
 
 ### Official survey spec respec (2026-07-09)
 
@@ -40,8 +55,9 @@ package now models it:
   closest to the previous scale). Floor plane, pose and spawn moved;
   spawn (2, 3, 3) = first interior row, preserving the ascending-sweep
   "+Y unexplored" invariant for the side camera.
-- Markers: 0.4 m sheets (BLACK bg / white marker per the spec, 1-module quiet zone —
-  code 0.3 m), placed on interior vertices only; marker_randomize.py
+- Markers: plain 0.4 m ArUco (black field / white cells per the spec),
+  code flush to the sheet edge, no margin; placed on interior vertices
+  only; marker_randomize.py
   samples 4 unique IDs from 0..49 (rules) as well as positions.
   aruco.py gains --dict (default 4X4_50 — "IDs 0..49" exactly matches
   the 50-marker dictionaries; ASSUMPTION until the rules name one) and

@@ -26,14 +26,23 @@ per-waste breakdown in [line_tracer](progress/line_tracer.md).
 The r70-era "candidate-directed search is layout-dependent" conclusion
 was a scheduling defect, not a property of the layout.
 
-Getting there required fixing marker polarity — the rules say the 0.4 m
-sheet is BLACK and the marker WHITE, and the world had it inverted.
-OpenCV builds ArUco candidates only from dark quads with a dark border
-ring, so grass qualified, and a white grid line clipping a grass quad is
-DICT_4X4_50's id 17 exactly. That is how r73 recorded a phantom id=17
-twelve metres from the marker. Both cameras now negate the grayscale
-before ArUco; grass rises above the threshold and the whole candidate
-class disappears. See [world](progress/world.md). 209 tests green.
+BLOCKER before those numbers are final. Marker polarity is now a plain
+ArUco with the code flush to the 0.4 m sheet — the rules' "(바탕) 검정색,
+(마커) 하얀색" describes a standard marker, not a negated one. An
+intermediate commit negated it, and that negation incidentally
+suppressed the r73 grass-quad phantom by lifting grass above the
+detector's threshold. A standard marker forbids negation, so the phantom
+hazard is LIVE again: OpenCV builds candidates only from dark quads with
+a dark border ring, grass qualifies, and a white grid line clipping a
+grass quad is DICT_4X4_50's id 17 exactly.
+
+Next, in order: (1) gate the downward record path — multi-frame vote on
+(id, node) plus a marker-size gate at `fx * marker_size / altitude`,
+since the AUTHORITATIVE path is the only unguarded one; (2) re-run the
+r75/r76 A/B on the correct texture. The r75/r76 numbers above were
+measured on the negated texture: the comparison is internally valid, the
+absolute times will shift. See [line_tracer](progress/line_tracer.md)
+and [world](progress/world.md). 209 tests green.
 
 Both runs used `scripts/dev.sh mission rNN 1150 [params_file:=...]`.
 The control file is `build/params_policy_off.yaml`.

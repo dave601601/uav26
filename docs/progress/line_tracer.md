@@ -59,17 +59,19 @@ abandon the sweep, so "a future leg" does not exist for them.
 ### A/B, seed 42, search phase (LINE_FOLLOW -> ARRANGE_BY_ID)
 
 r76 is r75 with only the two policy knobs off, so the comparison is
-clean. r70 is the same scheduling as r76 on the old marker polarity —
-they agree to 0.5 sim s and 0.4 m across the whole search, which both
-proves polarity does not confound the timing and pins run-to-run
-variance far below the effect.
+clean. r70 is the same scheduling as r76 on a different texture — they
+agree to 0.5 sim s and 0.4 m across the whole search, which both shows
+texture polarity barely moves the timing and pins run-to-run variance
+far below the effect.
 
-| run | visit policy | sheet | search | search track | records |
+| run | visit policy | texture | search | search track | records |
 |---|---|---|---|---|---|
-| r70 | eager flush | white | 321.0 s | 164.1 m | 4/4 exact |
-| r76 | eager flush | black | 320.5 s | 163.7 m | 4/4 exact |
-| r72 | none (full 6-row serpentine) | white | 282.5 s | 148.1 m | 4/4 exact |
-| r75 | coverage + cheapest | black | **194.5 s** | **105.9 m** | 4/4 exact |
+| r70 | eager flush | white sheet, standard code | 321.0 s | 164.1 m | 4/4 exact |
+| r76 | eager flush | black sheet, negated code | 320.5 s | 163.7 m | 4/4 exact |
+| r72 | none (full 6-row serpentine) | white sheet, standard code | 282.5 s | 148.1 m | 4/4 exact |
+| r75 | coverage + cheapest | black sheet, negated code | **194.5 s** | **105.9 m** | 4/4 exact |
+
+Neither texture is the rules-correct one; see the caveat below.
 
 Against its own control the policy cuts search 126.0 s (-39.3 %) and
 57.8 m (-35.3 %); total-to-LAND 493.5 -> 370.0 s. Against the
@@ -89,24 +91,39 @@ Layout-dependence is gone in the sense that mattered. The r70 finding
 Both runs: 0 gz aborts, 0 candidate drops, all records at exact cells,
 landing 0.41 / 0.35 m from spawn.
 
+CAVEAT, pending a re-run. r75 and r76 both flew the NEGATED texture (the
+misread of the rules), whose detector inversion incidentally suppressed
+the grass-quad phantom. The comparison between them is internally valid
+— same textures, one variable — but the absolute times will not
+reproduce on the rules-correct texture, whose 33 % coarser modules
+promote candidates earlier. Re-run once the record path is gated;
+running before that risks another silently corrupted record.
+
 ### r73 and the phantom that blocked this measurement
 
-r73 ran this policy on the OLD marker polarity and executed both rules
-exactly as designed — no flush at the row-3 east end, tour at the row-9
-west end, id17 left to the sweep. But at t=156 the downward camera
-decoded a phantom id=17 at the bare grid crossing (9, 15), 12 m from the
-real marker, and the FSM recorded it. That single frame poisoned the
-record (12.00 m error), blinded the drone to the real id17 when it
-overflew (21, 15) at t~184 (the id was already in `records`), and left
-the sweep exhausted at 3 records — which triggered the one-shot fallback
-sweep over rows 6/12/18. The fallback recovered the mission (4 records,
-landed) but cost ~115 s, so r73's search read 321.0 s against a ~205 s
-trajectory. The marker-polarity fix below removed the cause, and r75 is
-r73's run without it.
+r73 ran this policy on a white sheet carrying a standard code. Its
+border ring was black, so the detector saw the same polarity it sees on
+today's texture — this failure is NOT historical.
 
-### The phantom id=17, and why marker polarity fixes it
+Both rules executed exactly as designed: no flush at the row-3 east end,
+tour at the row-9 west end, id17 left to the sweep. But at t=156 the
+downward camera decoded a phantom id=17 at the bare grid crossing
+(9, 15), 12 m from the real marker, and the FSM recorded it. That single
+frame poisoned the record (12.00 m error), blinded the drone to the real
+id17 when it overflew (21, 15) at t~184 (the id was already in
+`records`), and left the sweep exhausted at 3 records — which triggered
+the one-shot fallback sweep over rows 6/12/18. The fallback recovered
+the mission (4 records, landed) but cost ~115 s, so r73's search read
+321.0 s against a ~205 s trajectory.
 
-Root cause, not bad luck, and the fix falls out of the official spec.
+r75 avoided it only because it flew the negated texture, whose detector
+inversion made grass too bright to form a candidate quad. That texture
+was a misreading of the rules and is gone. Nothing in the corrected
+world prevents r73 from happening again.
+
+### The phantom id=17 — the hazard is structural and still open
+
+Root cause, not bad luck.
 
 OpenCV builds ArUco candidate quads out of DARK regions only (it
 adaptive-thresholds with `THRESH_BINARY_INV` and contours the result),
@@ -133,25 +150,33 @@ renders undetectable at both 0.6 and 0.8; only errorCorrectionRate 1.0
 recovers it). An all-black quad decodes to nothing. It takes the white
 band to become a marker.
 
-The old world made this reachable: white sheet, black code, on grass.
-The official spec inverts the sheet — "(바탕) 검정색, (마커) 하얀색" —
-and the fix follows. Both cameras now negate the grayscale once before
-ArUco detection (`aruco_white_on_black`). That restores a standard
-marker for OpenCV, and it lifts the grass ABOVE the threshold, so grass
-can no longer supply a candidate quad at all. The whole class is gone,
-not just this instance.
+A correction to what this file said earlier today. Negating the
+grayscale before detection does make grass bright, which removes the
+whole candidate class — but negation is only legal for a marker whose
+border ring is white. The rules describe a STANDARD ArUco, so the world
+now carries one (see [world](world.md)) and negation is off. THE HAZARD
+IS THEREFORE LIVE. r73 ran on a standard-polarity texture and recorded a
+phantom id 17 twelve metres from the real marker; nothing about the
+texture fix prevents that recurring.
 
-Negation is preferred over `DetectorParameters.detectInvertedMarker`,
-which accepts both polarities (doubling the false-accept surface) and
-would additionally offer the black 0.4 m sheet outline itself as a
-candidate quad, misaligned with the code grid inside it. Verified:
-against a black sheet the default detector returns nothing, negation
-returns the id, and all 50 regenerated textures round-trip.
+The mitigation must live in the record path, and the asymmetry there is
+the real defect: the side camera's HINT path is gated by 3 votes on one
+intersection (`CandidateTracker`), while the downward camera's
+AUTHORITATIVE record path takes the first frame's id and snaps it to the
+nearest intersection with no vote and no geometric check. Two cheap,
+independent gates, neither yet implemented:
+
+- Multi-frame vote on (id, node), mirroring `CandidateTracker`. A
+  single-frame fluke never reaches `records`. WAYPOINT_VISIT already
+  hovers 3 s, so the latency is free.
+- Marker-size gate. A real marker's apparent side is
+  `fx * marker_size / altitude` — 93 px at 2 m for the 0.4 m sheet. A
+  quad formed from grass and grid lines has no reason to match it.
 
 Random-pattern false-accept ceilings, for the flagged `aruco_dict`
-assumption (the rules give IDs 0..49 but name no dictionary).
-`eff_t` is the correctable bits actually used at errorCorrectionRate
-0.6, not the dictionary's nominal `maxCorrectionBits`:
+assumption (the rules give IDs 0..49 but name no dictionary). `eff_t` is
+the correctable bits actually used at errorCorrectionRate 0.6, not the
+dictionary's nominal `maxCorrectionBits`:
 
 | dict | modules | maxCorrectionBits | eff_t | false-accept |
 |---|---|---|---|---|
@@ -160,16 +185,9 @@ assumption (the rules give IDs 0..49 but name no dictionary).
 | DICT_6X6_50 | 6x6 | 6 | 3 | 0.002 % |
 
 The phantom was not drawn from that random distribution — it was a
-structured, exact match — so a bigger dictionary would have mitigated
-rather than prevented it. Switching also trades lookahead range (4X4's
-larger modules are why the +6 m far band works at all: r70/r73 promoted
-id17 at 6.3 and 7.7 m). Polarity is the structural fix; the dictionary
-stays 4X4_50 until the rules say otherwise.
-
-Still open, independent of this: the downward record path takes the
-first frame's id with no vote and no size check, while the side camera's
-HINT path is gated by 3 votes on one intersection. The AUTHORITATIVE
-path is the unguarded one. That asymmetry should close regardless.
+structured, exact match — so a bigger dictionary mitigates rather than
+prevents. It also costs lookahead range. Close the record path first: it
+is dictionary-independent.
 
 ## Superseded state (2026-07-09 — official-spec respec, r70/r72 eager-flush A/B)
 
