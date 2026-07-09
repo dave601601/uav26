@@ -2,6 +2,28 @@
 
 Build environment for the workspace.
 
+## dev.sh sweep was killing itself, not the strays (2026-07-09)
+
+`sweep()` ran its patterns through `$EXEC bash -c "<text>"`. `pkill -f`
+matches a whole command line, and that shell's command line CONTAINED
+the patterns — so `pkill -9 -f 'gz sim'` SIGKILLed the sweeper. Measured:
+`bash -c "pkill -9 -f 'gz sim'; echo x"` exits 137 and prints nothing,
+and decoys named `fc_sim_node` / `rqt_image_view` planted beforehand
+survive it; the same patterns fed on stdin execute all the way through
+and both decoys die.
+
+So for every `dev.sh gui` session only the opening
+`pkill -INT -f 'ros2 launch'` ever ran. That tears most of a run down,
+because launch propagates SIGTERM to its children on a catchable
+shutdown — which is exactly why the bug hid. The by-name `-9` pass that
+this whole contract exists for, the one whose absence poisoned r42..r51,
+was dead code there.
+
+Fix: feed the sweeper on stdin (`$EXEC bash -s <<'SWEEP'`), the way
+`run_mission.sh` always has. Its command line is then just `bash -s`, so
+no pattern can match it. Any future in-container script that pkills by
+pattern must be piped, never inlined with `-c`.
+
 ## Process hygiene (2026-07-08) — read before running missions
 
 - `pkill -9 -f 'ros2 launch'` ORPHANS the launch's children: SIGKILL

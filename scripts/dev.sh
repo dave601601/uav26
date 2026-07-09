@@ -26,7 +26,8 @@
 # - /workspace/install lives in the container layer, not a mount —
 #   any recreate needs a rebuild (fast: ./build cache is a mount).
 # - Teardown must SIGINT the launches and then kill fc_sim_node /
-#   parameter_bridge BY NAME, or orphans fight the next run.
+#   parameter_bridge BY NAME, or orphans fight the next run. The sweeper
+#   itself must be fed on stdin — see the sweep() comment.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -59,12 +60,25 @@ ensure_build() {
   fi
 }
 
+# Piped through `bash -s`, never `bash -c "<text>"`. `pkill -f` matches a
+# full command line, and with -c the patterns are IN the sweeping shell's
+# own command line — so `pkill -9 -f 'gz sim'` SIGKILLs the sweeper before
+# it ever reaches fc_sim_node / parameter_bridge / line_tracer_node.
+# Measured: `bash -c "pkill -9 -f 'gz sim'; echo x"` exits 137 and prints
+# nothing, and planted decoys survive. That silently disabled the whole
+# -9 pass — the by-name kills this contract exists for. run_mission.sh
+# was never affected because it has always been fed on stdin.
 sweep() {
-  $EXEC bash -c "pkill -INT -f 'ros2 launch' 2>/dev/null; sleep 3; \
-    pkill -9 -f 'gz sim' 2>/dev/null; pkill -9 -f fc_sim_node 2>/dev/null; \
-    pkill -9 -f parameter_bridge 2>/dev/null; \
-    pkill -9 -f line_tracer_node 2>/dev/null; \
-    pkill -9 -f 'ros2 launch' 2>/dev/null; true" || true
+  $EXEC bash -s <<'SWEEP' || true
+pkill -INT -f 'ros2 launch' 2>/dev/null
+sleep 3
+pkill -9 -f 'gz sim' 2>/dev/null
+pkill -9 -f fc_sim_node 2>/dev/null
+pkill -9 -f parameter_bridge 2>/dev/null
+pkill -9 -f line_tracer_node 2>/dev/null
+pkill -9 -f 'ros2 launch' 2>/dev/null
+true
+SWEEP
 }
 
 case "${1:-gui}" in
