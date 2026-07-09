@@ -4,6 +4,36 @@ Gazebo Harmonic simulation package: arena, drone model, sensor plugins, bridge, 
 
 ## Done (recent)
 
+### Official survey spec respec (2026-07-09)
+
+The 2026-07 survey notice re-specifies the mission area; the world
+package now models it:
+
+- Floor: green GRASS texture (color floor_tex.py pipeline; gz PBR
+  renders the green albedo darker than its luma — texture noise kept
+  visible via higher contrast, residual brightness gap noted as a
+  cosmetic-only delta) with WHITE 10 cm satin-ribbon lines on 3 m
+  cells. Lines are baked continuous (no marker exclusion gaps — the
+  opaque marker sheets cover the ribbons, matching reality).
+- Arena 30 x 21 m (ASSUMPTION until the rules confirm; 3 m-divisible,
+  closest to the previous scale). Floor plane, pose and spawn moved;
+  spawn (2, 3, 3) = first interior row, preserving the ascending-sweep
+  "+Y unexplored" invariant for the side camera.
+- Markers: 0.4 m sheets (white bg / black code, 1-module quiet zone —
+  code 0.3 m), placed on interior vertices only; marker_randomize.py
+  samples 4 unique IDs from 0..49 (rules) as well as positions.
+  aruco.py gains --dict (default 4X4_50 — "IDs 0..49" exactly matches
+  the 50-marker dictionaries; ASSUMPTION until the rules name one) and
+  all 50 textures are committed.
+- Lookahead sensor mount deepened 22 -> 26 deg (0.4538): on 3 m cells
+  the adjacent row (depression 33.3 deg) sat exactly ON the old VFOV
+  band edge; the new band covers lateral 2.64..7.56 m with ~4 deg
+  margins to both the +3 m and +6 m rows.
+- Verified: held-pose render test 10/10 side detections of a marker
+  one cell over (pixel row matched the 26-deg prediction); r70 full
+  mission ran the whole candidate pipeline on the new spec (see
+  line_tracer.md for the honest r70/r72 A/B).
+
 ### Marker textures gain the ArUco quiet zone (2026-07-09)
 
 - aruco.py generated the code flush to the texture edge — no white
@@ -64,12 +94,18 @@ Gazebo Harmonic simulation package: arena, drone model, sensor plugins, bridge, 
 
 ## Planned (Open)
 
-- Replace `MulticopterVelocityControl` (fake FC accepting `Twist`) with `fc_sim_node` driven by Setpoint + actuator outputs. Drop the `enable_fc` TimerAction.
-- Update `model.sdf` to firmware geometry: mass 1.5 -> 1.182 kg, rotor poses ±0.14 -> (±0.183, ±0.168), inertia rescaled.
-- Add a downward single-beam range sensor (`gpu_ray` or `altimeter`) publishing `/uav26_quad/range` for the firmware's ESKFz.
-- `bridge.yaml`: drop `/cmd_vel`, add `/uav26_quad/command/motor_speed` (actuator_msgs/Actuators) and `/uav26_quad/range`.
-- `marker_randomize.py`: pre-launch script picks 4 unique grid intersections in the 30x20 arena, writes `models/world_assets/markers_runtime.sdf` (gitignored) and overwrites `config/aruco_layout.yaml`. Reproducible via `--seed`.
-- `competition.sdf`: replace the inline 9-marker block with `<include>` of the runtime SDF.
+- Add a downward single-beam range sensor (`gpu_ray` or `altimeter`)
+  publishing `/uav26_quad/range` for the firmware's ESKFz (the sim
+  currently substitutes /odom_truth for altitude).
+- Confirm arena dims + ArUco dictionary against the rules; both are
+  parameterized (competition.sdf sizes / floor_tex args; aruco.py
+  --dict + line_tracer aruco_dict) so the swap is mechanical.
+- Satin-ribbon specularity is not modeled (white albedo only) —
+  hardware-day risk, not a sim item.
+
+(The 2026-04-era list — fc_sim_node replacing the fake FC, firmware
+geometry in model.sdf, motor_speed bridge, marker_randomize.py,
+runtime-SDF injection — all landed; see Done entries.)
 
 ## Done
 

@@ -48,7 +48,7 @@ and skip the tour entirely when the candidate lies within the
 downward camera's corridor of a future sweep leg. The mechanism
 (tracker, dedup, GOTO, fallback) is verified and unchanged.
 
-## Current state (2026-07-09 — r64 candidate-directed mission verified)
+## Superseded state (2026-07-09 — r64 on the pre-respec 4 m grid)
 
 r64 (seed 42) is the first mission where the sideways lookahead
 camera drives the search end to end: row-4 sweep records id2/id0 with
@@ -92,7 +92,7 @@ yaw direction and oblique rendering load-bearing (entries below):
 yawrate NED sign reversal, mod-pi yaw-lock blindness, and the
 missing ArUco quiet zone on the marker textures.
 
-## In progress (2026-07-08 — lookahead candidates, M-D)
+## Superseded (2026-07-08 — lookahead build-out logs, pre-respec 4 m grid)
 
 ### Yaw actuation sign was REVERSED end-to-end (r62 -> measured fix)
 
@@ -256,7 +256,7 @@ forward under the +X yaw lock):
   (the FSM treats `perception.aruco` as "marker below" — merging
   would snap-record 5 m off).
 
-## Current state (2026-07-08 end — r57/r60 full 4-marker mission, video-verified)
+## Superseded state (2026-07-08 end — r57/r60 full 4-marker mission, video-verified)
 
 r57 and r60 fly the complete competition flow (seed 42, ~12 min):
 serpentine sweep over the interior grid rows finds and records ALL

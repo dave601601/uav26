@@ -41,7 +41,7 @@ read before running anything. Host RTF degrades over WSL uptime
 (0.45 -> 0.13 observed); all timing metrics here are SIM seconds.
 
 Daily driver is `scripts/dev.sh`: `gui` (Gazebo window + tracer),
-`view` (rqt_image_view on the detection overlay), `mission rNN 900`
+`view` (rqt_image_view on the detection overlay), `mission rNN 1200`
 (headless + FSM summary), `build`. It wraps the X11 bridge, container
 recreation, and the zombie-sweep contract.
 
@@ -67,9 +67,9 @@ recreation, and the zombie-sweep contract.
       multi-frame ID voting on the DOWNWARD record path, lost-line
       recovery.
 - [ ] Lookahead v2 (deferred by design): IPM rectification for the
-      +8 m opportunistic band, full-res (1280x800) sensor if RTF
-      allows, hardware bracket at 22 deg + intrinsics/extrinsics
-      calibration for the real OV9281.
+      +6 m opportunistic band (already fired once in r70 at 6.3 m),
+      full-res (1280x800) sensor if RTF allows, hardware bracket at
+      26 deg + intrinsics/extrinsics calibration for the real OV9281.
 - [ ] Test-reality gap (audit findings): run_mission test driver
       calls the real node methods instead of reimplementing them;
       MockDrone gets attitude lag + drag=0; one launch_testing
@@ -92,11 +92,11 @@ recreation, and the zombie-sweep contract.
 
 1. `git log --oneline -25` — recent commits + their scope.
 2. Read this index, then open the topic file(s) listed in **Open**.
-3. `scripts/dev.sh gui` (or `mission rNN 900`) — handles container up,
+3. `scripts/dev.sh gui` (or `mission rNN 1200`) — handles container up,
    rebuild-if-needed, X11 bridge, and teardown. `dev.sh view` shows
    the detection overlay. Container recreation drops
    `/workspace/install`; dev.sh rebuilds automatically.
-4. Smoke test: `colcon test --packages-select fc_core line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs` should give **162 passing tests** (18 fc_core gtest + 144 line_tracer pytest, post-r57).
+4. Smoke test: `colcon test --packages-select fc_core line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs` should give **210 passing tests** (18 fc_core gtest + 192 line_tracer pytest, post-respec).
 5. Analysis tools: `scripts/plot_mission.py <tracer.log>` (trajectory
    PNG + recorded-vs-GT diff; pass `--layout` with the runtime
    aruco_layout.yaml), `src/line_tracer/scripts/record_debug_video.py`
