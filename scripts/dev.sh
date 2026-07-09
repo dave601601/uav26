@@ -8,9 +8,13 @@
 #                                         line detection overlay
 #                                         (/line_tracer/debug_image).
 #                                         Run alongside gui or mission.
-#   scripts/dev.sh mission [run] [dur]    Headless mission via
+#   scripts/dev.sh mission [run] [dur] [launch_args]
+#                                         Headless mission via
 #                                         run_mission.sh (default 900 s),
 #                                         then prints the FSM summary.
+#                                         launch_args go to the tracer
+#                                         launch — use params_file:=... to
+#                                         A/B a variant parameter set.
 #   scripts/dev.sh build                  (Re)build if install/ is gone
 #                                         (container recreation drops it).
 #
@@ -98,10 +102,11 @@ case "${1:-gui}" in
   mission)
     RUN=${2:-r$(date +%H%M%S)}
     DUR=${3:-900}
+    EXTRA=${4:-}
     ensure_container
     ensure_build
-    echo "[dev] headless mission $RUN (${DUR}s, seed 42)"
-    $EXEC bash -s "$RUN" "$DUR" < scripts/run_mission.sh
+    echo "[dev] headless mission $RUN (${DUR}s, seed 42) ${EXTRA:+[$EXTRA]}"
+    $EXEC bash -s "$RUN" "$DUR" "$EXTRA" < scripts/run_mission.sh
     LOG="build/sweep_logs/mission/${RUN}_tracer.log"
     echo "[dev] ---- FSM events ----"
     grep -E ">> (FSM|RECORD)" "$LOG" | sed 's/.*line_tracer_node\]: //' || true
@@ -111,7 +116,7 @@ case "${1:-gui}" in
     ;;
 
   *)
-    echo "usage: $0 {gui [seed] | mission [run] [dur] | build}"
+    echo "usage: $0 {gui [seed] | mission [run] [dur] [launch_args] | build}"
     exit 1
     ;;
 esac

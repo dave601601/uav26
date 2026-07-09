@@ -2,9 +2,15 @@
 # Headless end-to-end mission run for the uav-aruco container.
 #
 # Usage (from the repo root, on the host):
-#   docker compose exec -T uav-aruco bash -s r53 [duration_s] < scripts/run_mission.sh
+#   docker compose exec -T uav-aruco bash -s r53 [duration_s] [launch_args] \
+#       < scripts/run_mission.sh
 # duration_s defaults to 150 (single-marker smoke); the full 4-marker
 # mission (sweep + ID-order tour + return) needs ~700.
+#
+# launch_args is appended verbatim to the line_tracer launch. Its point
+# is A/B runs against a variant parameter file, e.g.
+#   params_file:=/workspace/build/params_policy_off.yaml
+# to reproduce the pre-visit-policy (r70) scheduling.
 #
 # Logs land in build/sweep_logs/mission/<run>_{sim,tracer}.log (the
 # build/ directory is bind-mounted, so they are visible on the host).
@@ -26,6 +32,7 @@ set -u   # after sourcing: ROS setup scripts reference unbound vars
 
 RUN=${1:-r$(date +%H%M%S)}
 DUR=${2:-150}
+EXTRA=${3:-}
 LOGDIR=/workspace/build/sweep_logs/mission
 mkdir -p "$LOGDIR"
 
@@ -49,7 +56,8 @@ ros2 launch world sim.launch.py headless:=true marker_seed:=42 \
   > "$LOGDIR/${RUN}_sim.log" 2>&1 &
 SIM_PID=$!
 sleep 8
-stdbuf -oL -eL ros2 launch line_tracer line_tracer.launch.py \
+# shellcheck disable=SC2086 -- EXTRA must word-split into launch args
+stdbuf -oL -eL ros2 launch line_tracer line_tracer.launch.py $EXTRA \
   > "$LOGDIR/${RUN}_tracer.log" 2>&1 &
 TRACER_PID=$!
 
