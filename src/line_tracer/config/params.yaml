@@ -39,6 +39,12 @@
 
     # ---- ArUco ----
     marker_size: 0.4          # [m] official sheet size; reserved for PnP
+    # Official spec: (바탕) 검정색, (마커) 하얀색 — black sheet, white marker.
+    # OpenCV only forms candidate quads from DARK regions with a dark
+    # border ring, so both cameras negate the grayscale before ArUco.
+    # That also lifts the grass above the threshold, which is what stops
+    # a grass quad from posing as a marker (r73's phantom id=17).
+    aruco_white_on_black: true
     # Rules give IDs 0..49 but no dictionary; 0..49 exactly matches the
     # 50-marker dictionaries -> 4X4_50 is the working assumption. Swap
     # here (and regenerate world textures via aruco.py --dict) the day

@@ -162,6 +162,11 @@ class SideCameraConfig:
         flip more easily; the vote threshold filters residual misreads.
     """
     aruco_dict: int = ARUCO_DICTS[DEFAULT_ARUCO_DICT]
+    # Same physical sheet as the downward camera sees: BLACK background,
+    # WHITE marker (official spec). Negate before detecting — see
+    # perception.PerceptionConfig.aruco_white_on_black for why this beats
+    # DetectorParameters.detectInvertedMarker.
+    aruco_white_on_black: bool = True
     adaptive_thresh_win_min: int = 3
     adaptive_thresh_win_max: int = 23
     adaptive_thresh_win_step: int = 4
@@ -200,6 +205,8 @@ def detect_aruco_side(
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     else:
         gray = image
+    if cfg.aruco_white_on_black:
+        gray = 255 - gray
     aruco_dict = cv2.aruco.getPredefinedDictionary(cfg.aruco_dict)
     params = _detector_params(cfg)
     if hasattr(cv2.aruco, "ArucoDetector"):

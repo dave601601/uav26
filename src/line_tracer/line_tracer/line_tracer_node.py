@@ -225,6 +225,11 @@ class LineTracerNode(Node):
         # the rules confirm. Fed to both the downward perception and
         # the lookahead side camera.
         self.declare_parameter("aruco_dict", "4X4_50")
+        # Official spec: "(바탕) 검정색, (마커) 하얀색" — black sheet, white
+        # marker, i.e. an inverted ArUco. Both cameras negate the
+        # grayscale before detection; see PerceptionConfig for why that
+        # beats DetectorParameters.detectInvertedMarker.
+        self.declare_parameter("aruco_white_on_black", True)
         # depth fallback altitude when no depth has arrived yet (TAKEOFF init)
         self.declare_parameter("default_altitude", 0.0)
         self.declare_parameter("altitude_median_window", 5)
@@ -357,6 +362,7 @@ class LineTracerNode(Node):
         aruco_dict_const = resolve_aruco_dict(
             str(self.get_parameter("aruco_dict").value)
         )
+        white_on_black = bool(self.get_parameter("aruco_white_on_black").value)
         self._perception_cfg = PerceptionConfig(
             canny_low=int(self.get_parameter("canny_low").value),
             canny_high=int(self.get_parameter("canny_high").value),
@@ -364,6 +370,7 @@ class LineTracerNode(Node):
             hough_min_line_length=int(self.get_parameter("hough_min_line_length").value),
             hough_max_line_gap=int(self.get_parameter("hough_max_line_gap").value),
             aruco_dict=aruco_dict_const,
+            aruco_white_on_black=white_on_black,
         )
 
         self._bridge = CvBridge()
@@ -392,7 +399,9 @@ class LineTracerNode(Node):
             ty=float(self.get_parameter("lookahead_mount_ty").value),
             tz=float(self.get_parameter("lookahead_mount_tz").value),
         )
-        self._side_cfg = SideCameraConfig(aruco_dict=aruco_dict_const)
+        self._side_cfg = SideCameraConfig(
+            aruco_dict=aruco_dict_const, aruco_white_on_black=white_on_black
+        )
         self._tracker = CandidateTracker(
             snap_max_err=float(
                 self.get_parameter("lookahead_snap_max_err").value

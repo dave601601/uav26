@@ -32,7 +32,7 @@ GRID_X = [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0]
 GRID_Y = [3.0, 6.0, 9.0, 12.0, 15.0, 18.0]
 NUM_MARKERS = 4
 ID_RANGE = 50           # rules: 4 unique IDs from 0..49
-MARKER_SIZE = 0.4       # rules: 0.4 m x 0.4 m sheet (white bg, black code)
+MARKER_SIZE = 0.4       # rules: 0.4 m x 0.4 m sheet (BLACK bg, white marker)
 
 MARKER_BLOCK_TEMPLATE = """    <model name="aruco_{id}">
       <static>true</static>

@@ -4,6 +4,27 @@ Gazebo Harmonic simulation package: arena, drone model, sensor plugins, bridge, 
 
 ## Done (recent)
 
+### Marker polarity corrected to the official spec (2026-07-09)
+
+The survey notice specifies "색상 : (바탕) 검정색, (마커) 하얀색" — the
+0.4 m sheet is BLACK and the marker is WHITE. The world had it inverted
+(white sheet, black code). `aruco.py` now negates the code and paints it
+on a black canvas; all 50 textures regenerated.
+
+This is not cosmetic. OpenCV forms ArUco candidate quads only from dark
+regions with a dark border ring, so a white-on-black marker is invisible
+to the default detector (verified: 0 detections). Both cameras now
+negate the grayscale once before detection (`aruco_white_on_black`),
+which restores a standard marker AND lifts the grass above the
+threshold. Grass was previously a legal candidate quad — dark region,
+dark border — and that is how r73 recorded a phantom id=17 on a bare
+grid crossing. See [line_tracer](line_tracer.md).
+
+The 1-module quiet zone stays, with its polarity flipped: the black
+sheet is now the dark ring isolating the white code, sitting on the
+white grid lines. That is a better arrangement than the white-sheet era,
+where the sheet's white margin merged with the white ribbons.
+
 ### Official survey spec respec (2026-07-09)
 
 The 2026-07 survey notice re-specifies the mission area; the world
@@ -19,7 +40,7 @@ package now models it:
   closest to the previous scale). Floor plane, pose and spawn moved;
   spawn (2, 3, 3) = first interior row, preserving the ascending-sweep
   "+Y unexplored" invariant for the side camera.
-- Markers: 0.4 m sheets (white bg / black code, 1-module quiet zone —
+- Markers: 0.4 m sheets (BLACK bg / white marker per the spec, 1-module quiet zone —
   code 0.3 m), placed on interior vertices only; marker_randomize.py
   samples 4 unique IDs from 0..49 (rules) as well as positions.
   aruco.py gains --dict (default 4X4_50 — "IDs 0..49" exactly matches

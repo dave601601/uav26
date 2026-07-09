@@ -1,4 +1,5 @@
 """Unit tests for line_tracer.perception (no rclpy)."""
+from dataclasses import replace
 from math import isclose, pi
 
 import cv2
@@ -186,12 +187,25 @@ class TestProcessImage:
 # ArUco
 # ---------------------------------------------------------------------------
 
-def _render_aruco_image(marker_id: int, size_px: int = 200, image_size=(480, 640)):
+def _render_aruco_image(
+    marker_id: int, size_px: int = 200, image_size=(480, 640), inverted: bool = True
+):
+    """Plant a marker sheet on a plain background.
+
+    ``inverted`` renders the official spec — black sheet, white marker —
+    which is what the world's textures now carry. ``inverted=False`` is
+    the legacy black-on-white sheet, kept so the polarity can be pinned
+    from both sides.
+    """
     # Must match PerceptionConfig's default dictionary (4X4_50 — the
     # working assumption for the rules' "IDs 0..49").
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     marker = cv2.aruco.generateImageMarker(aruco_dict, marker_id, size_px)
-    img = np.full((*image_size, 3), 255, dtype=np.uint8)
+    bg = 255
+    if inverted:
+        marker = 255 - marker
+        bg = 0
+    img = np.full((*image_size, 3), bg, dtype=np.uint8)
     h, w = image_size
     y0 = (h - size_px) // 2
     x0 = (w - size_px) // 2
@@ -212,3 +226,20 @@ class TestAruco:
     def test_no_marker_returns_empty(self, cfg):
         blank = np.full((480, 640, 3), 255, dtype=np.uint8)
         assert detect_aruco(blank, cfg) == []
+
+    def test_polarity_is_pinned_to_the_official_spec(self, cfg):
+        """Black sheet / white marker is the spec. OpenCV only builds
+        candidate quads out of DARK regions and then requires a dark
+        border ring, so the two polarities are mutually exclusive: with
+        aruco_white_on_black the legacy black-on-white sheet must go
+        undetected, and vice versa. Getting this backwards makes every
+        marker invisible, which no other test would catch."""
+        spec, _ = _render_aruco_image(marker_id=7, inverted=True)
+        legacy, _ = _render_aruco_image(marker_id=7, inverted=False)
+
+        assert [d.id for d in detect_aruco(spec, cfg)] == [7]
+        assert detect_aruco(legacy, cfg) == []
+
+        flipped = replace(cfg, aruco_white_on_black=False)
+        assert [d.id for d in detect_aruco(legacy, flipped)] == [7]
+        assert detect_aruco(spec, flipped) == []

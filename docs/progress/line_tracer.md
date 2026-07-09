@@ -36,11 +36,19 @@ exhausted at 3 records, which triggered the one-shot fallback sweep over
 rows 6/12/18. The fallback recovered the mission (4 records, landed) but
 cost ~115 s: r73 search reads 321.0 sim s against a ~205 s trajectory.
 
-### The downward record path trusts a single frame (blocking, was M-E)
+### The phantom id=17, and why marker polarity fixes it
 
-Root cause, not bad luck. In DICT_4X4_50, id 17 is the code CLOSEST to
-an all-black patch (Hamming 4 of 16), and its white bits are a 2x2 block
-against one edge:
+Root cause, not bad luck, and the fix falls out of the official spec.
+
+OpenCV builds ArUco candidate quads out of DARK regions only (it
+adaptive-thresholds with `THRESH_BINARY_INV` and contours the result),
+then rejects any candidate whose border ring is not dark. On a green
+grass field, GRASS SATISFIES BOTH. A patch of grass bounded by white
+grid lines is a dark quad with a dark border — a legal candidate. The
+detector then samples its interior on a 4x4 grid.
+
+In DICT_4X4_50, id 17's codeword is a white 2x2 block against one edge
+and black everywhere else:
 
 ```
 0 1 1 0
@@ -49,33 +57,51 @@ against one edge:
 0 0 0 0
 ```
 
-That is the signature of a dark candidate quad straddling a white grid
-line. The decoder is allowed to correct 1 bit, and 5.2 % of all random
-4x4 patterns decode to some valid id (200 rotated codewords x 17-pattern
-Hamming spheres = 3400 / 65536; the spheres are disjoint, so the bound
-is tight). Every marker sits on a crossing, so the detector meets this
-geometry on every approach.
+which is exactly what a white grid line clipping the edge of a dark quad
+produces. And the match had to be exact: OpenCV allows
+`int(maxCorrectionBits * errorCorrectionRate)` = `int(1 * 0.6)` = 0
+corrected bits for this dictionary (verified — a 1-bit-flipped id 17
+renders undetectable at both 0.6 and 0.8; only errorCorrectionRate 1.0
+recovers it). An all-black quad decodes to nothing. It takes the white
+band to become a marker.
 
-The asymmetry is the defect: the side camera's HINT path is gated by 3
-votes on one intersection (`CandidateTracker`), while the downward
-camera's AUTHORITATIVE record path takes the first frame's id and snaps
-it to the nearest intersection with no vote and no geometric check. r70
-and r72 crossed (9, 15) too — but on the row line, where the crossing
-renders centered. r73 crossed 0.6 m south of it on a diagonal, a
-geometry no earlier run flew.
+The old world made this reachable: white sheet, black code, on grass.
+The official spec inverts the sheet — "(바탕) 검정색, (마커) 하얀색" —
+and the fix follows. Both cameras now negate the grayscale once before
+ArUco detection (`aruco_white_on_black`). That restores a standard
+marker for OpenCV, and it lifts the grass ABOVE the threshold, so grass
+can no longer supply a candidate quad at all. The whole class is gone,
+not just this instance.
 
-Dictionary false-accept rates, for the flagged `aruco_dict` assumption
-(the rules give IDs 0..49 but name no dictionary):
+Negation is preferred over `DetectorParameters.detectInvertedMarker`,
+which accepts both polarities (doubling the false-accept surface) and
+would additionally offer the black 0.4 m sheet outline itself as a
+candidate quad, misaligned with the code grid inside it. Verified:
+against a black sheet the default detector returns nothing, negation
+returns the id, and all 50 regenerated textures round-trip.
 
-| dict | modules | maxCorrectionBits | false-accept |
-|---|---|---|---|
-| DICT_4X4_50 | 4x4 | 1 | 5.19 % |
-| DICT_5X5_50 | 5x5 | 3 | 1.57 % |
-| DICT_6X6_50 | 6x6 | 6 | 0.70 % |
+Random-pattern false-accept ceilings, for the flagged `aruco_dict`
+assumption (the rules give IDs 0..49 but name no dictionary).
+`eff_t` is the correctable bits actually used at errorCorrectionRate
+0.6, not the dictionary's nominal `maxCorrectionBits`:
 
-Switching dictionaries trades lookahead range (4X4's larger modules are
-why the +6 m far band works at all — r70/r73 promoted id17 at 6.3 and
-7.7 m). Harden the record path first: it is dictionary-independent.
+| dict | modules | maxCorrectionBits | eff_t | false-accept |
+|---|---|---|---|---|
+| DICT_4X4_50 | 4x4 | 1 | 0 | 0.305 % |
+| DICT_5X5_50 | 5x5 | 3 | 1 | 0.016 % |
+| DICT_6X6_50 | 6x6 | 6 | 3 | 0.002 % |
+
+The phantom was not drawn from that random distribution — it was a
+structured, exact match — so a bigger dictionary would have mitigated
+rather than prevented it. Switching also trades lookahead range (4X4's
+larger modules are why the +6 m far band works at all: r70/r73 promoted
+id17 at 6.3 and 7.7 m). Polarity is the structural fix; the dictionary
+stays 4X4_50 until the rules say otherwise.
+
+Still open, independent of this: the downward record path takes the
+first frame's id with no vote and no size check, while the side camera's
+HINT path is gated by 3 votes on one intersection. The AUTHORITATIVE
+path is the unguarded one. That asymmetry should close regardless.
 
 ## Superseded state (2026-07-09 — official-spec respec, r70/r72 eager-flush A/B)
 

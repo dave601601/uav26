@@ -75,18 +75,25 @@ def generate_marker_png(
     dict_name: str = DEFAULT_DICT,
     margin_modules: float = 1.0,
 ) -> None:
-    """Marker code centered on a white quiet zone.
+    """White marker code centered on a black quiet zone.
 
-    generateImageMarker emits the black border flush to the image edge,
-    but the ArUco detector REQUIRES a light quiet zone around the code
-    to isolate the quad contour — a real printed marker always has one.
-    Without it, a marker sitting on a grid intersection fuses with the
-    grid lines into one blob and the detector never even forms a
-    candidate quad (this killed every oblique side-camera detection in
-    r61/r63).
+    Official spec (2026-07 survey notice): "색상 : (바탕) 검정색, (마커)
+    하얀색" — the 0.4 m sheet is BLACK and the marker is drawn in WHITE.
+    That is an inverted ArUco: generateImageMarker's output is negated,
+    so the code's border ring becomes white and the sheet supplies a
+    dark quiet zone. line_tracer inverts the grayscale once before
+    detection (see perception.aruco_white_on_black), which turns this
+    back into a standard marker for OpenCV.
 
-    The sheet stays size_px (0.4 m in the world per the official spec:
-    "크기 0.4m, 바탕 하얀색") and the code shrinks to
+    A quiet zone is still required: the detector isolates the quad by
+    contrast against the ring immediately outside the code. Here the
+    ring is the black sheet against the WHITE grid lines the sheet sits
+    on — the opposite arrangement to the white-sheet era, and a better
+    one. Without any margin the code fuses with its surroundings and no
+    candidate quad forms at all (this killed every oblique side-camera
+    detection in r61/r63).
+
+    The sheet stays size_px (0.4 m in the world) and the code shrinks to
     modules/(modules + 2*margin_modules) of it — 0.3 m for DICT_4X4_50
     with the default 1-module margin, mirroring how a real 0.4 m sheet
     is printed.
@@ -95,8 +102,8 @@ def generate_marker_png(
     aruco_dict = aruco.getPredefinedDictionary(dict_const)
     total = modules + 2.0 * margin_modules
     code_px = int(round(size_px * modules / total))
-    img = aruco.generateImageMarker(aruco_dict, marker_id, code_px)
-    canvas = 255 * np.ones((size_px, size_px), dtype=np.uint8)
+    img = 255 - aruco.generateImageMarker(aruco_dict, marker_id, code_px)
+    canvas = np.zeros((size_px, size_px), dtype=np.uint8)
     pad = (size_px - code_px) // 2
     canvas[pad:pad + code_px, pad:pad + code_px] = img
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)

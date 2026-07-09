@@ -21,15 +21,25 @@ flight (r73 deferred the row-3 flush and left id17 to the sweep, both
 at the predicted points). Its timing A/B is UNRESOLVED: r73 hit a
 downward-camera false positive (phantom id=17 decoded at grid crossing
 (9,15), 12 m from the marker), which poisoned a record and forced the
-fallback sweep. Root cause is in
-[line_tracer](progress/line_tracer.md) — id 17 is the DICT_4X4_50 code
-closest to an all-black patch, and the downward record path takes a
-single frame's id with no vote and no size check, while the side
-camera's hint path is gated by 3 votes per node. Next: harden the
-record path (multi-frame vote on (id, node) + a marker-size gate from
-`fx * marker_size / altitude`), then re-run the A/B as r75 (policy on)
-vs r76 (`candidate_coverage_radius:=0.0
-defer_flush_to_cheapest:=false`, the r70 reproduction). 206 tests green.
+fallback sweep.
+
+Root cause and fix in [line_tracer](progress/line_tracer.md): OpenCV
+builds ArUco candidates only from DARK quads with a dark border ring,
+so GRASS was a legal candidate, and a white grid line clipping one edge
+of a grass quad is DICT_4X4_50's id 17 exactly (0 correctable bits at
+errorCorrectionRate 0.6 — the match had to be exact). The official spec
+says the sheet is BLACK and the marker WHITE; the world had it
+inverted. Both cameras now negate the grayscale before ArUco
+(`aruco_white_on_black`), which restores a standard marker and lifts
+grass above the threshold, removing the candidate class entirely. All
+50 textures regenerated. 207 tests green.
+
+Next: re-run the A/B as r75 (policy on) vs r76
+(`candidate_coverage_radius:=0.0 defer_flush_to_cheapest:=false`, the
+r70 reproduction). Still open regardless: the downward record path
+takes one frame's id with no vote and no size gate, while the side
+camera's hint path needs 3 votes per node — the authoritative path is
+the unguarded one.
 
 ### Prior state (2026-07-09 — OFFICIAL SPEC respec verified, r70/r72)
 
@@ -114,7 +124,7 @@ recreation, and the zombie-sweep contract.
    rebuild-if-needed, X11 bridge, and teardown. `dev.sh view` shows
    the detection overlay. Container recreation drops
    `/workspace/install`; dev.sh rebuilds automatically.
-4. Smoke test: `colcon test --packages-select fc_core line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs` should give **210 passing tests** (18 fc_core gtest + 192 line_tracer pytest, post-respec).
+4. Smoke test: `colcon test --packages-select fc_core line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs` should give **225 passing tests** (18 fc_core gtest + 207 line_tracer pytest).
 5. Analysis tools: `scripts/plot_mission.py <tracer.log>` (trajectory
    PNG + recorded-vs-GT diff; pass `--layout` with the runtime
    aruco_layout.yaml), `src/line_tracer/scripts/record_debug_video.py`

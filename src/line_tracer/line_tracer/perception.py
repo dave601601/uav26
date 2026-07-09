@@ -72,6 +72,26 @@ class PerceptionConfig:
     vertical_half_width: float = pi / 6.0     # 30°
     horizontal_half_width: float = pi / 6.0   # 30°
     aruco_dict: int = ARUCO_DICTS[DEFAULT_ARUCO_DICT]
+    # Official spec: BLACK sheet, WHITE marker. OpenCV forms candidate
+    # quads only from DARK regions and then demands their border ring be
+    # dark too, so a white-on-black marker is invisible to it. Negating
+    # the grayscale once, before detection, restores a standard marker
+    # AND lifts the grass above the threshold so grass can no longer
+    # supply a candidate quad at all.
+    #
+    # That second effect is the point. r73 recorded a phantom id=17 on a
+    # bare grid crossing 12 m from the real marker: a dark grass quad
+    # (dark border ring — passes the check) whose rectified interior
+    # held a white 2x2 block where a grid line clipped it. That block is
+    # id 17's exact codeword, and DICT_4X4_50 at errorCorrectionRate 0.6
+    # corrects int(1 * 0.6) = 0 bits, so an exact match is the only way
+    # in — and the only way to get one is a white band on dark ground.
+    #
+    # Preferred over DetectorParameters.detectInvertedMarker, which
+    # accepts BOTH polarities (doubling the false-accept surface) and
+    # would additionally offer the black 0.4 m sheet outline itself as a
+    # candidate quad, misaligned with the code grid inside it.
+    aruco_white_on_black: bool = True
 
 
 @dataclass(frozen=True)
@@ -258,6 +278,8 @@ def detect_aruco(
         gray = cv2.cvtColor(image_bgr_or_gray, cv2.COLOR_BGR2GRAY)
     else:
         gray = image_bgr_or_gray
+    if cfg.aruco_white_on_black:
+        gray = 255 - gray
     det = _make_aruco_detector(cfg)
     if det is not None:
         corners, ids, _ = det.detectMarkers(gray)
