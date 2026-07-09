@@ -2,6 +2,52 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Current state (2026-07-09 — official-spec respec verified, r70/r72)
+
+The stack now models the official 2026-07 survey spec end to end:
+3 m grass grid with white satin lines, 0.4 m marker sheets, 4 unique
+IDs from 0..49 on interior vertices. Two assumptions are parameterized
+and flagged until the rules confirm them: arena 30x21 m
+(grid_width/depth) and DICT_4X4_50 (aruco_dict — "IDs 0..49" exactly
+matches the 50-marker dictionaries). Side camera mount deepened 22 ->
+26 deg: on 3 m cells the adjacent row (depression 33.3 deg) sat
+exactly ON the old band edge; the new band [2.64, 7.56] m gives it a
+4.0 deg margin and keeps the +6 m row as a bonus. 192 tests green.
+
+r70 (lookahead, seed 42: id17@(21,15), id15@(6,6), id14@(3,6),
+id8@(24,18)) verified the candidate pipeline on the new spec first
+try: both row-6 markers promoted at range 3.6 (the design point),
+id17 promoted from the 6 m FAR band (range 6.3 — better than the
+2.5 px/module estimate, thanks to 4X4's larger modules), id8
+triggered the short-circuit, all four recorded at exact cells via
+the GOTO chain, landing 0.39 m from spawn.
+
+Honest A/B (sim seconds, search / total to LAND, same seed):
+
+| run | search | total | notes |
+|---|---|---|---|
+| r70 lookahead (rows 3,9,15) | 321.0 | 495.5 | 4 GOTO visits |
+| r72 baseline (all 6 rows) | 283.5 | 461.0 | markers en-route |
+
+The baseline WON by ~35 s on this layout: seed 42's markers happen to
+lie on the serpentine's natural path (row-6 pair near the west end of
+its westward leg; id8 4 m into the row-18 leg), while r70 paid ~50 m
+of doubled-back travel — the row-3 flush tour runs from the row's
+east end back to the west-end candidates and then returns east to the
+transit waypoint. The 4 m-grid r64 result (search -26%) and the
+closed-loop corner-layout A/B (one marker per skipped row -> flush +
+short-circuit both fire, >20 s margin) show the opposite sign. Net:
+candidate-directed search is LAYOUT-DEPENDENT on the 3 m grid; wins
+come from skipping empty rows and early short-circuit, losses from
+tour double-backs when candidates sit behind the sweep direction.
+
+Follow-up (new M-D item): candidate visit-policy optimization —
+insert candidate nodes into the remaining sweep route (cheapest
+detour, TSP-style) instead of the unconditional row-end flush tour,
+and skip the tour entirely when the candidate lies within the
+downward camera's corridor of a future sweep leg. The mechanism
+(tracker, dedup, GOTO, fallback) is verified and unchanged.
+
 ## Current state (2026-07-09 — r64 candidate-directed mission verified)
 
 r64 (seed 42) is the first mission where the sideways lookahead

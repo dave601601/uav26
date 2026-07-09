@@ -13,27 +13,32 @@ Index. Each topic file holds the actual work log. Entries go newest-first inside
 
 ## Open
 
-### Where to resume (2026-07-09 end — lookahead camera verified, M-D cut 26%)
+### Where to resume (2026-07-09 end — OFFICIAL SPEC respec verified, r70/r72)
 
-r64 (seed 42) is the new reference mission: a sideways OV9281+6mm
-lookahead camera (boresight +Y, 22 deg depression) lets the
-serpentine fly only rows {4, 12}; the side camera votes markers on
-the skipped rows onto grid nodes (candidates), the sweep
-short-circuits once records+candidates cover all four, and
-GOTO_CANDIDATE tours them for the downward-camera record. Search
-phase 221 -> 163.5 sim s (-26%), all records err 0.00 m, no fallback,
-yaw held at 0.00. Three latent platform defects fell en route (all in
-[line_tracer](progress/line_tracer.md) + [world](progress/world.md)):
-yawrate_sp NED sign reversal (every prior mission silently flew at
-yaw ~ pi), mod-pi yaw-lock blindness to 90/180-deg flips, and marker
-textures missing the ArUco quiet zone (fused with grid lines from
-oblique views). 192 tests green (183 line_tracer pytest + 18 fc_core
-gtest — see line_tracer.md for the new side_camera/candidate suites).
+The sim now models the official 2026-07 survey: outdoor GRASS field,
+3 m cells, WHITE 10 cm satin lines, 0.4 m marker sheets on interior
+vertices, 4 unique IDs from 0..49. Two parameterized ASSUMPTIONS to
+confirm against the rules: arena 30x21 m (grid_width/depth) and
+DICT_4X4_50 (aruco_dict + world aruco.py --dict; "0..49" exactly
+matches the 50-marker dictionaries). Side camera mount 22 -> 26 deg
+(3 m adjacent row sat on the old band edge). r70 verified the whole
+candidate pipeline on the new spec (all 4 records exact, GOTO chain,
+bonus far-band candidate at 6.3 m range); r72 is the full-serpentine
+baseline. Honest A/B for seed 42: baseline WON (283.5 vs 321.0 sim s
+search) because this layout's markers lie on the serpentine's natural
+path while the lookahead paid a doubled-back candidate tour — see
+[line_tracer](progress/line_tracer.md) for the analysis; the r64-era
+26% win and the closed-loop corner-layout A/B show the opposite sign.
+Candidate-directed search is LAYOUT-DEPENDENT; visit-policy
+optimization is the new M-D item. 192 tests green.
 
-Older baseline (r57/r60 full-serpentine, downward-only) remains
-described in [line_tracer](progress/line_tracer.md); operational
-contracts unchanged: [docker](progress/docker.md) zombie-FC teardown
-+ WSLg GUI plumbing — read before running anything.
+The 2026-07-08/09 platform root-cause fixes remain load-bearing:
+yawrate_sp NED sign reversal (every earlier mission silently flew at
+yaw ~ pi), mod-pi yaw-lock blindness, ArUco quiet zone on marker
+textures. Operational contracts unchanged:
+[docker](progress/docker.md) zombie-FC teardown + WSLg GUI plumbing —
+read before running anything. Host RTF degrades over WSL uptime
+(0.45 -> 0.13 observed); all timing metrics here are SIM seconds.
 
 Daily driver is `scripts/dev.sh`: `gui` (Gazebo window + tracer),
 `view` (rqt_image_view on the detection overlay), `mission rNN 900`
@@ -47,9 +52,14 @@ recreation, and the zombie-sweep contract.
       is the real M-B risk, revisit with the LIDAR/flow estimator).
 - [ ] M-C: retrieval order verification output (40 pt) + per-WP Z
       (20 pt).
-- [x] M-D: search time — sideways lookahead camera + row-skip sweep
-      + candidate short-circuit (r64: search 221 -> 163.5 sim s;
-      further cuts would come from cruise speed, not coverage).
+- [ ] M-D: search time. Mechanism landed and verified (lookahead
+      camera, row-skip, candidates, short-circuit; r64 cut 26% on the
+      4 m grid) but on the official 3 m grid the benefit is
+      LAYOUT-DEPENDENT (r70 vs r72: baseline won seed 42 by ~35 s).
+      Next: candidate visit-policy optimization — cheapest-detour
+      insertion into the remaining sweep instead of the row-end flush
+      tour; skip the tour when a future sweep leg's downward corridor
+      covers the candidate.
 - [ ] M-E: robustness. Partly landed via M-D work (per-(id,node)
       multi-frame voting on the side camera; yaw-lock override).
       Remaining: mask ArUco quads before the Hough line detection
