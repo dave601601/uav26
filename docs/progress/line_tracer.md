@@ -2,39 +2,80 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
-## Current state (2026-07-09 — visit policy landed, A/B blocked by a downward false positive)
+## Current state (2026-07-09 — visit policy verified, search -39 % against its own control)
 
-The candidate visit policy (M-D follow-up) is implemented and its
-decisions were verified in flight (r73). Two rules replace the
-unconditional row-end flush, both live in `state_machine.py` and both
-disable-able for A/B (`candidate_coverage_radius: 0.0`,
-`defer_flush_to_cheapest: false` reproduce r70):
+The candidate visit policy (M-D) is landed and measured. Two rules
+replace the unconditional row-end flush, both in `state_machine.py`,
+both switchable so the old scheduling stays reproducible
+(`candidate_coverage_radius: 0.0` + `defer_flush_to_cheapest: false`):
 
 - Coverage. A candidate within `candidate_coverage_radius` of a sweep
   leg the drone has not flown yet is never toured — the downward camera
-  records it for free when that leg runs. r70 flew a 37 m tour to
-  id17 at (21, 15) and then swept the row-15 leg straight over it.
+  records it for free when that leg runs. r70/r76 flew a dedicated tour
+  to id17 at (21, 15) and then swept the row-15 leg straight over it.
 - Cheapest insertion. A tour can only splice into a transit (splicing
-  into a leg truncates its coverage), and the row-end flush points are
-  exactly the transits. Flush here only if no later transit collects
-  the same set for a smaller detour. r70 paid a 42.7 m detour flushing
-  the row-6 pair at the row-3 east end; the row-9 -> row-15 transit
-  costs 10.0 m for the same pair.
+  into a leg truncates that leg's coverage, and with row-skip nothing
+  else ever looks at that ground), and the row-end flush points are
+  exactly the transits. So flush here only if no later transit collects
+  the same set for a smaller detour. The row-6 pair costs a 42.7 m
+  detour at the row-3 east end and 10.0 m at the row-9 -> row-15
+  transit; r70/r76 paid the former, r75 waits and pays the latter.
 
-r73 (seed 42, same layout as r70/r72) executed both exactly as designed:
-no flush at the row-3 east end (r70 flushed there at t=48), the tour
-fired at the row-9 west end at t=107.5 toward id14 then id15, and id17
-was promoted from the far band (range 7.7) but left to the row-15 leg.
-Search-phase ground track fell from r70's 257.2 m.
+Deferral cannot strand a candidate. The last flush point has no future
+transit to compare against, so it always fires; `_on_sweep_exhausted`
+collects anything still outstanding; the short-circuit is never delayed
+because candidates count toward `max_records` exactly as records do; and
+a wrong candidate is still dropped after `candidate_wait_seconds`.
+Coverage applies only at flush points — short-circuit and exhaustion
+abandon the sweep, so "a future leg" does not exist for them.
 
-The timing A/B is NOT resolved. At t=156 the downward camera decoded a
-phantom id=17 at the grid crossing (9, 15) — 12 m from the real marker
-— and the FSM recorded it. That single frame poisoned the record
-(12.00 m error), blinded the drone to the real id17 when it overflew
-(21, 15) at t~184 (the id was already in `records`), and left the sweep
-exhausted at 3 records, which triggered the one-shot fallback sweep over
-rows 6/12/18. The fallback recovered the mission (4 records, landed) but
-cost ~115 s: r73 search reads 321.0 sim s against a ~205 s trajectory.
+### A/B, seed 42, search phase (LINE_FOLLOW -> ARRANGE_BY_ID)
+
+r76 is r75 with only the two policy knobs off, so the comparison is
+clean. r70 is the same scheduling as r76 on the old marker polarity —
+they agree to 0.5 sim s and 0.4 m across the whole search, which both
+proves polarity does not confound the timing and pins run-to-run
+variance far below the effect.
+
+| run | visit policy | sheet | search | search track | records |
+|---|---|---|---|---|---|
+| r70 | eager flush | white | 321.0 s | 164.1 m | 4/4 exact |
+| r76 | eager flush | black | 320.5 s | 163.7 m | 4/4 exact |
+| r72 | none (full 6-row serpentine) | white | 282.5 s | 148.1 m | 4/4 exact |
+| r75 | coverage + cheapest | black | **194.5 s** | **105.9 m** | 4/4 exact |
+
+Against its own control the policy cuts search 126.0 s (-39.3 %) and
+57.8 m (-35.3 %); total-to-LAND 493.5 -> 370.0 s. Against the
+full-serpentine baseline that previously beat the lookahead, it cuts
+88.0 s (-31.1 %). Retrieval track is 92.8 / 95.9 m — unchanged, as
+expected: the policy only touches the search.
+
+Both wastes show up as measured time. r76 reaches the row-9 west end at
+t=200.5, r75 at t=107.5 — the 93 s row-3 double-back. Then r76 spends
+t=199..237 touring id17 and returning, ground r75 covers anyway: it
+records id17 in passing at t=177 with no detour at all.
+
+Layout-dependence is gone in the sense that mattered. The r70 finding
+("candidate-directed search is layout-dependent, the baseline won seed
+42") was really a scheduling defect, not a property of the layout.
+
+Both runs: 0 gz aborts, 0 candidate drops, all records at exact cells,
+landing 0.41 / 0.35 m from spawn.
+
+### r73 and the phantom that blocked this measurement
+
+r73 ran this policy on the OLD marker polarity and executed both rules
+exactly as designed — no flush at the row-3 east end, tour at the row-9
+west end, id17 left to the sweep. But at t=156 the downward camera
+decoded a phantom id=17 at the bare grid crossing (9, 15), 12 m from the
+real marker, and the FSM recorded it. That single frame poisoned the
+record (12.00 m error), blinded the drone to the real id17 when it
+overflew (21, 15) at t~184 (the id was already in `records`), and left
+the sweep exhausted at 3 records — which triggered the one-shot fallback
+sweep over rows 6/12/18. The fallback recovered the mission (4 records,
+landed) but cost ~115 s, so r73's search read 321.0 s against a ~205 s
+trajectory. The marker-polarity fix below removed the cause, and r75 is
+r73's run without it.
 
 ### The phantom id=17, and why marker polarity fixes it
 

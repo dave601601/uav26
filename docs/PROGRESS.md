@@ -13,33 +13,30 @@ Index. Each topic file holds the actual work log. Entries go newest-first inside
 
 ## Open
 
-### Where to resume (2026-07-09 end — visit policy landed, record path is now the blocker)
+### Where to resume (2026-07-09 end — visit policy verified, search -39 %)
 
-The M-D candidate visit policy (coverage filter + cheapest-transit
-flush) is implemented, unit-tested, and its decisions verified in
-flight (r73 deferred the row-3 flush and left id17 to the sweep, both
-at the predicted points). Its timing A/B is UNRESOLVED: r73 hit a
-downward-camera false positive (phantom id=17 decoded at grid crossing
-(9,15), 12 m from the marker), which poisoned a record and forced the
-fallback sweep.
+M-D is met. The candidate visit policy replaced the unconditional
+row-end flush with two rules: never tour a candidate that a not-yet-flown
+sweep leg passes over, and collect the rest at the transit whose detour
+is smallest. Seed 42, search phase: r75 194.5 sim s / 105.9 m against
+its own control r76 (policy off) at 320.5 s / 163.7 m, and against the
+full-serpentine baseline r72 at 282.5 s. r76 reproduces r70 to 0.5 s, so
+polarity does not confound and variance is negligible. Table and the
+per-waste breakdown in [line_tracer](progress/line_tracer.md).
+The r70-era "candidate-directed search is layout-dependent" conclusion
+was a scheduling defect, not a property of the layout.
 
-Root cause and fix in [line_tracer](progress/line_tracer.md): OpenCV
-builds ArUco candidates only from DARK quads with a dark border ring,
-so GRASS was a legal candidate, and a white grid line clipping one edge
-of a grass quad is DICT_4X4_50's id 17 exactly (0 correctable bits at
-errorCorrectionRate 0.6 — the match had to be exact). The official spec
-says the sheet is BLACK and the marker WHITE; the world had it
-inverted. Both cameras now negate the grayscale before ArUco
-(`aruco_white_on_black`), which restores a standard marker and lifts
-grass above the threshold, removing the candidate class entirely. All
-50 textures regenerated. 207 tests green.
+Getting there required fixing marker polarity — the rules say the 0.4 m
+sheet is BLACK and the marker WHITE, and the world had it inverted.
+OpenCV builds ArUco candidates only from dark quads with a dark border
+ring, so grass qualified, and a white grid line clipping a grass quad is
+DICT_4X4_50's id 17 exactly. That is how r73 recorded a phantom id=17
+twelve metres from the marker. Both cameras now negate the grayscale
+before ArUco; grass rises above the threshold and the whole candidate
+class disappears. See [world](progress/world.md). 207 tests green.
 
-Next: re-run the A/B as r75 (policy on) vs r76
-(`candidate_coverage_radius:=0.0 defer_flush_to_cheapest:=false`, the
-r70 reproduction). Still open regardless: the downward record path
-takes one frame's id with no vote and no size gate, while the side
-camera's hint path needs 3 votes per node — the authoritative path is
-the unguarded one.
+Both runs used `scripts/dev.sh mission rNN 1150 [params_file:=...]`.
+The control file is `build/params_policy_off.yaml`.
 
 ### Prior state (2026-07-09 — OFFICIAL SPEC respec verified, r70/r72)
 
@@ -80,17 +77,19 @@ recreation, and the zombie-sweep contract.
       is the real M-B risk, revisit with the LIDAR/flow estimator).
 - [ ] M-C: retrieval order verification output (40 pt) + per-WP Z
       (20 pt).
-- [ ] M-D: search time. Mechanism landed and verified (lookahead
-      camera, row-skip, candidates, short-circuit; r64 cut 26% on the
-      4 m grid). The visit policy (coverage filter + cheapest-transit
-      flush) now fixes the layout-dependence that let the baseline win
-      r70 — decisions verified in r73, timing unmeasured until the
-      record path is hardened.
-- [ ] M-E: robustness. BLOCKING M-D. The downward record path takes a
-      single frame's ArUco id with no vote and no geometric check;
-      r73 recorded a phantom id=17 at a grid crossing 12 m from the
-      marker. Fix first: multi-frame vote on (id, node) + a marker-size
-      gate. Then: mask ArUco quads before the Hough line detection
+- [x] M-D: search time. Lookahead camera, row-skip, candidates,
+      short-circuit, and the visit policy (coverage filter +
+      cheapest-transit flush). r75 vs r76: search -39.3 % against its
+      own control, -31.1 % against the full serpentine. Further gains
+      are possible (skip ahead to the leg holding a covered candidate
+      when the short-circuit fires) but the milestone is met.
+- [ ] M-E: robustness. The downward record path takes a single frame's
+      ArUco id with no vote and no geometric check, while the side
+      camera's hint path needs 3 votes per node — the authoritative path
+      is the unguarded one. Marker polarity removed the r73 phantom that
+      exploited this, but the asymmetry stands: add a multi-frame vote
+      on (id, node) + a marker-size gate from fx * marker_size /
+      altitude. Then: mask ArUco quads before the Hough line detection
       (marker edges hijacked psi_err and spun the drone in r61),
       lost-line recovery. Already landed: per-(id,node) voting on the
       side camera, yaw-lock override.
