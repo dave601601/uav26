@@ -38,20 +38,27 @@
     hough_max_line_gap: 20
 
     # ---- ArUco ----
-    marker_size: 0.5          # [m]; reserved for future PnP-based pose
+    marker_size: 0.4          # [m] official sheet size; reserved for PnP
+    # Rules give IDs 0..49 but no dictionary; 0..49 exactly matches the
+    # 50-marker dictionaries -> 4X4_50 is the working assumption. Swap
+    # here (and regenerate world textures via aruco.py --dict) the day
+    # the rules confirm.
+    aruco_dict: "4X4_50"
 
     # ---- Lookahead (sideways OV9281+6mm) ----
     lookahead_enable: true
     # Mount extrinsics — MUST mirror the lookahead <sensor> pose in
     # world/models/uav26_quad/model.sdf: yaw pi/2 (boresight +Y_body),
-    # pitch 0.384 (22 deg depression), 5 cm left / 3 cm down.
+    # pitch 0.4538 (26 deg depression — centers the band between the
+    # +3 m and +6 m rows of the official 3 m grid), 5 cm left / 3 cm down.
     lookahead_mount_yaw: 1.5707963267948966
-    lookahead_mount_pitch: 0.384
+    lookahead_mount_pitch: 0.4538
     lookahead_mount_tx: 0.0
     lookahead_mount_ty: 0.05
     lookahead_mount_tz: -0.03
     lookahead_vote_threshold: 3   # sightings on one node before candidate
-    lookahead_max_range: 12.0     # [m] slant; beyond this a hit is noise
+    lookahead_max_range: 9.0      # [m] slant; band far edge is ~7.8 m
+    lookahead_snap_max_err: 1.5   # [m] vote acceptance = half a 3 m cell
     candidate_wait_seconds: 4.0   # [s] hover on a voted node before drop
     goto_timeout: 60.0            # [s] GOTO_CANDIDATE stall guard
     sweep_row_step: 2             # fly every 2nd interior row (side cam

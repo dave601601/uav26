@@ -71,7 +71,13 @@ from .dead_reckoning import (
 )
 from .geom import CameraIntrinsics
 from .grid import Grid
-from .perception import PerceptionConfig, PerceptionResult, process_image, draw_debug_overlay
+from .perception import (
+    PerceptionConfig,
+    PerceptionResult,
+    draw_debug_overlay,
+    process_image,
+    resolve_aruco_dict,
+)
 from .side_camera import (
     CandidateTracker,
     MountExtrinsics,
@@ -212,14 +218,22 @@ class LineTracerNode(Node):
         self.declare_parameter("hough_threshold", 60)
         self.declare_parameter("hough_min_line_length", 40)
         self.declare_parameter("hough_max_line_gap", 20)
-        self.declare_parameter("marker_size", 0.5)
+        self.declare_parameter("marker_size", 0.4)
+        # ArUco dictionary. The rules give IDs 0..49 but do NOT name a
+        # dictionary; 0..49 exactly matches the 50-marker dictionaries,
+        # so 4X4_50 is the working assumption — swap this param the day
+        # the rules confirm. Fed to both the downward perception and
+        # the lookahead side camera.
+        self.declare_parameter("aruco_dict", "4X4_50")
         # depth fallback altitude when no depth has arrived yet (TAKEOFF init)
         self.declare_parameter("default_altitude", 0.0)
         self.declare_parameter("altitude_median_window", 5)
-        # Mission FSM grid / context knobs.
+        # Mission FSM grid / context knobs. Official 2026-07 spec:
+        # 3 m cells; 30x21 arena is an assumption until the rules
+        # confirm the dims.
         self.declare_parameter("grid_width", 30.0)
-        self.declare_parameter("grid_depth", 20.0)
-        self.declare_parameter("grid_cell", 4.0)
+        self.declare_parameter("grid_depth", 21.0)
+        self.declare_parameter("grid_cell", 3.0)
         # Full mission: all 4 markers. LINE_FOLLOW serpentine-sweeps the
         # grid's interior rows to reach the off-axis corners; the FSM
         # falls back to retrieving whatever it has if the sweep
@@ -247,16 +261,27 @@ class LineTracerNode(Node):
         # extrinsics mirror the SDF sensor pose; keep them in sync.
         self.declare_parameter("lookahead_enable", True)
         self.declare_parameter("lookahead_mount_yaw", 1.5707963267948966)
-        self.declare_parameter("lookahead_mount_pitch", 0.384)
+        # 26 deg depression: on the 3 m grid the adjacent row sits at
+        # depression 33.3 deg — the old 22 deg mount (4 m grid) would
+        # put it exactly on the VFOV band edge. 26 deg centers the band
+        # between the +3 m row (4.0 deg margin) and +6 m row (3.5 deg).
+        self.declare_parameter("lookahead_mount_pitch", 0.4538)
         self.declare_parameter("lookahead_mount_tx", 0.0)
         self.declare_parameter("lookahead_mount_ty", 0.05)
         self.declare_parameter("lookahead_mount_tz", -0.03)
         # 3 sightings agreeing on the same intersection promote it to a
-        # candidate: at 10 Hz that is 0.3 s of the ~5 s an intersection
+        # candidate: at 10 Hz that is 0.3 s of the ~4 s an intersection
         # spends in the reliable band at 0.5 m/s cruise — early enough,
-        # and enough to reject one-frame ID misreads at 6 px/module.
+        # and enough to reject one-frame ID misreads.
         self.declare_parameter("lookahead_vote_threshold", 3)
-        self.declare_parameter("lookahead_max_range", 12.0)
+        # Band far edge is lateral 7.56 m -> slant 7.8 m at 2 m altitude.
+        self.declare_parameter("lookahead_max_range", 9.0)
+        # Vote acceptance radius around the nearest intersection: half a
+        # cell, so a projection error can never vote a NEIGHBOR node
+        # (nodes are 3 m apart). Separate from snap_max_err (2.0), which
+        # governs the downward record snap with the drone on top of the
+        # marker.
+        self.declare_parameter("lookahead_snap_max_err", 1.5)
         # GOTO_CANDIDATE shaping: how long to hover on a voted node
         # waiting for the downward camera before giving the id up, and
         # the per-attempt stall guard (counterpart of arrange_timeout).
@@ -316,12 +341,16 @@ class LineTracerNode(Node):
             context=mission_ctx,
         )
 
+        aruco_dict_const = resolve_aruco_dict(
+            str(self.get_parameter("aruco_dict").value)
+        )
         self._perception_cfg = PerceptionConfig(
             canny_low=int(self.get_parameter("canny_low").value),
             canny_high=int(self.get_parameter("canny_high").value),
             hough_threshold=int(self.get_parameter("hough_threshold").value),
             hough_min_line_length=int(self.get_parameter("hough_min_line_length").value),
             hough_max_line_gap=int(self.get_parameter("hough_max_line_gap").value),
+            aruco_dict=aruco_dict_const,
         )
 
         self._bridge = CvBridge()
@@ -350,9 +379,11 @@ class LineTracerNode(Node):
             ty=float(self.get_parameter("lookahead_mount_ty").value),
             tz=float(self.get_parameter("lookahead_mount_tz").value),
         )
-        self._side_cfg = SideCameraConfig()
+        self._side_cfg = SideCameraConfig(aruco_dict=aruco_dict_const)
         self._tracker = CandidateTracker(
-            snap_max_err=float(self.get_parameter("snap_max_err").value)
+            snap_max_err=float(
+                self.get_parameter("lookahead_snap_max_err").value
+            )
         )
         self._lookahead_vote_threshold = int(
             self.get_parameter("lookahead_vote_threshold").value

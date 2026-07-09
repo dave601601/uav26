@@ -34,6 +34,29 @@ from .geom import CameraIntrinsics
 # Config
 # ---------------------------------------------------------------------------
 
+# ArUco dictionary registry (param string -> cv2 constant). The rules give
+# marker IDs 0..49 without naming a dictionary; 0..49 exactly matches the
+# 50-marker dictionaries, so 4X4_50 is the working default — swap the
+# node's `aruco_dict` param the day the rules confirm.
+ARUCO_DICTS = {
+    "4X4_50": cv2.aruco.DICT_4X4_50,
+    "5X5_50": cv2.aruco.DICT_5X5_50,
+    "6X6_50": cv2.aruco.DICT_6X6_50,
+    "6X6_250": cv2.aruco.DICT_6X6_250,
+    "7X7_50": cv2.aruco.DICT_7X7_50,
+}
+DEFAULT_ARUCO_DICT = "4X4_50"
+
+
+def resolve_aruco_dict(name: str) -> int:
+    try:
+        return ARUCO_DICTS[name.strip().upper()]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown aruco dictionary {name!r}; known: {sorted(ARUCO_DICTS)}"
+        ) from exc
+
+
 @dataclass(frozen=True)
 class PerceptionConfig:
     canny_low: int = 60
@@ -48,7 +71,7 @@ class PerceptionConfig:
     # in [0,pi) is within this many radians of pi/2 (resp. 0 or pi) counts.
     vertical_half_width: float = pi / 6.0     # 30°
     horizontal_half_width: float = pi / 6.0   # 30°
-    aruco_dict: int = cv2.aruco.DICT_6X6_250
+    aruco_dict: int = ARUCO_DICTS[DEFAULT_ARUCO_DICT]
 
 
 @dataclass(frozen=True)

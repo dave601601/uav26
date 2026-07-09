@@ -1,12 +1,13 @@
 """Sideways lookahead camera perception (pure OpenCV + numpy, no rclpy).
 
 The drone carries a second camera (OV9281 + 6 mm lens) whose boresight is
-body +Y depressed ~22 deg below horizontal. While the serpentine sweep
-traverses row y, this camera observes the intersections of row y+4 on the
-unexplored side, letting the sweep skip every other row. Detections here
-are NAVIGATION HINTS ("candidate at node N"), never records: the actual
-marker recording still happens with the downward camera + intersection
-snap during WAYPOINT_VISIT.
+body +Y depressed ~26 deg below horizontal. While the serpentine sweep
+traverses row y, this camera observes the intersections of row y+3 (one
+cell over, on the official 3 m grid) on the unexplored side, letting the
+sweep skip every other row. Detections here are NAVIGATION HINTS
+("candidate at node N"), never records: the actual marker recording still
+happens with the downward camera + intersection snap during
+WAYPOINT_VISIT.
 
 Pipeline per frame:
   1. detect_aruco_side()      — ArUco detection tuned for small/oblique
@@ -39,7 +40,7 @@ import cv2
 import numpy as np
 
 from .geom import CameraIntrinsics
-from .perception import ArucoDetection
+from .perception import ARUCO_DICTS, DEFAULT_ARUCO_DICT, ArucoDetection
 
 if False:  # TYPE_CHECKING without the import cost at runtime
     from .grid import Grid, Node
@@ -78,14 +79,16 @@ class MountExtrinsics:
     """Camera mount on the body, mirroring the SDF ``<pose>`` of the sensor.
 
     Defaults are the lookahead camera in model.sdf: boresight +Y_body
-    depressed 22 deg (yaw pi/2 then pitch 0.384, extrinsic fixed-axis),
-    5 cm left / 3 cm below the body origin. The downward camera is the
-    degenerate case (yaw=0, pitch=pi/2) — kept exercisable so a unit
-    test can pin this rotation against the hardcoded optical->body map
-    in ``line_tracer_node._publish_aruco_markers``.
+    depressed 26 deg (yaw pi/2 then pitch 0.4538, extrinsic fixed-axis),
+    5 cm left / 3 cm below the body origin. 26 deg centers the VFOV band
+    between the adjacent row (3 m -> depression 33.3 deg) and the next
+    row (6 m -> 18.2 deg) of the official 3 m grid. The downward camera
+    is the degenerate case (yaw=0, pitch=pi/2) — kept exercisable so a
+    unit test can pin this rotation against the hardcoded optical->body
+    map in ``line_tracer_node._publish_aruco_markers``.
     """
     yaw: float = 1.5707963267948966
-    pitch: float = 0.384
+    pitch: float = 0.4538
     tx: float = 0.0
     ty: float = 0.05
     tz: float = -0.03
@@ -105,7 +108,7 @@ def project_pixel_to_ground(
     mount: MountExtrinsics,
     drone_xyz: Tuple[float, float, float],
     drone_rpy: Tuple[float, float, float],
-    max_range: float = 12.0,
+    max_range: float = 9.0,
     min_ray_down: float = 0.02,
 ) -> Optional[Tuple[float, float, float]]:
     """Ray-cast pixel (u, v) onto the world ground plane z=0.
@@ -145,19 +148,20 @@ class SideCameraConfig:
     """ArUco detection tuned for the oblique side view.
 
     Markers appear foreshortened (vertical extent ~ sin(depression)) and
-    small: the +4 m row at 640x400 / f=1000 is ~50 px tall (~6 px per
-    marker module). Deviations from OpenCV defaults:
+    small: the +3 m row at 640x400 / f=1000 is ~46 px tall (~7.6 px per
+    module with the 0.3 m DICT_4X4 code inside the 0.4 m sheet).
+    Deviations from OpenCV defaults:
       - adaptiveThreshWinSizeStep 10 -> 4: more threshold scales so the
         thin foreshortened quad survives binarization.
       - minMarkerPerimeterRate 0.03 -> 0.02: keep small far quads.
       - polygonalApproxAccuracyRate 0.03 -> 0.05: the trapezoid corners
         deviate more from a square's polygon fit.
       - cornerRefinementMethod SUBPIX: center accuracy feeds the ground
-        projection (1 px ~= 8 cm at the near band).
-      - errorCorrectionRate 0.6 -> 0.8: bits sampled at ~6 px/module
+        projection (1 px ~= 6 cm at the near band).
+      - errorCorrectionRate 0.6 -> 0.8: bits sampled at ~7 px/module
         flip more easily; the vote threshold filters residual misreads.
     """
-    aruco_dict: int = cv2.aruco.DICT_6X6_250
+    aruco_dict: int = ARUCO_DICTS[DEFAULT_ARUCO_DICT]
     adaptive_thresh_win_min: int = 3
     adaptive_thresh_win_max: int = 23
     adaptive_thresh_win_step: int = 4

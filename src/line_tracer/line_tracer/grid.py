@@ -1,13 +1,14 @@
 """격자 그래프 모델.
 
-Competition world (default 30 × 20 m, 4 m cell) 의 격자선을 그래프로 표현:
+Competition world (official spec: 3 m cell; default 30 × 21 m — arena
+dims are an assumption until the rules confirm) 의 격자선을 그래프로 표현:
   - 노드: 격자 교차점 (i, j)  → world (xs[i], ys[j])
   - 엣지: 같은 i 또는 같은 j 의 인접 노드 (4-connectivity)
 
-격자선 위치는 floor_tex.py / grid_stl.py 와 동일 규칙으로 만든다
+격자선 위치는 floor_tex.py 와 동일 규칙으로 만든다
 (0, cell, 2*cell, ..., 마지막 < extent 이면 extent 추가).
-즉 30 m / 4 m 격자 → x = 0,4,8,12,16,20,24,28,30 (9 col),
-   20 m / 4 m 격자 → y = 0,4,8,12,16,20            (6 row).
+즉 30 m / 3 m 격자 → x = 0,3,6,...,30 (11 col),
+   21 m / 3 m 격자 → y = 0,3,6,...,21 (8 row).
 
 마커 위치는 외부에서 (id → (x, y)) 로 전달; 보통 aruco_layout.yaml
 값을 그대로 넘겨준다. 모든 marker 가 격자 교차점 위에 있다고 가정한다
@@ -43,8 +44,8 @@ class Grid:
     def from_extents(
         cls,
         width: float = 30.0,
-        depth: float = 20.0,
-        cell: float = 4.0,
+        depth: float = 21.0,
+        cell: float = 3.0,
         marker_xy: Optional[Dict[int, Tuple[float, float]]] = None,
     ) -> "Grid":
         xs = tuple(line_positions(width, cell))
