@@ -82,29 +82,26 @@ def test_neighbors_far_corner():
 # ---------------------------------------------------------------------------
 
 # competition aruco_layout.yaml 의 9 개 마커
+# Official-spec shape: 30x21 m, 3 m cells, interior vertices only,
+# 4 unique IDs from 0..49.
 COMPETITION_LAYOUT = {
-    0: (4.0, 4.0),
-    1: (12.0, 4.0),
-    2: (20.0, 4.0),
-    3: (28.0, 4.0),
-    4: (8.0, 12.0),
-    5: (16.0, 12.0),
-    6: (24.0, 12.0),
-    7: (12.0, 16.0),
-    8: (20.0, 16.0),
+    17: (21.0, 15.0),
+    15: (6.0, 6.0),
+    14: (3.0, 6.0),
+    8: (24.0, 18.0),
 }
 
 
 def test_marker_node_competition_layout():
-    g = Grid.from_extents(30, 20, 4, marker_xy=COMPETITION_LAYOUT)
-    assert g.marker_node(0) == (1, 1)   # (4, 4)
-    assert g.marker_node(3) == (7, 1)   # (28, 4)
-    assert g.marker_node(5) == (4, 3)   # (16, 12)
-    assert g.marker_node(8) == (5, 4)   # (20, 16)
+    g = Grid.from_extents(30, 21, 3, marker_xy=COMPETITION_LAYOUT)
+    assert g.marker_node(17) == (7, 5)   # (21, 15)
+    assert g.marker_node(15) == (2, 2)   # (6, 6)
+    assert g.marker_node(14) == (1, 2)   # (3, 6)
+    assert g.marker_node(8) == (8, 6)    # (24, 18)
 
 
 def test_marker_node_unknown_id():
-    g = Grid.from_extents(30, 20, 4, marker_xy=COMPETITION_LAYOUT)
+    g = Grid.from_extents(30, 21, 3, marker_xy=COMPETITION_LAYOUT)
     with pytest.raises(KeyError):
         g.marker_node(99)
 

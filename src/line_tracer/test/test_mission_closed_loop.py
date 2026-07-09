@@ -161,16 +161,16 @@ class SyntheticCam:
 class SideCam:
     """Synthetic sideways lookahead camera (the OV9281+6mm model).
 
-    Mirrors the sim geometry at 2 m altitude: markers whose +Y offset
-    from the drone falls inside the VFOV ground band [3.0, 10.6] m and
-    within the 35.5 deg HFOV cone are 'observed' at their ground-truth
-    xy (projection accuracy is unit-tested separately in
-    test_side_camera.py; this model exercises tracker + FSM).
-    ``blind_ids`` simulates missed detections — the safety-net fallback
-    sweep must still find those markers."""
+    Mirrors the sim geometry at 2 m altitude with the 26 deg mount:
+    markers whose +Y offset from the drone falls inside the VFOV ground
+    band [2.64, 7.56] m and within the 35.5 deg HFOV cone are
+    'observed' at their ground-truth xy (projection accuracy is
+    unit-tested separately in test_side_camera.py; this model exercises
+    tracker + FSM). ``blind_ids`` simulates missed detections — the
+    safety-net fallback sweep must still find those markers."""
     markers: dict[int, tuple[float, float]] = field(default_factory=dict)
-    band_near_m: float = 3.0
-    band_far_m: float = 10.6
+    band_near_m: float = 2.64
+    band_far_m: float = 7.56
     hfov_half_tan: float = 0.3204     # tan(17.75 deg)
     min_altitude: float = 1.5
     blind_ids: frozenset = frozenset()
@@ -212,7 +212,7 @@ class MissionRunRecord:
 def run_mission(
     markers: dict[int, tuple[float, float]],
     *,
-    start_xy: tuple[float, float] = (2.0, 4.0),
+    start_xy: tuple[float, float] = (2.0, 3.0),
     start_z: float = 1.5,
     start_yaw: float = 0.0,
     yaw_drift_per_s: float = 0.0,    # synthetic firmware-side yaw drift
@@ -227,7 +227,7 @@ def run_mission(
 ) -> MissionRunRecord:
     """Replicate the node's per-tick body of ``_on_dr_tick`` without rclpy."""
     if grid is None:
-        grid = Grid.from_extents(width=30.0, depth=20.0, cell=4.0)
+        grid = Grid.from_extents(width=30.0, depth=21.0, cell=3.0)   # official spec
 
     drone = MockDrone(x=start_xy[0], y=start_xy[1], z=start_z, yaw=start_yaw)
     cam = SyntheticCam(markers=markers)
@@ -235,7 +235,7 @@ def run_mission(
         SideCam(markers=markers, blind_ids=side_blind_ids)
         if use_lookahead else None
     )
-    tracker = CandidateTracker()
+    tracker = CandidateTracker(snap_max_err=1.5)
 
     # Default: the FSM waits for as many records as we planted. Caller
     # can override (e.g. takeoff-only tests use a large value so the
@@ -360,9 +360,9 @@ class TestMissionClosedLoop:
     invariants the existing 'tick() with synthetic inputs' tests miss."""
 
     def _markers_on_x_axis(self) -> dict[int, tuple[float, float]]:
-        # All four markers on the y=4 line so a forward-cruising drone
-        # actually flies over them.
-        return {0: (8.0, 4.0), 1: (12.0, 4.0), 2: (16.0, 4.0), 3: (20.0, 4.0)}
+        # All four markers on the y=3 line (first interior row of the
+        # 3 m grid) so a forward-cruising drone actually flies over them.
+        return {0: (6.0, 3.0), 1: (12.0, 3.0), 2: (18.0, 3.0), 3: (24.0, 3.0)}
 
     def test_drone_takes_off(self):
         """The first thing M-A's headless run failed at: drone never
@@ -430,7 +430,7 @@ class TestMissionClosedLoop:
     def test_lands_near_start(self):
         result = run_mission(self._markers_on_x_axis(), max_seconds=200.0)
         ex, ey, _ = result.end_pose
-        dist = math.hypot(ex - 2.0, ey - 4.0)
+        dist = math.hypot(ex - 2.0, ey - 3.0)
         assert dist < 3.0, (   # the return_arrival_dist + brake overshoot
             f"final xy ({ex:.2f},{ey:.2f}) too far from start (2,4): "
             f"{dist:.2f} m"
@@ -681,7 +681,7 @@ class TestYawLock:
     (r15 showed ~20° drift sending the drone to (148, -57))."""
 
     def _markers_on_x_axis(self) -> dict[int, tuple[float, float]]:
-        return {0: (8.0, 4.0), 1: (12.0, 4.0), 2: (16.0, 4.0), 3: (20.0, 4.0)}
+        return {0: (6.0, 3.0), 1: (12.0, 3.0), 2: (18.0, 3.0), 3: (24.0, 3.0)}
 
     def test_yaw_stays_near_initial_with_constant_drift(self):
         """With a constant 0.10 rad/s firmware drift, the closed loop
@@ -714,7 +714,7 @@ class TestYawLock:
         # stay small (the lock can't be perfect, but the y deviation
         # has to be much smaller than the x progress).
         x_progress = result.drone.x - 2.0     # start_xy[0]
-        y_deviation = abs(result.drone.y - 4.0)
+        y_deviation = abs(result.drone.y - 3.0)
         assert x_progress > 5.0, (
             f"drone barely moved in +X: only {x_progress:.2f} m progress"
         )
@@ -764,9 +764,14 @@ class TestLookaheadMission:
     + candidate design pays — the two middle rows never get flown."""
 
     def _corner_markers(self) -> dict[int, tuple[float, float]]:
-        # Mirrors the seed-42 ground truth: two markers on row 4, two on
-        # row 16, nothing on rows 8/12.
-        return {2: (4.0, 4.0), 0: (24.0, 4.0), 3: (24.0, 16.0), 1: (4.0, 16.0)}
+        # Competition-shaped spread: one marker on the first flown row
+        # (3) and one on each SKIPPED row (6, 12, 18) — every skipped
+        # row is observed from the flown row 3 m below, so the run
+        # exercises the row-finish flush (rows 6, 12) and the final
+        # short-circuit (row 18). The full-sweep baseline only reaches
+        # the row-18 marker on its sixth leg. IDs exercise the official
+        # 0..49 range + the ascending-ID tour.
+        return {23: (3.0, 3.0), 8: (24.0, 6.0), 41: (24.0, 12.0), 7: (3.0, 18.0)}
 
     def test_lookahead_records_all_four_at_true_cells(self):
         result = run_mission(
@@ -775,7 +780,7 @@ class TestLookaheadMission:
             use_lookahead=True,
             sweep_row_step=2,
         )
-        assert set(result.records) == {0, 1, 2, 3}
+        assert set(result.records) == {7, 8, 23, 41}
         for mid, gt in self._corner_markers().items():
             rec = result.records[mid]
             assert math.hypot(rec[0] - gt[0], rec[1] - gt[1]) < 0.01, (
@@ -792,10 +797,10 @@ class TestLookaheadMission:
                            use_lookahead=True, sweep_row_step=2)
         assert base.final_state is StateName.LAND
         assert fast.final_state is StateName.LAND
-        assert set(base.records) == set(fast.records) == {0, 1, 2, 3}
+        assert set(base.records) == set(fast.records) == {7, 8, 23, 41}
         # The baseline must not contain the new state; the lookahead run
-        # must be meaningfully faster (it skips rows 8 and 12 entirely
-        # and short-circuits the rest of row 12's return leg).
+        # must be meaningfully faster (it flies 3 of 6 interior rows and
+        # short-circuits once the row-6 candidates land).
         assert StateName.GOTO_CANDIDATE not in base.state_sequence
         assert fast.elapsed_s < base.elapsed_s - 20.0, (
             f"lookahead {fast.elapsed_s:.0f}s vs baseline "
@@ -806,15 +811,15 @@ class TestLookaheadMission:
         """A marker the side camera never sees (missed detection) sits
         on a skipped row: the one-shot fallback sweep must still fly
         that row and record it with the downward camera."""
-        markers = {0: (8.0, 4.0), 9: (12.0, 8.0)}
+        markers = {0: (6.0, 3.0), 39: (12.0, 6.0)}
         result = run_mission(
             markers,
             max_seconds=500.0,
             use_lookahead=True,
             sweep_row_step=2,
-            side_blind_ids=frozenset({9}),
+            side_blind_ids=frozenset({39}),
         )
-        assert set(result.records) == {0, 9}
-        assert result.records[9] == (12.0, 8.0)
+        assert set(result.records) == {0, 39}
+        assert result.records[39] == (12.0, 6.0)
         assert result.fsm.context.sweep_fallback_done
         assert result.final_state is StateName.LAND

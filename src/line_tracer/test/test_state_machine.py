@@ -539,10 +539,11 @@ class TestMissionTickEdgeCases:
 
 class TestLookaheadCandidates:
     """Candidate-directed search: row-skip sweep, GOTO_CANDIDATE,
-    short-circuit, drop semantics, and the skipped-row fallback."""
+    short-circuit, drop semantics, and the skipped-row fallback.
+    Fixtures use the official competition shape (30x21 m, 3 m cells)."""
 
     def _grid(self) -> Grid:
-        return Grid.from_extents(width=30.0, depth=20.0, cell=4.0)
+        return Grid.from_extents(width=30.0, depth=21.0, cell=3.0)
 
     def _ctx(self, **overrides) -> MissionContext:
         kwargs = dict(
@@ -554,7 +555,7 @@ class TestLookaheadCandidates:
         kwargs.update(overrides)
         return MissionContext(**kwargs)
 
-    def _airborne(self, sm: StateMachine, x=2.0, y=4.0):
+    def _airborne(self, sm: StateMachine, x=2.0, y=3.0):
         """Seed start pose without going through TAKEOFF."""
         sm.context.start_xy = (x, y)
         sm.context.start_yaw = 0.0
@@ -565,27 +566,27 @@ class TestLookaheadCandidates:
         ctx = self._ctx(sweep_row_step=2)
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
         self._airborne(sm)
-        sm.tick(0.0, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0)
-        assert {y for _, y in ctx.sweep_path} == {4.0, 12.0}
-        assert sorted(ctx.sweep_skipped_rows) == [8.0, 16.0]
+        sm.tick(0.0, State(x=2.0, y=3.0, z=2.0), _empty_perception(), 2.0)
+        assert {y for _, y in ctx.sweep_path} == {3.0, 9.0, 15.0}
+        assert sorted(ctx.sweep_skipped_rows) == [6.0, 12.0, 18.0]
 
     def test_row_step_disabled_when_rows_not_ascending(self):
-        """Spawn between rows: distance-sorted rows oscillate (8, 12, 4,
-        16 from y=9.9) so '+Y is unexplored' does not hold — the skip
-        must revert to a full sweep."""
+        """Spawn between rows: distance-sorted rows oscillate (9, 12,
+        6, 15, ... from y=10.4) so '+Y is unexplored' does not hold —
+        the skip must revert to a full sweep."""
         ctx = self._ctx(sweep_row_step=2)
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
-        self._airborne(sm, x=2.0, y=9.9)
-        sm.tick(0.0, State(x=2.0, y=9.9, z=2.0), _empty_perception(), 2.0)
-        assert {y for _, y in ctx.sweep_path} == {4.0, 8.0, 12.0, 16.0}
+        self._airborne(sm, x=2.0, y=10.4)
+        sm.tick(0.0, State(x=2.0, y=10.4, z=2.0), _empty_perception(), 2.0)
+        assert {y for _, y in ctx.sweep_path} == {3.0, 6.0, 9.0, 12.0, 15.0, 18.0}
         assert ctx.sweep_skipped_rows == []
 
     def test_row_step_one_keeps_full_sweep(self):
         ctx = self._ctx(sweep_row_step=1)
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
         self._airborne(sm)
-        sm.tick(0.0, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0)
-        assert {y for _, y in ctx.sweep_path} == {4.0, 8.0, 12.0, 16.0}
+        sm.tick(0.0, State(x=2.0, y=3.0, z=2.0), _empty_perception(), 2.0)
+        assert {y for _, y in ctx.sweep_path} == {3.0, 6.0, 9.0, 12.0, 15.0, 18.0}
         assert ctx.sweep_skipped_rows == []
 
     # ---- dedup filtering at tick top --------------------------------
@@ -595,25 +596,25 @@ class TestLookaheadCandidates:
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
         self._airborne(sm)
         grid = ctx.grid
-        ctx.records[1] = (4.0, 16.0)
-        ctx.dropped_candidate_ids.add(2)
+        ctx.records[41] = (3.0, 15.0)
+        ctx.dropped_candidate_ids.add(23)
         snapshot = {
-            1: _cand(grid, 4.0, 16.0),    # already recorded
-            2: _cand(grid, 8.0, 8.0),     # given up earlier
-            3: _cand(grid, 24.0, 16.0),   # fresh
+            41: _cand(grid, 3.0, 15.0),   # already recorded
+            23: _cand(grid, 6.0, 6.0),    # given up earlier
+            7: _cand(grid, 24.0, 15.0),   # fresh
         }
-        sm.tick(0.0, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0,
+        sm.tick(0.0, State(x=2.0, y=3.0, z=2.0), _empty_perception(), 2.0,
                 candidates=snapshot)
-        assert set(ctx.candidates) == {3}
+        assert set(ctx.candidates) == {7}
 
     def test_candidates_none_keeps_existing_but_purges_resolved(self):
         ctx = self._ctx()
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
         self._airborne(sm)
         grid = ctx.grid
-        ctx.candidates = {3: _cand(grid, 24.0, 16.0), 1: _cand(grid, 4.0, 16.0)}
-        ctx.records[1] = (4.0, 16.0)
-        sm.tick(0.0, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        ctx.candidates = {3: _cand(grid, 24.0, 15.0), 1: _cand(grid, 3.0, 15.0)}
+        ctx.records[1] = (3.0, 15.0)
+        sm.tick(0.0, State(x=2.0, y=3.0, z=2.0), _empty_perception(), 2.0)
         assert set(ctx.candidates) == {3}
 
     # ---- GOTO_CANDIDATE flow ----------------------------------------
@@ -624,8 +625,8 @@ class TestLookaheadCandidates:
         ctx = self._ctx(max_records=records_needed)
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
         self._airborne(sm)
-        cand = _cand(ctx.grid, 8.0, 8.0)
-        r = sm.tick(0.0, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0,
+        cand = _cand(ctx.grid, 6.0, 6.0)
+        r = sm.tick(0.0, State(x=2.0, y=3.0, z=2.0), _empty_perception(), 2.0,
                     candidates={5: cand})
         return sm, ctx, cand, r
 
@@ -638,13 +639,13 @@ class TestLookaheadCandidates:
     def test_goto_downward_sighting_records_target(self):
         sm, ctx, cand, _ = self._enter_goto()
         # Arrive over the node; downward camera sees the target id.
-        r = sm.tick(1.0, State(x=8.0, y=8.0, z=2.0), _seen(5), 2.0,
+        r = sm.tick(1.0, State(x=6.0, y=6.0, z=2.0), _seen(5), 2.0,
                     candidates={5: cand})
         assert r.state is StateName.WAYPOINT_VISIT
         r = sm.tick(1.0 + ctx.waypoint_hover_seconds + 0.05,
-                    State(x=8.0, y=8.0, z=2.0), _empty_perception(), 2.0,
+                    State(x=6.0, y=6.0, z=2.0), _empty_perception(), 2.0,
                     candidates={5: cand})
-        assert ctx.records[5] == (8.0, 8.0)
+        assert ctx.records[5] == (6.0, 6.0)
         # Recorded id is deduped out of candidates and the queue.
         assert 5 not in ctx.candidates
         assert ctx.candidate_queue == []
@@ -653,21 +654,21 @@ class TestLookaheadCandidates:
         ctx = self._ctx(max_records=4)
         sm = StateMachine(initial=StateName.GOTO_CANDIDATE, context=ctx)
         self._airborne(sm)
-        cand = _cand(ctx.grid, 8.0, 8.0)
+        cand = _cand(ctx.grid, 6.0, 6.0)
         ctx.candidate_queue = [5]
         # En route, an unrecorded id 7 crosses the downward camera.
-        r = sm.tick(1.0, State(x=4.0, y=8.0, z=2.0), _seen(7), 2.0,
+        r = sm.tick(1.0, State(x=3.0, y=6.0, z=2.0), _seen(7), 2.0,
                     candidates={5: cand})
         assert r.state is StateName.WAYPOINT_VISIT
         r = sm.tick(1.0 + ctx.waypoint_hover_seconds + 0.05,
-                    State(x=4.0, y=8.0, z=2.0), _empty_perception(), 2.0,
+                    State(x=3.0, y=6.0, z=2.0), _empty_perception(), 2.0,
                     candidates={5: cand})
-        assert ctx.records[7] == (4.0, 8.0)
+        assert ctx.records[7] == (3.0, 6.0)
         # The interrupted target is still queued; the LINE_FOLLOW tick
         # after the hover resumes GOTO toward it.
         assert ctx.candidate_queue == [5]
         assert r.state is StateName.LINE_FOLLOW
-        r = sm.tick(2.0, State(x=4.0, y=8.0, z=2.0), _empty_perception(), 2.0,
+        r = sm.tick(2.0, State(x=3.0, y=6.0, z=2.0), _empty_perception(), 2.0,
                     candidates={5: cand})
         assert r.state is StateName.GOTO_CANDIDATE
         assert r.target_xy_world == cand.xy
@@ -676,17 +677,17 @@ class TestLookaheadCandidates:
         sm, ctx, cand, _ = self._enter_goto()
         sweep_idx_before = ctx.sweep_idx
         # Arrive; hover past candidate_wait_seconds with no sighting.
-        sm.tick(1.0, State(x=8.0, y=8.0, z=2.0), _empty_perception(), 2.0,
+        sm.tick(1.0, State(x=6.0, y=6.0, z=2.0), _empty_perception(), 2.0,
                 candidates={5: cand})
         r = sm.tick(1.0 + ctx.candidate_wait_seconds + 0.05,
-                    State(x=8.0, y=8.0, z=2.0), _empty_perception(), 2.0,
+                    State(x=6.0, y=6.0, z=2.0), _empty_perception(), 2.0,
                     candidates={5: cand})
         assert r.state is StateName.LINE_FOLLOW
         assert 5 in ctx.dropped_candidate_ids
         assert ctx.sweep_idx == sweep_idx_before
         # The tracker keeps re-snapshotting the id; it must never
         # re-promote — the next tick stays in LINE_FOLLOW.
-        r = sm.tick(2.0, State(x=8.0, y=8.0, z=2.0), _empty_perception(), 2.0,
+        r = sm.tick(2.0, State(x=6.0, y=6.0, z=2.0), _empty_perception(), 2.0,
                     candidates={5: cand})
         assert r.state is StateName.LINE_FOLLOW
         assert ctx.candidates == {}
@@ -695,9 +696,9 @@ class TestLookaheadCandidates:
         sm, ctx, cand, _ = self._enter_goto()
         ctx.goto_timeout = 5.0
         # Never arrives (drone far away the whole time).
-        sm.tick(1.0, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0,
+        sm.tick(1.0, State(x=2.0, y=3.0, z=2.0), _empty_perception(), 2.0,
                 candidates={5: cand})
-        r = sm.tick(6.1, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0,
+        r = sm.tick(6.1, State(x=2.0, y=3.0, z=2.0), _empty_perception(), 2.0,
                     candidates={5: cand})
         assert r.state is StateName.LINE_FOLLOW
         assert 5 in ctx.dropped_candidate_ids
@@ -706,38 +707,38 @@ class TestLookaheadCandidates:
         """candidates[queue[0]].xy is looked up live: if the majority
         node moves while en route, the target moves with it."""
         sm, ctx, cand, _ = self._enter_goto()
-        moved = _cand(ctx.grid, 12.0, 8.0)
-        r = sm.tick(1.0, State(x=4.0, y=6.0, z=2.0), _empty_perception(), 2.0,
+        moved = _cand(ctx.grid, 9.0, 6.0)
+        r = sm.tick(1.0, State(x=3.0, y=4.5, z=2.0), _empty_perception(), 2.0,
                     candidates={5: moved})
         assert r.state is StateName.GOTO_CANDIDATE
-        assert r.target_xy_world == (12.0, 8.0)
+        assert r.target_xy_world == (9.0, 6.0)
 
     # ---- scheduling: row-finish flush + short-circuit ---------------
 
     def test_row_finish_flush_visits_candidates_during_transit(self):
-        """Candidates spotted from row 4 (they sit on row 8) are visited
-        when the row-4 leg completes — the transit passes through them."""
+        """Candidates spotted from row 3 (they sit on row 6) are visited
+        when the row-3 leg completes — the transit passes through them."""
         ctx = self._ctx(sweep_row_step=2)
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
         self._airborne(sm)
         grid = ctx.grid
-        sm.tick(0.0, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0)
-        assert ctx.sweep_path[0] == (28.0, 4.0)
-        cand = _cand(grid, 24.0, 8.0)
+        sm.tick(0.0, State(x=2.0, y=3.0, z=2.0), _empty_perception(), 2.0)
+        assert ctx.sweep_path[0] == (28.0, 3.0)
+        cand = _cand(grid, 24.0, 6.0)
         # Mid-row tick with the candidate visible: keeps sweeping (no
         # short-circuit — 1 candidate + 0 records < 4).
-        r = sm.tick(1.0, State(x=15.0, y=4.0, z=2.0), _empty_perception(), 2.0,
+        r = sm.tick(1.0, State(x=15.0, y=3.0, z=2.0), _empty_perception(), 2.0,
                     candidates={6: cand})
         assert r.state is StateName.LINE_FOLLOW
-        # Arriving at the row-4 endpoint starts the transit to row 12 —
+        # Arriving at the row-3 endpoint starts the transit to row 9 —
         # the queued flush fires.
-        r = sm.tick(2.0, State(x=28.0, y=4.0, z=2.0), _empty_perception(), 2.0,
+        r = sm.tick(2.0, State(x=28.0, y=3.0, z=2.0), _empty_perception(), 2.0,
                     candidates={6: cand})
         assert r.state is StateName.GOTO_CANDIDATE
         assert ctx.candidate_queue == [6]
-        assert r.target_xy_world == (24.0, 8.0)
+        assert r.target_xy_world == (24.0, 6.0)
         # sweep resumes at the transit waypoint once the queue clears.
-        assert ctx.sweep_path[ctx.sweep_idx][1] == 12.0
+        assert ctx.sweep_path[ctx.sweep_idx][1] == 9.0
 
     def test_short_circuit_abandons_sweep_and_tours_candidates(self):
         """records=2 + candidates=2 accounts for all 4 markers: the
@@ -747,19 +748,19 @@ class TestLookaheadCandidates:
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
         self._airborne(sm)
         grid = ctx.grid
-        ctx.records.update({0: (8.0, 4.0), 1: (16.0, 4.0)})
+        ctx.records.update({8: (6.0, 3.0), 17: (15.0, 3.0)})
         snapshot = {
-            2: _cand(grid, 8.0, 8.0),
-            3: _cand(grid, 20.0, 8.0),
+            23: _cand(grid, 6.0, 6.0),
+            41: _cand(grid, 18.0, 6.0),
         }
-        r = sm.tick(0.0, State(x=10.0, y=4.0, z=2.0), _empty_perception(), 2.0,
+        r = sm.tick(0.0, State(x=9.0, y=3.0, z=2.0), _empty_perception(), 2.0,
                     candidates=snapshot)
         assert r.state is StateName.GOTO_CANDIDATE
-        # Nearest-neighbor chain from (10, 4): id 2 at (8,8) first.
-        assert ctx.candidate_queue == [2, 3]
+        # Nearest-neighbor chain from (9, 3): id 23 at (6,6) first.
+        assert ctx.candidate_queue == [23, 41]
         # Visit both via the downward camera.
         now = 1.0
-        for cid, (mx, my) in ((2, (8.0, 8.0)), (3, (20.0, 8.0))):
+        for cid, (mx, my) in ((23, (6.0, 6.0)), (41, (18.0, 6.0))):
             r = sm.tick(now, State(x=mx, y=my, z=2.0), _seen(cid), 2.0,
                         candidates=snapshot)
             assert r.state is StateName.WAYPOINT_VISIT
@@ -767,10 +768,10 @@ class TestLookaheadCandidates:
             r = sm.tick(now, State(x=mx, y=my, z=2.0), _empty_perception(), 2.0,
                         candidates=snapshot)
             now += 0.05
-        assert ctx.records[2] == (8.0, 8.0)
-        assert ctx.records[3] == (20.0, 8.0)
+        assert ctx.records[23] == (6.0, 6.0)
+        assert ctx.records[41] == (18.0, 6.0)
         # All four recorded -> retrieval.
-        r = sm.tick(now, State(x=20.0, y=8.0, z=2.0), _empty_perception(), 2.0,
+        r = sm.tick(now, State(x=18.0, y=6.0, z=2.0), _empty_perception(), 2.0,
                     candidates=snapshot)
         assert r.state is StateName.ARRANGE_BY_ID
 
@@ -782,11 +783,11 @@ class TestLookaheadCandidates:
         ctx = self._ctx(sweep_row_step=2)
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
         self._airborne(sm)
-        ctx.records[0] = (8.0, 4.0)    # partial
+        ctx.records[0] = (6.0, 3.0)    # partial
         now = 0.0
-        sm.tick(now, State(x=2.0, y=4.0, z=2.0), _empty_perception(), 2.0)
+        sm.tick(now, State(x=2.0, y=3.0, z=2.0), _empty_perception(), 2.0)
         first_path = list(ctx.sweep_path)
-        assert {y for _, y in first_path} == {4.0, 12.0}
+        assert {y for _, y in first_path} == {3.0, 9.0, 15.0}
         # Teleport through the whole skip sweep.
         for wx, wy in first_path:
             now += 0.1
@@ -794,7 +795,7 @@ class TestLookaheadCandidates:
         # Fallback plan over the previously skipped rows, still searching.
         assert r.state is StateName.LINE_FOLLOW
         assert ctx.sweep_fallback_done
-        assert {y for _, y in ctx.sweep_path} == {8.0, 16.0}
+        assert {y for _, y in ctx.sweep_path} == {6.0, 12.0, 18.0}
         # Exhaust the fallback too -> retrieval with what exists.
         for wx, wy in list(ctx.sweep_path):
             now += 0.1
@@ -811,22 +812,22 @@ class TestLookaheadCandidates:
         ctx = self._ctx(max_records=1, sweep_row_step=2)
         sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
         self._airborne(sm)
-        ctx.records[0] = (8.0, 4.0)
+        ctx.records[0] = (6.0, 3.0)
         # Pretend the sweep already ran dry while GOTO was active.
-        ctx.sweep_path = [(28.0, 4.0)]
+        ctx.sweep_path = [(28.0, 3.0)]
         ctx.sweep_idx = 1
         ctx.sweep_fallback_done = True
-        r = sm.tick(0.0, State(x=8.0, y=8.0, z=2.0), _empty_perception(), 2.0)
+        r = sm.tick(0.0, State(x=6.0, y=6.0, z=2.0), _empty_perception(), 2.0)
         # records full (max 1) -> retrieval, not a lookahead cruise.
         assert r.state is StateName.ARRANGE_BY_ID
         # And with missing records the exhaustion path still resolves:
         ctx2 = self._ctx(max_records=4, sweep_row_step=2)
         sm2 = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx2)
         self._airborne(sm2)
-        ctx2.records[0] = (8.0, 4.0)
-        ctx2.sweep_path = [(28.0, 4.0)]
+        ctx2.records[0] = (6.0, 3.0)
+        ctx2.sweep_path = [(28.0, 3.0)]
         ctx2.sweep_idx = 1
         ctx2.sweep_fallback_done = True
         ctx2.sweep_skipped_rows = []
-        r = sm2.tick(0.0, State(x=8.0, y=8.0, z=2.0), _empty_perception(), 2.0)
+        r = sm2.tick(0.0, State(x=6.0, y=6.0, z=2.0), _empty_perception(), 2.0)
         assert r.state is StateName.ARRANGE_BY_ID

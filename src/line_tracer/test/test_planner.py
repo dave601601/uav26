@@ -12,7 +12,10 @@ from line_tracer.planner import (
 )
 
 # competition aruco_layout.yaml 와 동일
-COMPETITION_LAYOUT = {
+# Pure-math BFS fixture on a 4 m grid — NOT the competition shape
+# (that lives in test_grid.py / test_state_machine.py on the 3 m grid);
+# the planner logic is cell-size agnostic.
+LAYOUT_4M = {
     0: (4.0, 4.0),
     1: (12.0, 4.0),
     2: (20.0, 4.0),
@@ -85,14 +88,14 @@ def test_visit_in_order_three_waypoints():
 # ---------------------------------------------------------------------------
 
 def test_arrange_by_id_along_y4_row():
-    g = Grid.from_extents(30, 20, 4, marker_xy=COMPETITION_LAYOUT)
+    g = Grid.from_extents(30, 20, 4, marker_xy=LAYOUT_4M)
     p = arrange_by_id(g, start=(0, 1), marker_ids=[0, 1, 2])
     # marker0=(1,1), marker1=(3,1), marker2=(5,1) — 모두 y=4 줄 위
     assert p == [(0, 1), (1, 1), (2, 1), (3, 1), (4, 1), (5, 1)]
 
 
 def test_arrange_by_id_changes_row():
-    g = Grid.from_extents(30, 20, 4, marker_xy=COMPETITION_LAYOUT)
+    g = Grid.from_extents(30, 20, 4, marker_xy=LAYOUT_4M)
     # start=(0,1)=(0,4); marker0=(1,1)=(4,4); marker4=(2,3)=(8,12).
     # leg1 Manhattan = 1, leg2 Manhattan = 1+2 = 3 → 1 + 1 + 3 = 5 노드.
     p = arrange_by_id(g, start=(0, 1), marker_ids=[0, 4])

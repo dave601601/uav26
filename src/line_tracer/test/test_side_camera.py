@@ -21,6 +21,8 @@ from line_tracer.side_camera import (
 
 # Sim lookahead camera: 640x400, HFOV 0.6196 rad -> f = 320/tan(0.3098).
 F_PX = 320.0 / math.tan(0.3098)
+# Mount depression for the official 3 m grid (26 deg; see model.sdf).
+MOUNT_PITCH = 0.4538
 
 
 @pytest.fixture
@@ -54,26 +56,26 @@ class TestProjection:
             assert isclose(hit[1], -xc, abs_tol=1e-9)
 
     def test_side_center_pixel_lateral_distance(self, intr, mount):
-        """Level flight at h=2: boresight is depressed 22 deg, so the
-        center pixel hits ty + (h + tz)/tan(0.384) in +Y and 0 in X."""
+        """Level flight at h=2: boresight is depressed 26 deg, so the
+        center pixel hits ty + (h + tz)/tan(MOUNT_PITCH) in +Y and 0 in X."""
         hit = project_pixel_to_ground(320.0, 200.0, intr, mount, (0.0, 0.0, 2.0), LEVEL)
         assert hit is not None
-        expected_y = 0.05 + (2.0 - 0.03) / math.tan(0.384)
+        expected_y = 0.05 + (2.0 - 0.03) / math.tan(MOUNT_PITCH)
         assert isclose(hit[0], 0.0, abs_tol=1e-9)
         assert isclose(hit[1], expected_y, abs_tol=1e-6)
 
     def test_band_edges_match_vfov(self, intr, mount):
-        """Top/bottom image rows land at depression 22 -/+ 11.3 deg —
-        the lateral 3..10.5 m band the row-skip design relies on."""
+        """Top/bottom image rows land at depression 26 -/+ 11.3 deg —
+        the lateral 2.6..7.6 m band the row-skip design relies on."""
         half_vfov = math.atan(200.0 / F_PX)
         cam_h = 2.0 - 0.03
         top = project_pixel_to_ground(320.0, 0.0, intr, mount, (0.0, 0.0, 2.0), LEVEL)
         bot = project_pixel_to_ground(320.0, 400.0, intr, mount, (0.0, 0.0, 2.0), LEVEL)
         assert top is not None and bot is not None
-        assert isclose(top[1], 0.05 + cam_h / math.tan(0.384 - half_vfov), rel_tol=1e-6)
-        assert isclose(bot[1], 0.05 + cam_h / math.tan(0.384 + half_vfov), rel_tol=1e-6)
-        # The adjacent sweep row (+4 m) must be inside the band.
-        assert bot[1] < 4.0 < top[1]
+        assert isclose(top[1], 0.05 + cam_h / math.tan(MOUNT_PITCH - half_vfov), rel_tol=1e-6)
+        assert isclose(bot[1], 0.05 + cam_h / math.tan(MOUNT_PITCH + half_vfov), rel_tol=1e-6)
+        # The adjacent sweep row (+3 m on the 3 m grid) must be inside.
+        assert bot[1] < 3.0 < top[1]
 
     def test_roll_shifts_effective_depression(self, intr):
         """For the side camera, body roll r composes as Rx(r)*Rz(pi/2)*
@@ -87,7 +89,7 @@ class TestProjection:
             )
             shallower = project_pixel_to_ground(
                 320.0, 200.0, intr,
-                MountExtrinsics(pitch=0.384 - roll, tx=0.0, ty=0.0, tz=0.0),
+                MountExtrinsics(pitch=MOUNT_PITCH - roll, tx=0.0, ty=0.0, tz=0.0),
                 (0.0, 0.0, 2.0), LEVEL,
             )
             assert rolled is not None and shallower is not None
@@ -108,7 +110,7 @@ class TestProjection:
         assert pitched is not None
         assert isclose(pitched[0], -2.0 * math.tan(p), abs_tol=1e-9)
         assert isclose(
-            pitched[1], 2.0 / (math.tan(0.384) * math.cos(p)), rel_tol=1e-9
+            pitched[1], 2.0 / (math.tan(MOUNT_PITCH) * math.cos(p)), rel_tol=1e-9
         )
 
     def test_yaw_rotates_hit_into_world(self, intr):
@@ -118,20 +120,20 @@ class TestProjection:
             320.0, 200.0, intr, m0, (10.0, 5.0, 2.0), (0.0, 0.0, math.pi / 2)
         )
         assert hit is not None
-        lateral = 2.0 / math.tan(0.384)
+        lateral = 2.0 / math.tan(MOUNT_PITCH)
         assert isclose(hit[0], 10.0 - lateral, abs_tol=1e-6)
         assert isclose(hit[1], 5.0, abs_tol=1e-9)
 
     def test_near_horizon_ray_refused(self, intr):
-        """Roll lifting the boresight to <~1 deg depression: the ground
+        """Roll lifting the boresight to a few deg of depression: the ground
         hit would be tens of metres out on attitude jitter — refuse."""
         m0 = MountExtrinsics(tx=0.0, ty=0.0, tz=0.0)
         assert project_pixel_to_ground(
-            320.0, 200.0, intr, m0, (0.0, 0.0, 2.0), (0.37, 0.0, 0.0)
+            320.0, 200.0, intr, m0, (0.0, 0.0, 2.0), (0.44, 0.0, 0.0)
         ) is None
 
     def test_max_range_gate(self, intr, mount):
-        """Center-pixel slant at h=2 is ~5.3 m; a 3 m gate refuses it."""
+        """Center-pixel slant at h=2 is ~4.5 m; a 3 m gate refuses it."""
         assert project_pixel_to_ground(
             320.0, 200.0, intr, mount, (0.0, 0.0, 2.0), LEVEL, max_range=3.0
         ) is None
@@ -150,7 +152,7 @@ class TestProjection:
         m0 = MountExtrinsics(tx=0.0, ty=0.0, tz=0.0)
         hit = project_pixel_to_ground(320.0, 200.0, intr, m0, (0.0, 0.0, 2.0), LEVEL)
         assert hit is not None
-        assert isclose(hit[2], 2.0 / math.sin(0.384), rel_tol=1e-6)
+        assert isclose(hit[2], 2.0 / math.sin(MOUNT_PITCH), rel_tol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -159,14 +161,15 @@ class TestProjection:
 
 def _render_oblique_marker(
     marker_id: int,
-    width_px: int = 100,
-    squash: float = 0.45,
+    width_px: int = 84,
+    squash: float = 0.55,
     image_size=(400, 640),
 ):
-    """Marker as the side camera sees it at the +4 m band: ~100 px wide,
-    vertically squashed by sin(26.6 deg) ~ 0.45, mild trapezoid. Returns
-    (mono image, expected center uv)."""
-    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
+    """Marker code as the side camera sees it at the +3 m band: the
+    0.3 m DICT_4X4_50 code at slant 3.59 m / f=1000 is ~84 px wide,
+    vertically squashed by sin(33.3 deg) ~ 0.55, mild trapezoid.
+    Returns (mono image, expected center uv)."""
+    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     src_px = 256
     marker = cv2.aruco.generateImageMarker(aruco_dict, marker_id, src_px)
     h, w = image_size
@@ -199,7 +202,7 @@ def _render_oblique_marker(
 
 class TestDetectArucoSide:
     def test_detects_oblique_squashed_marker(self):
-        """The +4 m band geometry (~6 px/module after foreshortening)
+        """The +3 m band geometry (~7.6 px/module after foreshortening)
         must detect — this is the load-bearing case for the row skip."""
         img, center = _render_oblique_marker(marker_id=3)
         dets = detect_aruco_side(img, SideCameraConfig())
@@ -231,27 +234,28 @@ class TestDetectArucoSide:
 
 @pytest.fixture
 def grid() -> Grid:
-    return Grid.from_extents(width=30.0, depth=20.0, cell=4.0)
+    # Official spec: 3 m cells (30x21 arena assumed).
+    return Grid.from_extents(width=30.0, depth=21.0, cell=3.0)
 
 
 class TestCandidateTracker:
     def test_below_threshold_not_promoted(self, grid):
         tr = CandidateTracker()
-        tr.observe(5, 8.2, 7.9, 4.5, 0.0, grid)
-        tr.observe(5, 7.8, 8.1, 4.4, 0.1, grid)
+        tr.observe(5, 6.2, 5.9, 3.6, 0.0, grid)
+        tr.observe(5, 5.8, 6.1, 3.5, 0.1, grid)
         assert tr.snapshot(3, grid) == {}
 
     def test_promoted_at_threshold_with_node_world_xy(self, grid):
         tr = CandidateTracker()
         for i in range(3):
-            tr.observe(5, 8.0 + 0.1 * i, 8.0 - 0.1 * i, 4.5 - i * 0.1, float(i), grid)
+            tr.observe(5, 6.0 + 0.1 * i, 6.0 - 0.1 * i, 3.6 - i * 0.1, float(i), grid)
         snap = tr.snapshot(3, grid)
         assert set(snap) == {5}
         cand = snap[5]
-        assert cand.node == grid.nearest_node(8.0, 8.0)
-        assert cand.xy == (8.0, 8.0)     # node world coords, not raw hits
+        assert cand.node == grid.nearest_node(6.0, 6.0)
+        assert cand.xy == (6.0, 6.0)     # node world coords, not raw hits
         assert cand.votes == 3
-        assert isclose(cand.best_range, 4.3, abs_tol=1e-9)
+        assert isclose(cand.best_range, 3.4, abs_tol=1e-9)
         assert cand.last_seen == 2.0
 
     def test_conflicting_nodes_majority_wins(self, grid):
@@ -259,34 +263,34 @@ class TestCandidateTracker:
         times; the true node out-votes it."""
         tr = CandidateTracker()
         for i in range(3):
-            tr.observe(5, 12.0, 8.0, 5.0, float(i), grid)       # node (3,2)
+            tr.observe(5, 9.0, 6.0, 4.0, float(i), grid)        # node (3,2)
         for i in range(5):
-            tr.observe(5, 8.0, 8.0, 4.5, 10.0 + i, grid)        # node (2,2)
+            tr.observe(5, 6.0, 6.0, 3.6, 10.0 + i, grid)        # node (2,2)
         snap = tr.snapshot(3, grid)
-        assert snap[5].node == grid.nearest_node(8.0, 8.0)
+        assert snap[5].node == grid.nearest_node(6.0, 6.0)
         assert snap[5].votes == 5
 
     def test_midcell_projection_refused(self, grid):
         """A hit >snap_max_err from every intersection (markers only sit
         on intersections) means the projection is wrong — no vote."""
-        tr = CandidateTracker(snap_max_err=2.0)
-        assert tr.observe(5, 10.0, 6.0, 5.0, 0.0, grid) is None   # 2.83 m out
+        tr = CandidateTracker(snap_max_err=1.5)
+        assert tr.observe(5, 7.5, 4.5, 4.0, 0.0, grid) is None   # 2.12 m out
         assert tr.snapshot(1, grid) == {}
 
     def test_multiple_ids_tracked_independently(self, grid):
         tr = CandidateTracker()
         for i in range(3):
-            tr.observe(1, 4.0, 16.0, 4.5, float(i), grid)
-            tr.observe(3, 24.0, 16.0, 4.6, float(i), grid)
+            tr.observe(1, 3.0, 15.0, 3.6, float(i), grid)
+            tr.observe(3, 24.0, 15.0, 3.7, float(i), grid)
         snap = tr.snapshot(3, grid)
         assert set(snap) == {1, 3}
-        assert snap[1].xy == (4.0, 16.0)
-        assert snap[3].xy == (24.0, 16.0)
+        assert snap[1].xy == (3.0, 15.0)
+        assert snap[3].xy == (24.0, 15.0)
 
     def test_candidate_is_frozen_dataclass(self, grid):
         tr = CandidateTracker()
         for i in range(3):
-            tr.observe(1, 4.0, 8.0, 4.5, float(i), grid)
+            tr.observe(1, 3.0, 6.0, 3.6, float(i), grid)
         cand = tr.snapshot(3, grid)[1]
         assert isinstance(cand, Candidate)
         with pytest.raises(Exception):

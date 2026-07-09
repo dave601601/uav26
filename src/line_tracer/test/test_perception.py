@@ -131,10 +131,12 @@ class TestComputePixelErrors:
 # ---------------------------------------------------------------------------
 
 def _draw_grid_image(width=640, height=480, line_thickness=10):
-    """White background + black grid lines at u=320 and v=240."""
-    img = np.full((height, width, 3), 255, dtype=np.uint8)
-    cv2.line(img, (320, 0), (320, height), (0, 0, 0), line_thickness)
-    cv2.line(img, (0, 240), (width, 240), (0, 0, 0), line_thickness)
+    """Official-spec polarity: WHITE satin lines on grass (mid-gray in
+    mono) at u=320 and v=240. Canny+Hough is polarity-agnostic, but the
+    fixture should mirror what the downward camera actually sees."""
+    img = np.full((height, width, 3), 80, dtype=np.uint8)
+    cv2.line(img, (320, 0), (320, height), (245, 245, 245), line_thickness)
+    cv2.line(img, (0, 240), (width, 240), (245, 245, 245), line_thickness)
     return img
 
 
@@ -185,7 +187,9 @@ class TestProcessImage:
 # ---------------------------------------------------------------------------
 
 def _render_aruco_image(marker_id: int, size_px: int = 200, image_size=(480, 640)):
-    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
+    # Must match PerceptionConfig's default dictionary (4X4_50 — the
+    # working assumption for the rules' "IDs 0..49").
+    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     marker = cv2.aruco.generateImageMarker(aruco_dict, marker_id, size_px)
     img = np.full((*image_size, 3), 255, dtype=np.uint8)
     h, w = image_size
