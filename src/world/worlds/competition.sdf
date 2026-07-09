@@ -7,8 +7,11 @@
   writes the assembled SDF to competition_runtime.sdf — that is what
   sim.launch.py loads by default.
 
-  - 30 x 20 m floor (4 m grid cells, 10 cm line width, baked PNG)
-  - 4 ArUco markers placed at random grid intersections per launch
+  - 30 x 21 m grass field (3 m grid cells, 10 cm WHITE satin lines,
+    baked PNG — official 2026-07 survey spec; arena dims are an
+    assumption until the rules confirm)
+  - 4 ArUco markers (0.4 m sheets, IDs random from 0..49) placed at
+    random interior grid intersections per launch
   - X-frame quadrotor (model://uav26_quad), flown by fc_sim_node
 
   Mesh and texture references resolve via model://world_assets/...; the
@@ -69,9 +72,9 @@
       <direction>0.5 0.5 -1</direction>
     </light>
 
-    <!-- ===== 무한 바닥 (균일 회색, collision 전용 + grid 영역 바깥 시각) =====
-         grid 영역(30×20 m)은 아래 textured_floor 가 덮으므로 collision 만 의미가 있고,
-         바깥(예: 드론이 잠깐 빠져나가도) 색이 너무 튀지 않게 같은 톤으로 둔다. -->
+    <!-- ===== 무한 바닥 (잔디색, collision 전용 + grid 영역 바깥 시각) =====
+         grid 영역(30×21 m)은 아래 textured_floor 가 덮으므로 collision 만 의미가 있고,
+         바깥(예: 드론이 잠깐 빠져나가도) 색이 잔디 텍스처와 이어지게 같은 톤으로 둔다. -->
     <model name="ground_plane">
       <static>true</static>
       <link name="link">
@@ -91,31 +94,31 @@
             </plane>
           </geometry>
           <material>
-            <ambient>0.78 0.78 0.78 1</ambient>
-            <diffuse>0.80 0.80 0.80 1</diffuse>
+            <ambient>0.20 0.40 0.21 1</ambient>
+            <diffuse>0.22 0.41 0.22 1</diffuse>
             <specular>0.05 0.05 0.05 1</specular>
           </material>
         </visual>
       </link>
     </model>
 
-    <!-- ===== 격자 + 콘크리트 통합 바닥 (30×20 m, PBR albedo 한 장) =====
+    <!-- ===== 격자 + 잔디 통합 바닥 (30×21 m, PBR albedo 한 장) =====
          floor.png 한 장 안에:
-           - rough concrete 노이즈 배경
-           - 어두운 격자선 (4 m 셀, 폭 10 cm)
-           - 마커 50×50 cm 영역엔 격자선 없음 (= 마커가 격자에 가려지지 않음)
+           - 잔디 노이즈 배경 (초록)
+           - 하얀 격자선 (3 m 셀, 폭 10 cm — 새틴 리본)
+           - 마커 40×40 cm 영역엔 격자선 없음 (= 마커가 격자에 가려지지 않음)
          이 모델은 시각만 — 0 두께 plane 이라 collision 필요 없다 (위 ground_plane 이 받침).
          z = 0.0005 로 ground_plane 보다 0.5 mm 위로 띄워 z-fight 방지.
-         pose = (15, 10, ...) 으로 plane 중심을 grid 중심에 맞춘다 (grid 는 [0,30]×[0,20]). -->
+         pose = (15, 10.5, ...) 으로 plane 중심을 grid 중심에 맞춘다 (grid 는 [0,30]×[0,21]). -->
     <model name="textured_floor">
       <static>true</static>
-      <pose>15 10 0.0005 0 0 0</pose>
+      <pose>15 10.5 0.0005 0 0 0</pose>
       <link name="link">
         <visual name="visual">
           <geometry>
             <plane>
               <normal>0 0 1</normal>
-              <size>30 20</size>
+              <size>30 21</size>
             </plane>
           </geometry>
           <material>
@@ -133,7 +136,7 @@
       </link>
     </model>
 
-    <!-- ===== ArUco markers (50x50 cm, DICT_6X6_250) =====
+    <!-- ===== ArUco markers (40x40 cm sheets, IDs 0..49, dict per aruco.py) =====
          This file is a template. The 4 marker model blocks are injected
          at INJECT_MARKER below by marker_randomize.py at launch time;
          the assembled SDF is written to competition_runtime.sdf and
@@ -151,7 +154,8 @@
          높은 spawn 은 settle 동안 tumbling 을 유발해 demo 초기 상태를 망친다.
          body +X(forward) 가 격자선 방향(+X world)과 같으므로 LINE_FOLLOW 의
          cruise_vx 가 격자선을 따라 자연스럽게 진행한다.
-         이 경로상에 markers 0~3 (x=4,12,20,28; y=4) 도 차례로 카메라에 잡힌다. -->
+         spawn y=3.0 = 첫 내부 row: sweep 이 여기서 시작해 +Y 로 상승하며
+         측면 lookahead 카메라의 "+Y = 미탐색" 불변식을 지킨다. -->
     <include>
       <uri>model://uav26_quad</uri>
       <name>uav26_quad</name>
@@ -174,7 +178,7 @@
            - Launch gap sim->tracer must stay ~8 s: at 3 s the drone is
              still above takeoff_alt_threshold and the FSM skips
              TAKEOFF entirely (r48). -->
-      <pose>2.0 4.0 3.0 0 0 0</pose>
+      <pose>2.0 3.0 3.0 0 0 0</pose>
     </include>
 
   </world>

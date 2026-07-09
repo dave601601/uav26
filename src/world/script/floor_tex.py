@@ -1,17 +1,20 @@
-"""격자 + rough concrete 통합 바닥 텍스처 생성기.
+"""격자 + 잔디 통합 바닥 텍스처 생성기.
 
-aruco_layout.yaml 의 marker pose 를 읽어, 그 위치 (marker_size × marker_size) 정사각
-구역에는 격자선을 그리지 않은 PNG (rough concrete + grid) 를 생성한다.
+공식 스펙 (2026-07 실사 공지): 실외 연병장 초록 잔디밭 위에 하얀색 새틴
+리본 격자선 (폭 10 cm, 셀 3 m). aruco_layout.yaml 의 marker pose 를 읽어,
+그 위치 (marker_size × marker_size) 정사각 구역에는 격자선을 그리지 않은
+PNG (grass + white grid) 를 생성한다.
 
 이 한 장으로:
   - 별도 grid STL mesh 가 필요 없고 (z-fight 도 사라짐)
   - ArUco 마커 영역엔 격자선이 침범하지 않으며
-  - line_tracer 카메라 perception 은 여전히 어두운 격자선을 잘 잡는다.
+  - line_tracer 카메라 perception 은 밝은 격자선을 잘 잡는다
+    (Canny+Hough 는 극성 무관; 흰 선 vs 잔디는 mono 에서 고대비).
 
 사용 (script/ 에서):
   python3 floor_tex.py \
       --layout ../config/aruco_layout.yaml \
-      --width 30 --depth 20 --cell 4 --line-width 0.10 \
+      --width 30 --depth 21 --cell 3 --line-width 0.10 \
       --px-per-m 100 \
       -o ../textures/floor.png
 """
@@ -27,7 +30,7 @@ import numpy as np
 
 def parse_layout(path: str) -> tuple[float, list[tuple[float, float]]]:
     """layout YAML 의 marker_size 와 markers[].pose(x,y) 를 자체 파서로 추출."""
-    marker_size = 0.5
+    marker_size = 0.4
     markers: list[tuple[float, float]] = []
     current_id: int | None = None
     with open(path, "r", encoding="utf-8") as f:
@@ -50,8 +53,8 @@ def parse_layout(path: str) -> tuple[float, list[tuple[float, float]]]:
     return marker_size, markers
 
 
-def make_concrete(h: int, w: int, base: int, contrast: float, seed: int) -> np.ndarray:
-    """Multi-octave 노이즈 + 약간의 어두운 specks → 콘크리트 느낌 grayscale."""
+def make_luma_noise(h: int, w: int, contrast: float, seed: int) -> np.ndarray:
+    """Multi-octave zero-mean 노이즈 (float32, std=contrast)."""
     rng = np.random.default_rng(seed)
     img = np.zeros((h, w), dtype=np.float32)
     long_side = max(h, w)
@@ -62,11 +65,27 @@ def make_concrete(h: int, w: int, base: int, contrast: float, seed: int) -> np.n
         n = cv2.resize(n, (w, h), interpolation=cv2.INTER_LINEAR)
         img += amp * n
     img = (img - img.mean()) / max(float(img.std()), 1e-6)
-    out = np.clip(base + contrast * img, 0, 255).astype(np.uint8)
+    return contrast * img
 
-    # 어두운 aggregate-like specks (~0.2 % 픽셀)
-    speckle = rng.random((h, w)) > 0.998
-    out[speckle] = np.clip(out[speckle].astype(np.int16) - 70, 0, 255).astype(np.uint8)
+
+def make_grass(h: int, w: int, base_bgr: tuple[int, int, int],
+               contrast: float, seed: int) -> np.ndarray:
+    """잔디 느낌 BGR: 초록 base 에 공통 luma 노이즈 + 어두운 specks.
+
+    노이즈를 세 채널에 같은 부호로 실어(밝기 변화 위주) mono 카메라에서도
+    자연스러운 잔디 질감이 나온다. specks (~0.3 %) 는 흙/그림자 점.
+    """
+    rng = np.random.default_rng(seed + 1)
+    luma = make_luma_noise(h, w, contrast, seed)
+    out = np.zeros((h, w, 3), dtype=np.float32)
+    # 채널별 가중: 잔디는 G 변동이 가장 큼.
+    for ch, gain in enumerate((0.7, 1.0, 0.6)):     # B, G, R
+        out[:, :, ch] = base_bgr[ch] + gain * luma
+    out = np.clip(out, 0, 255).astype(np.uint8)
+
+    speckle = rng.random((h, w)) > 0.997
+    dark = np.clip(out[speckle].astype(np.int16) - 60, 0, 255).astype(np.uint8)
+    out[speckle] = dark
     return out
 
 
@@ -85,18 +104,18 @@ def world_to_pixel(
 
 
 def draw_grid(
-    gray: np.ndarray,
+    img: np.ndarray,
     width_m: float,
     depth_m: float,
     cell_m: float,
     line_w_m: float,
     px_per_m: float,
-    line_intensity: int,
+    line_bgr: tuple[int, int, int],
     marker_centers: list[tuple[float, float]],
     marker_size_m: float,
 ) -> None:
-    """In-place: 어두운 격자선을 그리되, marker 정사각 영역엔 그리지 않는다."""
-    h, w = gray.shape
+    """In-place: 격자선(BGR)을 그리되, marker 정사각 영역엔 그리지 않는다."""
+    h, w = img.shape[:2]
 
     no_grid = np.zeros((h, w), dtype=bool)
     half = marker_size_m / 2.0
@@ -110,6 +129,7 @@ def draw_grid(
         no_grid[r0c:r1c, c0c:c1c] = True
 
     half_pw = max(1, int(round(line_w_m * px_per_m / 2.0)))
+    line_px = np.array(line_bgr, dtype=np.uint8)
 
     # 세로 격자선 (X = 0, cell, 2*cell, ..., width)
     n_x = int(np.floor(width_m / cell_m + 1e-9))
@@ -120,9 +140,9 @@ def draw_grid(
         col = int(round(x * px_per_m))
         c0, c1 = max(0, col - half_pw), min(w, col + half_pw + 1)
         if c1 > c0:
-            band = np.full((h, c1 - c0), line_intensity, dtype=np.uint8)
-            keep = ~no_grid[:, c0:c1]
-            gray[:, c0:c1] = np.where(keep, band, gray[:, c0:c1])
+            keep = no_grid[:, c0:c1]
+            region = img[:, c0:c1]
+            region[~keep] = line_px
 
     # 가로 격자선 (Y = 0, cell, 2*cell, ..., depth)
     n_y = int(np.floor(depth_m / cell_m + 1e-9))
@@ -133,23 +153,27 @@ def draw_grid(
         row = int(round((depth_m - y) * px_per_m))
         r0, r1 = max(0, row - half_pw), min(h, row + half_pw + 1)
         if r1 > r0:
-            band = np.full((r1 - r0, w), line_intensity, dtype=np.uint8)
-            keep = ~no_grid[r0:r1, :]
-            gray[r0:r1, :] = np.where(keep, band, gray[r0:r1, :])
+            keep = no_grid[r0:r1, :]
+            region = img[r0:r1, :]
+            region[~keep] = line_px
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--layout", required=True, help="aruco_layout.yaml 경로")
     p.add_argument("--width", type=float, default=30.0)
-    p.add_argument("--depth", type=float, default=20.0)
-    p.add_argument("--cell", type=float, default=4.0)
+    p.add_argument("--depth", type=float, default=21.0)
+    p.add_argument("--cell", type=float, default=3.0)
     p.add_argument("--line-width", type=float, default=0.10)
     p.add_argument("--px-per-m", type=float, default=100.0)
-    p.add_argument("--base", type=int, default=205, help="콘크리트 평균 밝기 0..255")
-    p.add_argument("--contrast", type=float, default=22.0, help="노이즈 진폭 0..50")
     p.add_argument(
-        "--line-intensity", type=int, default=30, help="격자선 밝기 0..255 (어두울수록 작은 값)"
+        "--grass-bgr", default="45,105,55",
+        help="잔디 base 색 B,G,R (0..255)",
+    )
+    p.add_argument("--contrast", type=float, default=18.0, help="노이즈 진폭 0..50")
+    p.add_argument(
+        "--line-bgr", default="245,245,245",
+        help="격자선 색 B,G,R (하얀 새틴 리본)",
     )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("-o", "--output", required=True)
@@ -162,7 +186,10 @@ def main() -> None:
     marker_size, markers = parse_layout(args.layout)
     print(f"markers loaded: {len(markers)}, size={marker_size} m, centers={markers}")
 
-    img = make_concrete(h, w, args.base, args.contrast, args.seed)
+    grass_bgr = tuple(int(v) for v in args.grass_bgr.split(","))
+    line_bgr = tuple(int(v) for v in args.line_bgr.split(","))
+
+    img = make_grass(h, w, grass_bgr, args.contrast, args.seed)
     draw_grid(
         img,
         width_m=args.width,
@@ -170,16 +197,15 @@ def main() -> None:
         cell_m=args.cell,
         line_w_m=args.line_width,
         px_per_m=args.px_per_m,
-        line_intensity=args.line_intensity,
+        line_bgr=line_bgr,
         marker_centers=markers,
         marker_size_m=marker_size,
     )
 
-    rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     out_dir = os.path.dirname(os.path.abspath(args.output))
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    cv2.imwrite(args.output, rgb)
+    cv2.imwrite(args.output, img)
     print(f"saved: {args.output}")
 
 

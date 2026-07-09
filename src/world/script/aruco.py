@@ -1,11 +1,15 @@
-"""ArUco DICT_6X6_250 마커 PNG 일괄 생성기.
+"""ArUco 마커 PNG 일괄 생성기.
 
 Gazebo SDF 의 PBR `<diffuse>` 텍스처로 사용하기 위한 정사각 PNG 를 출력한다.
 출력 경로: <out-dir>/aruco_<id>.png
 
 사용:
-  python3 aruco.py --ids 0,1,2,3,4,5,6,7,8 --out-dir ../textures
+  python3 aruco.py --ids 0-49 --out-dir ../textures
   python3 aruco.py --ids-from ../config/aruco_layout.yaml --out-dir ../textures
+
+Dictionary: 대회 공지는 "ID 0~49 중 4개"만 명시하고 dictionary 는 밝히지
+않았다. 0~49 는 50-마커 dictionary (DICT_4X4_50 등) 와 정확히 일치하므로
+기본값은 DICT_4X4_50 — 규정이 확정되면 --dict 한 번으로 교체한다.
 """
 from __future__ import annotations
 
@@ -16,7 +20,16 @@ import cv2
 import cv2.aruco as aruco
 import numpy as np
 
-DICTIONARY = aruco.DICT_6X6_250
+# name -> (cv2 dictionary constant, marker modules per side incl. the
+# 1-module black border on each side: NxN code + 2).
+DICTIONARIES = {
+    "4X4_50": (aruco.DICT_4X4_50, 6),
+    "5X5_50": (aruco.DICT_5X5_50, 7),
+    "6X6_50": (aruco.DICT_6X6_50, 8),
+    "6X6_250": (aruco.DICT_6X6_250, 8),
+    "7X7_50": (aruco.DICT_7X7_50, 9),
+}
+DEFAULT_DICT = "4X4_50"
 
 
 def parse_ids(spec: str) -> list[int]:
@@ -56,7 +69,11 @@ def parse_ids_from_yaml(path: str) -> list[int]:
 
 
 def generate_marker_png(
-    marker_id: int, size_px: int, out_path: str, margin_modules: float = 1.0
+    marker_id: int,
+    size_px: int,
+    out_path: str,
+    dict_name: str = DEFAULT_DICT,
+    margin_modules: float = 1.0,
 ) -> None:
     """Marker code centered on a white quiet zone.
 
@@ -64,17 +81,18 @@ def generate_marker_png(
     but the ArUco detector REQUIRES a light quiet zone around the code
     to isolate the quad contour — a real printed marker always has one.
     Without it, a marker sitting on a grid intersection fuses with the
-    black grid lines into one blob and the detector never even forms a
+    grid lines into one blob and the detector never even forms a
     candidate quad (this killed every oblique side-camera detection in
-    r61/r63; the nadir camera survived only because at its scale the
-    adaptive threshold happened to separate the thin lines).
+    r61/r63).
 
-    The plate stays size_px (0.5 m in the world); the code shrinks to
-    8/(8 + 2*margin_modules) of it — 0.4 m for the default 1-module
-    margin, mirroring how a 0.5 m sheet would actually be printed.
+    The sheet stays size_px (0.4 m in the world per the official spec:
+    "크기 0.4m, 바탕 하얀색") and the code shrinks to
+    modules/(modules + 2*margin_modules) of it — 0.3 m for DICT_4X4_50
+    with the default 1-module margin, mirroring how a real 0.4 m sheet
+    is printed.
     """
-    aruco_dict = aruco.getPredefinedDictionary(DICTIONARY)
-    modules = 8  # 6x6 code + 1-module black border each side
+    dict_const, modules = DICTIONARIES[dict_name]
+    aruco_dict = aruco.getPredefinedDictionary(dict_const)
     total = modules + 2.0 * margin_modules
     code_px = int(round(size_px * modules / total))
     img = aruco.generateImageMarker(aruco_dict, marker_id, code_px)
@@ -90,7 +108,7 @@ def main() -> None:
     parser.add_argument(
         "--ids",
         default="",
-        help="콤마 구분 ID 또는 범위 (예: 0,1,2 또는 0-8)",
+        help="콤마 구분 ID 또는 범위 (예: 0,1,2 또는 0-49)",
     )
     parser.add_argument(
         "--ids-from",
@@ -108,6 +126,13 @@ def main() -> None:
         default=512,
         help="PNG 한 변 픽셀 (기본 512)",
     )
+    parser.add_argument(
+        "--dict",
+        dest="dict_name",
+        default=DEFAULT_DICT,
+        choices=sorted(DICTIONARIES),
+        help=f"ArUco dictionary (기본 {DEFAULT_DICT})",
+    )
     args = parser.parse_args()
 
     ids: list[int] = []
@@ -123,7 +148,9 @@ def main() -> None:
 
     for marker_id in unique_ids:
         out_path = os.path.join(args.out_dir, f"aruco_{marker_id}.png")
-        generate_marker_png(marker_id, args.size_px, out_path)
+        generate_marker_png(
+            marker_id, args.size_px, out_path, dict_name=args.dict_name
+        )
         print(f"saved: {out_path}")
 
 

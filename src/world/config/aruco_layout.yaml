@@ -1,33 +1,26 @@
-# ArUco 마커 배치 (DICT_6X6_250).
+# ArUco marker layout — DEFAULT (seed 42); regenerated at every sim
+# launch by marker_randomize.py, so treat this file as a sample.
 #
 # pose: [x, y, z, roll, pitch, yaw]  단위 m / rad
 #   - x, y: 격자 교차점 좌표 (world ENU)
-#   - z   : 마커 윗면 두께 절반 (0.001 = 1mm 두께 plate 의 중심 높이)
-#   - rpy : 보통 0 (바닥 위에 평평하게 놓임)
+#   - z   : 마커 윗면 두께 절반 (0.001 = 1mm 두께 sheet 의 중심 높이)
 #
-# 본 사양: 50×50 cm 정사각, 30×20 m 격자(셀 4m) 위 일부 교차점에 분포.
-# 본 task 는 폐루프 검증용이므로 5~10 개 정도면 충분.
+# Official spec (2026-07 survey): 30x21 m grass arena (dims assumed
+# until the rules confirm), 3 m cells, WHITE 10 cm satin lines,
+# markers 0.4 m sheets (white bg / black code) on INTERIOR grid
+# vertices, 4 unique IDs from 0..49. Dictionary is NOT specified by
+# the rules — the sim assumes DICT_4X4_50 (see aruco.py --dict).
 
-marker_size: 0.5         # 한 변 길이 [m]
-marker_thickness: 0.002  # 두께 [m]
-texture_dir: textures    # 패키지 share 기준 상대경로
+marker_size: 0.4
+marker_thickness: 0.002
+texture_dir: textures
 
 markers:
-  - id: 0
-    pose: [4.0, 4.0, 0.001, 0.0, 0.0, 0.0]
-  - id: 1
-    pose: [12.0, 4.0, 0.001, 0.0, 0.0, 0.0]
-  - id: 2
-    pose: [20.0, 4.0, 0.001, 0.0, 0.0, 0.0]
-  - id: 3
-    pose: [28.0, 4.0, 0.001, 0.0, 0.0, 0.0]
-  - id: 4
-    pose: [8.0, 12.0, 0.001, 0.0, 0.0, 0.0]
-  - id: 5
-    pose: [16.0, 12.0, 0.001, 0.0, 0.0, 0.0]
-  - id: 6
-    pose: [24.0, 12.0, 0.001, 0.0, 0.0, 0.0]
-  - id: 7
-    pose: [12.0, 16.0, 0.001, 0.0, 0.0, 0.0]
+  - id: 17
+    pose: [21.0, 15.0, 0.001, 0.0, 0.0, 0.0]
+  - id: 15
+    pose: [6.0, 6.0, 0.001, 0.0, 0.0, 0.0]
+  - id: 14
+    pose: [3.0, 6.0, 0.001, 0.0, 0.0, 0.0]
   - id: 8
-    pose: [20.0, 16.0, 0.001, 0.0, 0.0, 0.0]
+    pose: [24.0, 18.0, 0.001, 0.0, 0.0, 0.0]
