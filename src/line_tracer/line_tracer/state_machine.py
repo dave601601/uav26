@@ -26,10 +26,19 @@ automaton that walks the 7-step competition mission:
 Candidates (fed per tick via ``tick(candidates=...)`` from the node's
 ``CandidateTracker``) also reshape the search itself: with
 ``sweep_row_step=2`` the serpentine only flies every other interior row
-— the side camera observes the skipped row from 4 m away — and the
+— the side camera observes the skipped row from 3 m away — and the
 sweep short-circuits into candidate visits as soon as
 records + candidates account for every marker. A one-shot fallback
 sweep over the skipped rows covers missed side detections.
+
+WHERE a candidate gets collected is a scheduling decision, not a
+reflex. The sweep alternates row traversals (legs) with row-to-row
+transits, and a tour can only be spliced into a transit — splicing into
+a leg would cut that leg's downward coverage short. So the transits are
+the insertion points, and ``_candidates_to_tour_now`` picks among them:
+a candidate the sweep will fly over anyway is never toured, and the
+others are collected at the transit whose detour is smallest. See the
+``MissionContext`` visit-policy knobs.
 
 The 1-7 split is rules-aligned (시작 -> 라인트레이싱 -> 식별 -> 구조 경로 (역순)
 -> 자동 착륙). The proposal's particle-filter / vertiport / KF-z elements
@@ -46,7 +55,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from math import cos, hypot, sin
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple
 
 from .dead_reckoning import State, snap_to_intersection
 
@@ -184,6 +193,52 @@ _BEHAVIORS: Dict[StateName, Behavior] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Route geometry — the cost model behind the candidate visit policy.
+# ---------------------------------------------------------------------------
+
+_XY = Tuple[float, float]
+
+
+def _point_to_segment(p: _XY, a: _XY, b: _XY) -> float:
+    """Shortest distance from ``p`` to the segment ``a``-``b``."""
+    (px, py), (ax, ay), (bx, by) = p, a, b
+    dx, dy = bx - ax, by - ay
+    denom = dx * dx + dy * dy
+    if denom <= 0.0:
+        return hypot(px - ax, py - ay)
+    t = ((px - ax) * dx + (py - ay) * dy) / denom
+    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+    return hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _nn_chain_length(start: _XY, points: Sequence[_XY], end: _XY) -> float:
+    """Length of the greedy nearest-neighbor chain start -> points -> end.
+
+    Greedy is within pennies of optimal at the <=4 nodes a mission ever
+    carries, and it is the order ``_enqueue_pending_candidates`` actually
+    flies — so the cost the scheduler compares is the cost the drone pays.
+    """
+    total = 0.0
+    px, py = start
+    remaining = list(points)
+    while remaining:
+        nxt = min(remaining, key=lambda q: hypot(q[0] - px, q[1] - py))
+        total += hypot(nxt[0] - px, nxt[1] - py)
+        px, py = nxt
+        remaining.remove(nxt)
+    return total + hypot(end[0] - px, end[1] - py)
+
+
+def _detour_cost(start: _XY, points: Sequence[_XY], end: _XY) -> float:
+    """Extra distance a start -> points -> end tour costs over start -> end."""
+    if not points:
+        return 0.0
+    return _nn_chain_length(start, points, end) - hypot(
+        end[0] - start[0], end[1] - start[1]
+    )
+
+
 @dataclass
 class MissionContext:
     """Persistent state across tick() calls — what the automaton remembers.
@@ -262,6 +317,28 @@ class MissionContext:
     goto_arrive_t: Optional[float] = None   # arrival dwell before drop
     candidate_wait_seconds: float = 4.0
     goto_timeout: float = 60.0
+
+    # Visit policy — which row-end flushes are worth interrupting the
+    # sweep for. Zero radius + defer=False reproduces the r70 behavior
+    # (flush every row end, every candidate) for A/B runs.
+    #
+    # Coverage: a candidate inside the downward camera's corridor of a
+    # leg the drone has NOT flown yet is recorded for free when that leg
+    # runs, so touring it is pure detour. r70 flew 37 m to visit id17 at
+    # (21, 15) and then swept the row-15 leg straight over it. The radius
+    # is half the downward footprint (~2.7 m at 2 m altitude) shrunk for
+    # DR error; the next row is 3 m out, so the value is not delicate.
+    candidate_coverage_radius: float = 1.0
+    # Cheapest insertion: a tour may only be spliced into a transit (a
+    # leg spliced mid-way loses the rest of its coverage), and the row-end
+    # flush points ARE the transits — so the only choice is which one.
+    # Flush here iff no later transit collects the same set for less.
+    # r70 paid a 42.7 m detour flushing the row-6 pair at the row-3 east
+    # end; the row-9 -> row-15 transit would have cost 10.0 m. Deferring
+    # never delays the short-circuit (candidates count toward
+    # max_records exactly as records do) and a wrong candidate stays
+    # time-bounded either way — GOTO drops it after candidate_wait.
+    defer_flush_to_cheapest: bool = True
 
     # Transition counters
     takeoff_alt_streak: int = 0
@@ -469,16 +546,20 @@ class StateMachine:
                     # into the wall or hovering forever.
                     self._on_sweep_exhausted(dr_state)
                     return
-                # Row-finish flush: the next waypoint starting a new row
-                # means candidates spotted from the finished row (they
-                # sit on the row 4 m toward the new one) are literally
-                # on the way — visit them during the transit.
+                # Row-finish flush: the next waypoint starts a new row, so
+                # the drone stands at a transit — the one place a
+                # candidate tour splices in without truncating a leg. Take
+                # it only if the visit policy says this transit is the
+                # cheapest one left and the sweep will not fly over the
+                # candidates on its own.
                 if ctx.sweep_path[ctx.sweep_idx][1] != row_y and ctx.candidates:
-                    self._enqueue_pending_candidates(dr_state)
-                    if ctx.candidate_queue:
-                        ctx.goto_start_t = None
-                        ctx.goto_arrive_t = None
-                        self._state = StateName.GOTO_CANDIDATE
+                    tour = self._candidates_to_tour_now(dr_state)
+                    if tour:
+                        self._enqueue_pending_candidates(dr_state, ids=tour)
+                        if ctx.candidate_queue:
+                            ctx.goto_start_t = None
+                            ctx.goto_arrive_t = None
+                            self._state = StateName.GOTO_CANDIDATE
 
     def _tick_goto_candidate(
         self, now: float, perception: Optional["PerceptionResult"], dr_state: State
@@ -724,12 +805,94 @@ class StateMachine:
             return
         self._plan_retrieval(dr_state)
 
-    def _enqueue_pending_candidates(self, dr_state: State) -> None:
+    def _future_legs(self) -> List[Tuple[_XY, _XY]]:
+        """Sweep segments still ahead that actually SCAN ground.
+
+        ``_plan_sweep`` alternates row traversals (constant y — the legs,
+        where the downward camera sees every intersection it passes) with
+        transits (constant x — the climb to the next row, which scans
+        nothing new). Only legs count as coverage.
+        """
+        ctx = self._context
+        path = ctx.sweep_path
+        return [
+            (path[j], path[j + 1])
+            for j in range(ctx.sweep_idx, len(path) - 1)
+            if path[j][1] == path[j + 1][1] and path[j][0] != path[j + 1][0]
+        ]
+
+    def _future_flush_points(self) -> List[Tuple[_XY, _XY]]:
+        """(tour start, rejoin) for every row-end transit still ahead.
+
+        Callers reach this with ``sweep_idx`` already advanced past the
+        transit the drone is standing on, so the CURRENT flush point is
+        excluded by construction. The last flush point therefore sees an
+        empty list and always fires — nothing can strand a candidate.
+        """
+        ctx = self._context
+        path = ctx.sweep_path
+        return [
+            (path[j], path[j + 1])
+            for j in range(ctx.sweep_idx, len(path) - 1)
+            if path[j][1] != path[j + 1][1]
+        ]
+
+    def _covered_by_future_leg(self, xy: _XY) -> bool:
+        ctx = self._context
+        if ctx.candidate_coverage_radius <= 0.0:
+            return False
+        return any(
+            _point_to_segment(xy, a, b) <= ctx.candidate_coverage_radius
+            for a, b in self._future_legs()
+        )
+
+    def _candidates_to_tour_now(self, dr_state: State) -> List[int]:
+        """Candidate ids worth interrupting the sweep for at this row end.
+
+        Empty means keep sweeping: either the remaining legs already fly
+        over every candidate, or a later transit collects the same set
+        for a smaller detour. A candidate deferred here is re-considered
+        at the next flush point, and ``_on_sweep_exhausted`` collects
+        whatever is left unconditionally.
+        """
+        ctx = self._context
+        pending = [
+            i
+            for i in ctx.candidates
+            if i not in ctx.candidate_queue
+            and not self._covered_by_future_leg(ctx.candidates[i].xy)
+        ]
+        if not pending or not ctx.defer_flush_to_cheapest:
+            return pending
+        pts = [ctx.candidates[i].xy for i in pending]
+        cost_now = _detour_cost(
+            (dr_state.x, dr_state.y), pts, ctx.sweep_path[ctx.sweep_idx]
+        )
+        if any(
+            _detour_cost(start, pts, end) < cost_now
+            for start, end in self._future_flush_points()
+        ):
+            return []
+        return pending
+
+    def _enqueue_pending_candidates(
+        self, dr_state: State, ids: Optional[Sequence[int]] = None
+    ) -> None:
         """Append every un-queued candidate in nearest-neighbor chain
         order from the current position (<=4 nodes; greedy chaining is
-        within pennies of optimal at that size)."""
+        within pennies of optimal at that size).
+
+        ``ids`` restricts the set to what the row-end visit policy chose.
+        Short-circuit and sweep exhaustion pass None — the sweep is over,
+        so every candidate has to be flown to regardless.
+        """
         ctx = self._context
-        pending = [i for i in ctx.candidates if i not in ctx.candidate_queue]
+        allowed = None if ids is None else set(ids)
+        pending = [
+            i
+            for i in ctx.candidates
+            if i not in ctx.candidate_queue and (allowed is None or i in allowed)
+        ]
         px, py = dr_state.x, dr_state.y
         while pending:
             nxt = min(

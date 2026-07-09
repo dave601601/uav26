@@ -2,7 +2,82 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
-## Current state (2026-07-09 — official-spec respec verified, r70/r72)
+## Current state (2026-07-09 — visit policy landed, A/B blocked by a downward false positive)
+
+The candidate visit policy (M-D follow-up) is implemented and its
+decisions were verified in flight (r73). Two rules replace the
+unconditional row-end flush, both live in `state_machine.py` and both
+disable-able for A/B (`candidate_coverage_radius: 0.0`,
+`defer_flush_to_cheapest: false` reproduce r70):
+
+- Coverage. A candidate within `candidate_coverage_radius` of a sweep
+  leg the drone has not flown yet is never toured — the downward camera
+  records it for free when that leg runs. r70 flew a 37 m tour to
+  id17 at (21, 15) and then swept the row-15 leg straight over it.
+- Cheapest insertion. A tour can only splice into a transit (splicing
+  into a leg truncates its coverage), and the row-end flush points are
+  exactly the transits. Flush here only if no later transit collects
+  the same set for a smaller detour. r70 paid a 42.7 m detour flushing
+  the row-6 pair at the row-3 east end; the row-9 -> row-15 transit
+  costs 10.0 m for the same pair.
+
+r73 (seed 42, same layout as r70/r72) executed both exactly as designed:
+no flush at the row-3 east end (r70 flushed there at t=48), the tour
+fired at the row-9 west end at t=107.5 toward id14 then id15, and id17
+was promoted from the far band (range 7.7) but left to the row-15 leg.
+Search-phase ground track fell from r70's 257.2 m.
+
+The timing A/B is NOT resolved. At t=156 the downward camera decoded a
+phantom id=17 at the grid crossing (9, 15) — 12 m from the real marker
+— and the FSM recorded it. That single frame poisoned the record
+(12.00 m error), blinded the drone to the real id17 when it overflew
+(21, 15) at t~184 (the id was already in `records`), and left the sweep
+exhausted at 3 records, which triggered the one-shot fallback sweep over
+rows 6/12/18. The fallback recovered the mission (4 records, landed) but
+cost ~115 s: r73 search reads 321.0 sim s against a ~205 s trajectory.
+
+### The downward record path trusts a single frame (blocking, was M-E)
+
+Root cause, not bad luck. In DICT_4X4_50, id 17 is the code CLOSEST to
+an all-black patch (Hamming 4 of 16), and its white bits are a 2x2 block
+against one edge:
+
+```
+0 1 1 0
+0 1 1 0
+0 0 0 0
+0 0 0 0
+```
+
+That is the signature of a dark candidate quad straddling a white grid
+line. The decoder is allowed to correct 1 bit, and 5.2 % of all random
+4x4 patterns decode to some valid id (200 rotated codewords x 17-pattern
+Hamming spheres = 3400 / 65536; the spheres are disjoint, so the bound
+is tight). Every marker sits on a crossing, so the detector meets this
+geometry on every approach.
+
+The asymmetry is the defect: the side camera's HINT path is gated by 3
+votes on one intersection (`CandidateTracker`), while the downward
+camera's AUTHORITATIVE record path takes the first frame's id and snaps
+it to the nearest intersection with no vote and no geometric check. r70
+and r72 crossed (9, 15) too — but on the row line, where the crossing
+renders centered. r73 crossed 0.6 m south of it on a diagonal, a
+geometry no earlier run flew.
+
+Dictionary false-accept rates, for the flagged `aruco_dict` assumption
+(the rules give IDs 0..49 but name no dictionary):
+
+| dict | modules | maxCorrectionBits | false-accept |
+|---|---|---|---|
+| DICT_4X4_50 | 4x4 | 1 | 5.19 % |
+| DICT_5X5_50 | 5x5 | 3 | 1.57 % |
+| DICT_6X6_50 | 6x6 | 6 | 0.70 % |
+
+Switching dictionaries trades lookahead range (4X4's larger modules are
+why the +6 m far band works at all — r70/r73 promoted id17 at 6.3 and
+7.7 m). Harden the record path first: it is dictionary-independent.
+
+## Superseded state (2026-07-09 — official-spec respec, r70/r72 eager-flush A/B)
 
 The stack now models the official 2026-07 survey spec end to end:
 3 m grass grid with white satin lines, 0.4 m marker sheets, 4 unique

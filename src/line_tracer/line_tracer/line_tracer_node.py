@@ -287,6 +287,13 @@ class LineTracerNode(Node):
         # the per-attempt stall guard (counterpart of arrange_timeout).
         self.declare_parameter("candidate_wait_seconds", 4.0)
         self.declare_parameter("goto_timeout", 60.0)
+        # Candidate visit policy. A candidate within this radius of a
+        # sweep leg the drone has not flown yet is left to the downward
+        # camera (0.0 disables the check); a row-end flush waits for the
+        # transit with the smallest detour instead of firing on sight.
+        # Set 0.0 / False together to reproduce the r70 tour behavior.
+        self.declare_parameter("candidate_coverage_radius", 1.0)
+        self.declare_parameter("defer_flush_to_cheapest", True)
         # Serpentine row skip: 2 = fly every other interior row and let
         # the side camera observe the skipped one. Forced back to 1 at
         # runtime when lookahead_enable is false — without the side
@@ -329,6 +336,12 @@ class LineTracerNode(Node):
                 self.get_parameter("candidate_wait_seconds").value
             ),
             goto_timeout=float(self.get_parameter("goto_timeout").value),
+            candidate_coverage_radius=float(
+                self.get_parameter("candidate_coverage_radius").value
+            ),
+            defer_flush_to_cheapest=bool(
+                self.get_parameter("defer_flush_to_cheapest").value
+            ),
             sweep_row_step=(
                 int(self.get_parameter("sweep_row_step").value)
                 if bool(self.get_parameter("lookahead_enable").value)

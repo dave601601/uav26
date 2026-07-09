@@ -14,6 +14,8 @@ from line_tracer.state_machine import (
     StateMachine,
     StateName,
     TickResult,
+    _detour_cost,
+    _point_to_segment,
 )
 
 
@@ -831,3 +833,185 @@ class TestLookaheadCandidates:
         ctx2.sweep_skipped_rows = []
         r = sm2.tick(0.0, State(x=6.0, y=6.0, z=2.0), _empty_perception(), 2.0)
         assert r.state is StateName.ARRANGE_BY_ID
+
+
+class TestRouteGeometry:
+    """The cost model the visit policy compares flush points with."""
+
+    def test_point_on_segment_is_zero(self):
+        assert _point_to_segment((21.0, 15.0), (2.0, 15.0), (28.0, 15.0)) == 0.0
+
+    def test_point_off_segment_is_perpendicular(self):
+        assert _point_to_segment((21.0, 12.0), (2.0, 15.0), (28.0, 15.0)) == 3.0
+
+    def test_point_past_the_end_clamps_to_the_endpoint(self):
+        # Not an infinite line: a marker beyond the leg's west end is as
+        # far away as the endpoint, not 0.
+        assert _point_to_segment((0.0, 15.0), (2.0, 15.0), (28.0, 15.0)) == 2.0
+
+    def test_degenerate_segment_is_a_point(self):
+        assert _point_to_segment((3.0, 4.0), (0.0, 0.0), (0.0, 0.0)) == 5.0
+
+    def test_detour_of_nothing_is_free(self):
+        assert _detour_cost((0.0, 0.0), [], (10.0, 0.0)) == 0.0
+
+    def test_detour_along_the_way_is_free(self):
+        assert _detour_cost((0.0, 0.0), [(0.0, 5.0)], (0.0, 10.0)) == pytest.approx(0.0)
+
+    def test_r70_flush_points_are_ordered_as_measured(self):
+        """The two insertion points r70 actually had for the row-6 pair.
+        The row-3 east end costs 4x what the row-9 -> row-15 transit does;
+        r70 took the expensive one because the flush was unconditional."""
+        pair = [(6.0, 6.0), (3.0, 6.0)]
+        at_row3_end = _detour_cost((26.5, 3.0), pair, (28.0, 9.0))
+        at_row9_end = _detour_cost((2.0, 9.0), pair, (2.0, 15.0))
+        assert at_row3_end == pytest.approx(42.71, abs=0.01)
+        assert at_row9_end == pytest.approx(10.01, abs=0.01)
+
+
+class TestCandidateVisitPolicy:
+    """Where a candidate gets collected. Fixtures are the r70 layout:
+    30x21 m arena, 3 m cells, spawn (2, 3), row_step 2 -> the sweep is
+    [(28,3), (28,9), (2,9), (2,15), (28,15)] and the row-3 east end and
+    the row-9 west end are its two flush points."""
+
+    def _ctx(self, **overrides) -> MissionContext:
+        kwargs = dict(
+            grid=Grid.from_extents(width=30.0, depth=21.0, cell=3.0),
+            waypoint_hover_seconds=0.1,
+            waypoint_arrival_dist=0.5,
+            candidate_wait_seconds=0.5,
+            sweep_row_step=2,
+        )
+        kwargs.update(overrides)
+        return MissionContext(**kwargs)
+
+    def _armed(self, **overrides):
+        """LINE_FOLLOW at spawn with the sweep planned."""
+        ctx = self._ctx(**overrides)
+        sm = StateMachine(initial=StateName.LINE_FOLLOW, context=ctx)
+        ctx.start_xy, ctx.start_yaw = (2.0, 3.0), 0.0
+        sm.tick(0.0, State(x=2.0, y=3.0, z=2.0), _empty_perception(), 2.0)
+        assert ctx.sweep_path == [
+            (28.0, 3.0), (28.0, 9.0), (2.0, 9.0), (2.0, 15.0), (28.0, 15.0)
+        ]
+        return sm, ctx
+
+    def _row6_pair(self, grid):
+        return {14: _cand(grid, 3.0, 6.0), 15: _cand(grid, 6.0, 6.0)}
+
+    # ---- deferral to the cheapest transit ----------------------------
+
+    def test_row3_flush_defers_to_the_cheaper_row9_transit(self):
+        """r70's 42.7 m mistake. The row-6 pair sits behind the sweep
+        direction at the row-3 east end; the row-9 -> row-15 transit
+        passes within 10 m of both."""
+        sm, ctx = self._armed()
+        cands = self._row6_pair(ctx.grid)
+
+        r = sm.tick(1.0, State(x=28.0, y=3.0, z=2.0), _empty_perception(), 2.0,
+                    candidates=cands)
+        assert r.state is StateName.LINE_FOLLOW      # deferred, keep sweeping
+        assert ctx.candidate_queue == []
+        assert ctx.sweep_path[ctx.sweep_idx] == (28.0, 9.0)
+
+        # Row-9 leg: not a flush point (same row on both ends).
+        r = sm.tick(2.0, State(x=28.0, y=9.0, z=2.0), _empty_perception(), 2.0,
+                    candidates=cands)
+        assert r.state is StateName.LINE_FOLLOW
+        assert ctx.candidate_queue == []
+
+        # Row-9 west end: last flush point, nothing cheaper left -> fire.
+        r = sm.tick(3.0, State(x=2.0, y=9.0, z=2.0), _empty_perception(), 2.0,
+                    candidates=cands)
+        assert r.state is StateName.GOTO_CANDIDATE
+        assert ctx.candidate_queue == [14, 15]       # NN chain from (2, 9)
+        assert r.target_xy_world == (3.0, 6.0)
+        # The sweep resumes at the transit waypoint it was interrupted on.
+        assert ctx.sweep_path[ctx.sweep_idx] == (2.0, 15.0)
+
+    def test_cheap_flush_still_fires_immediately(self):
+        """Deferral is a cost comparison, not a blanket delay: a
+        candidate ahead of the transit is collected on the spot."""
+        sm, ctx = self._armed()
+        cands = {6: _cand(ctx.grid, 24.0, 6.0)}
+        r = sm.tick(1.0, State(x=28.0, y=3.0, z=2.0), _empty_perception(), 2.0,
+                    candidates=cands)
+        assert r.state is StateName.GOTO_CANDIDATE
+        assert ctx.candidate_queue == [6]
+
+    # ---- coverage: let the sweep do the work -------------------------
+
+    def test_candidate_on_a_future_leg_is_never_toured(self):
+        """id17 at (21, 15) sits on the row-15 leg. r70 flew a 37 m tour
+        to it and then swept that leg straight over it."""
+        sm, ctx = self._armed()
+        cands = {17: _cand(ctx.grid, 21.0, 15.0)}
+        for t, (x, y) in enumerate(
+            [(28.0, 3.0), (28.0, 9.0), (2.0, 9.0)], start=1
+        ):
+            r = sm.tick(float(t), State(x=x, y=y, z=2.0), _empty_perception(),
+                        2.0, candidates=cands)
+            assert r.state is StateName.LINE_FOLLOW
+            assert ctx.candidate_queue == []
+        # Still believed, just not worth a detour.
+        assert set(ctx.candidates) == {17}
+
+    def test_coverage_and_deferral_compose(self):
+        """r70's full candidate set at the row-9 west end: the row-6 pair
+        is toured, id17 is left to the row-15 leg."""
+        sm, ctx = self._armed()
+        cands = self._row6_pair(ctx.grid)
+        cands[17] = _cand(ctx.grid, 21.0, 15.0)
+        sm.tick(1.0, State(x=28.0, y=3.0, z=2.0), _empty_perception(), 2.0,
+                candidates=cands)
+        sm.tick(2.0, State(x=28.0, y=9.0, z=2.0), _empty_perception(), 2.0,
+                candidates=cands)
+        r = sm.tick(3.0, State(x=2.0, y=9.0, z=2.0), _empty_perception(), 2.0,
+                    candidates=cands)
+        assert r.state is StateName.GOTO_CANDIDATE
+        assert ctx.candidate_queue == [14, 15]
+        assert 17 not in ctx.candidate_queue
+
+    def test_covered_candidate_the_sweep_missed_is_collected_at_exhaustion(self):
+        """Coverage is a bet on the downward camera. When it does not pay
+        off, the exhaustion path still flies to the candidate — nothing
+        can be stranded by the policy."""
+        sm, ctx = self._armed()
+        cands = {17: _cand(ctx.grid, 21.0, 15.0)}
+        now = 0.0
+        for x, y in list(ctx.sweep_path):
+            now += 1.0
+            r = sm.tick(now, State(x=x, y=y, z=2.0), _empty_perception(), 2.0,
+                        candidates=cands)
+        # Sweep ran dry with the marker never recorded -> go get it.
+        assert r.state is StateName.GOTO_CANDIDATE
+        assert ctx.candidate_queue == [17]
+
+    # ---- the sweep-abandoning paths ignore coverage -------------------
+
+    def test_short_circuit_tours_a_covered_candidate(self):
+        """Short-circuit abandons the sweep, so there is no 'future leg'
+        to defer to — flying direct always beats the leg that would have
+        covered it."""
+        sm, ctx = self._armed(max_records=1)
+        cand = _cand(ctx.grid, 21.0, 15.0)   # on the row-15 leg
+        r = sm.tick(1.0, State(x=10.0, y=3.0, z=2.0), _empty_perception(), 2.0,
+                    candidates={17: cand})
+        assert r.state is StateName.GOTO_CANDIDATE
+        assert ctx.candidate_queue == [17]
+        assert r.target_xy_world == (21.0, 15.0)
+
+    # ---- A/B toggle ---------------------------------------------------
+
+    def test_policy_off_reproduces_the_r70_eager_flush(self):
+        sm, ctx = self._armed(
+            candidate_coverage_radius=0.0, defer_flush_to_cheapest=False
+        )
+        cands = self._row6_pair(ctx.grid)
+        cands[17] = _cand(ctx.grid, 21.0, 15.0)
+        r = sm.tick(1.0, State(x=28.0, y=3.0, z=2.0), _empty_perception(), 2.0,
+                    candidates=cands)
+        assert r.state is StateName.GOTO_CANDIDATE
+        # Everything toured, nearest-neighbor from the row-3 east end.
+        assert ctx.candidate_queue == [17, 15, 14]

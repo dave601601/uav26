@@ -13,7 +13,25 @@ Index. Each topic file holds the actual work log. Entries go newest-first inside
 
 ## Open
 
-### Where to resume (2026-07-09 end — OFFICIAL SPEC respec verified, r70/r72)
+### Where to resume (2026-07-09 end — visit policy landed, record path is now the blocker)
+
+The M-D candidate visit policy (coverage filter + cheapest-transit
+flush) is implemented, unit-tested, and its decisions verified in
+flight (r73 deferred the row-3 flush and left id17 to the sweep, both
+at the predicted points). Its timing A/B is UNRESOLVED: r73 hit a
+downward-camera false positive (phantom id=17 decoded at grid crossing
+(9,15), 12 m from the marker), which poisoned a record and forced the
+fallback sweep. Root cause is in
+[line_tracer](progress/line_tracer.md) — id 17 is the DICT_4X4_50 code
+closest to an all-black patch, and the downward record path takes a
+single frame's id with no vote and no size check, while the side
+camera's hint path is gated by 3 votes per node. Next: harden the
+record path (multi-frame vote on (id, node) + a marker-size gate from
+`fx * marker_size / altitude`), then re-run the A/B as r75 (policy on)
+vs r76 (`candidate_coverage_radius:=0.0
+defer_flush_to_cheapest:=false`, the r70 reproduction). 206 tests green.
+
+### Prior state (2026-07-09 — OFFICIAL SPEC respec verified, r70/r72)
 
 The sim now models the official 2026-07 survey: outdoor GRASS field,
 3 m cells, WHITE 10 cm satin lines, 0.4 m marker sheets on interior
@@ -54,18 +72,18 @@ recreation, and the zombie-sweep contract.
       (20 pt).
 - [ ] M-D: search time. Mechanism landed and verified (lookahead
       camera, row-skip, candidates, short-circuit; r64 cut 26% on the
-      4 m grid) but on the official 3 m grid the benefit is
-      LAYOUT-DEPENDENT (r70 vs r72: baseline won seed 42 by ~35 s).
-      Next: candidate visit-policy optimization — cheapest-detour
-      insertion into the remaining sweep instead of the row-end flush
-      tour; skip the tour when a future sweep leg's downward corridor
-      covers the candidate.
-- [ ] M-E: robustness. Partly landed via M-D work (per-(id,node)
-      multi-frame voting on the side camera; yaw-lock override).
-      Remaining: mask ArUco quads before the Hough line detection
+      4 m grid). The visit policy (coverage filter + cheapest-transit
+      flush) now fixes the layout-dependence that let the baseline win
+      r70 — decisions verified in r73, timing unmeasured until the
+      record path is hardened.
+- [ ] M-E: robustness. BLOCKING M-D. The downward record path takes a
+      single frame's ArUco id with no vote and no geometric check;
+      r73 recorded a phantom id=17 at a grid crossing 12 m from the
+      marker. Fix first: multi-frame vote on (id, node) + a marker-size
+      gate. Then: mask ArUco quads before the Hough line detection
       (marker edges hijacked psi_err and spun the drone in r61),
-      multi-frame ID voting on the DOWNWARD record path, lost-line
-      recovery.
+      lost-line recovery. Already landed: per-(id,node) voting on the
+      side camera, yaw-lock override.
 - [ ] Lookahead v2 (deferred by design): IPM rectification for the
       +6 m opportunistic band (already fired once in r70 at 6.3 m),
       full-res (1280x800) sensor if RTF allows, hardware bracket at

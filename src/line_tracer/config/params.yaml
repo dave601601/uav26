@@ -61,6 +61,12 @@
     lookahead_snap_max_err: 1.5   # [m] vote acceptance = half a 3 m cell
     candidate_wait_seconds: 4.0   # [s] hover on a voted node before drop
     goto_timeout: 60.0            # [s] GOTO_CANDIDATE stall guard
+    # Visit policy (M-D). A candidate this close to a not-yet-flown sweep
+    # leg is left to the downward camera instead of toured (0.0 disables);
+    # a row-end flush waits for the transit whose detour is smallest.
+    # r70 ran with 0.0 / false and paid 42.7 m of double-back.
+    candidate_coverage_radius: 1.0
+    defer_flush_to_cheapest: true
     sweep_row_step: 2             # fly every 2nd interior row (side cam
                                   # observes the skipped one); forced to
                                   # 1 when lookahead_enable is false
