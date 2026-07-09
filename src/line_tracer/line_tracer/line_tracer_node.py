@@ -20,6 +20,12 @@ Published
   /odom_dr                          nav_msgs/Odometry    (world ENU)
   /waypoints/aruco                  visualization_msgs/MarkerArray
   /line_tracer/debug_image          sensor_msgs/Image    (BGR8 overlay)
+      Downward camera: Hough lines, ArUco boxes, du/dv/psi_err.
+  /line_tracer/lookahead_debug_image sensor_msgs/Image   (BGR8 overlay)
+      Side camera: ArUco boxes + the ground-projected world (x, y).
+      Published in every FSM state (annotated when detection is paused),
+      so the window is live from node start; only exists when
+      lookahead_enable.
 
 Services
   /line_tracer/set_state            line_tracer_msgs/SetState
@@ -631,62 +637,78 @@ class LineTracerNode(Node):
             )
 
     def _on_lookahead(self, msg: Image) -> None:
-        # Only worth the CPU while searching: candidates cannot change
-        # the mission once retrieval starts, and TAKEOFF/LAND attitudes
-        # are outside the projection's small-angle comfort zone anyway.
-        if self._fsm.state not in _LOOKAHEAD_ACTIVE_STATES:
-            return
-        grid = self._fsm.context.grid
-        if (
-            self._lookahead_intrinsics is None
-            or self._altitude_m is None
-            or grid is None
-        ):
-            return
         try:
             gray = self._bridge.imgmsg_to_cv2(msg, desired_encoding="mono8")
         except Exception as e:                                # pragma: no cover
             self.get_logger().warn(f"lookahead conversion failed: {e}")
             return
-        detections = detect_aruco_side(gray, self._side_cfg)
-        stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
-        s = self._dr.state
-        # Roll/pitch: /odom_truth quaternion in sim; (0, 0) fallback is
-        # the no-estimate case (hardware without an attitude feed) —
-        # the vote-on-node quantization absorbs the residual error.
-        roll, pitch = self._odom_truth_rp if self._odom_truth_rp else (0.0, 0.0)
-        projections: dict = {}
-        for det in detections:
-            hit = project_pixel_to_ground(
-                det.center_uv[0],
-                det.center_uv[1],
-                self._lookahead_intrinsics,
-                self._lookahead_mount,
-                (s.x, s.y, self._altitude_m),
-                (roll, pitch, s.yaw),
-                max_range=self._lookahead_max_range,
-            )
-            if hit is None:
-                continue
-            xw, yw, slant = hit
-            projections[det.id] = (xw, yw)
-            self._tracker.observe(det.id, xw, yw, slant, stamp, grid)
 
-        candidates = self._tracker.snapshot(self._lookahead_vote_threshold, grid)
-        for cid, cand in candidates.items():
-            if self._logged_candidates.get(cid) != cand.node:
-                self._logged_candidates[cid] = cand.node
-                self.get_logger().info(
-                    f">> CANDIDATE id={cid} node={cand.node} "
-                    f"xy=({cand.xy[0]:+.2f}, {cand.xy[1]:+.2f}) "
-                    f"votes={cand.votes} range={cand.best_range:.1f}"
+        # Detection + voting is the expensive half and only means anything
+        # while searching: candidates cannot change the mission once
+        # retrieval starts, and TAKEOFF/LAND attitudes are outside the
+        # projection's small-angle comfort zone anyway. The OVERLAY is
+        # published in every state regardless, so the debug window is live
+        # from the moment the node starts instead of staying black through
+        # takeoff and the whole retrieval tour. When detection is paused
+        # the overlay says so — an empty frame would otherwise read as
+        # "the side camera sees nothing", which is a different claim.
+        grid = self._fsm.context.grid
+        paused = (
+            "FSM " + self._fsm.state.name
+            if self._fsm.state not in _LOOKAHEAD_ACTIVE_STATES
+            else "no camera_info" if self._lookahead_intrinsics is None
+            else "no altitude" if self._altitude_m is None
+            else "no grid" if grid is None
+            else ""
+        )
+
+        detections: list = []
+        projections: dict = {}
+        if not paused:
+            detections = detect_aruco_side(gray, self._side_cfg)
+            stamp = (
+                float(msg.header.stamp.sec)
+                + float(msg.header.stamp.nanosec) * 1e-9
+            )
+            s = self._dr.state
+            # Roll/pitch: /odom_truth quaternion in sim; (0, 0) fallback is
+            # the no-estimate case (hardware without an attitude feed) —
+            # the vote-on-node quantization absorbs the residual error.
+            roll, pitch = self._odom_truth_rp if self._odom_truth_rp else (0.0, 0.0)
+            for det in detections:
+                hit = project_pixel_to_ground(
+                    det.center_uv[0],
+                    det.center_uv[1],
+                    self._lookahead_intrinsics,
+                    self._lookahead_mount,
+                    (s.x, s.y, self._altitude_m),
+                    (roll, pitch, s.yaw),
+                    max_range=self._lookahead_max_range,
                 )
-        if candidates:
-            self._publish_candidate_markers(candidates, msg.header.stamp)
+                if hit is None:
+                    continue
+                xw, yw, slant = hit
+                projections[det.id] = (xw, yw)
+                self._tracker.observe(det.id, xw, yw, slant, stamp, grid)
+
+            candidates = self._tracker.snapshot(self._lookahead_vote_threshold, grid)
+            for cid, cand in candidates.items():
+                if self._logged_candidates.get(cid) != cand.node:
+                    self._logged_candidates[cid] = cand.node
+                    self.get_logger().info(
+                        f">> CANDIDATE id={cid} node={cand.node} "
+                        f"xy=({cand.xy[0]:+.2f}, {cand.xy[1]:+.2f}) "
+                        f"votes={cand.votes} range={cand.best_range:.1f}"
+                    )
+            if candidates:
+                self._publish_candidate_markers(candidates, msg.header.stamp)
 
         if bool(self.get_parameter("publish_debug_image").value):
             try:
-                debug_bgr = draw_lookahead_overlay(gray, detections, projections)
+                debug_bgr = draw_lookahead_overlay(
+                    gray, detections, projections,
+                    note=f"detection paused ({paused})" if paused else "",
+                )
                 debug_msg = self._bridge.cv2_to_imgmsg(debug_bgr, encoding="bgr8")
                 debug_msg.header = msg.header
                 self._pub_lookahead_debug.publish(debug_msg)

@@ -318,9 +318,16 @@ def draw_lookahead_overlay(
     image: np.ndarray,
     detections: List[ArucoDetection],
     projections: Dict[int, Tuple[float, float]],
+    note: str = "",
 ) -> np.ndarray:
     """Yellow marker boxes + id and the projected world (x, y) when the
-    ground ray-cast produced one. Returns a fresh BGR copy."""
+    ground ray-cast produced one. Returns a fresh BGR copy.
+
+    ``note`` is stamped in amber under the id list. The node uses it to
+    say the detector is not running for this frame — without it, a bare
+    frame published during TAKEOFF or the retrieval tour would look like
+    a frame in which the side camera genuinely saw nothing.
+    """
     if image.ndim == 2:
         out = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     else:
@@ -341,4 +348,9 @@ def draw_lookahead_overlay(
         out, f"lookahead aruco={[d.id for d in detections]}", (10, 20),
         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA,
     )
+    if note:
+        cv2.putText(
+            out, note, (10, 42),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 2, cv2.LINE_AA,
+        )
     return out

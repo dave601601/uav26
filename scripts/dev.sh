@@ -2,12 +2,13 @@
 # dev.sh — one-command driver for the uav26 sim workspace (run on the
 # WSL host from the repo root or anywhere).
 #
-#   scripts/dev.sh gui [seed]             Gazebo GUI + line_tracer.
+#   scripts/dev.sh gui [seed]             Gazebo GUI + line_tracer + both
+#                                         detection overlays (downward and
+#                                         sideways lookahead).
 #                                         Ctrl+C stops everything.
-#   scripts/dev.sh view                   rqt_image_view on the ArUco /
-#                                         line detection overlay
-#                                         (/line_tracer/debug_image).
-#                                         Run alongside gui or mission.
+#   scripts/dev.sh view [down|side]       rqt_image_view on one overlay
+#                                         (default down). Run alongside
+#                                         gui or mission.
 #   scripts/dev.sh mission [run] [dur] [launch_args]
 #                                         Headless mission via
 #                                         run_mission.sh (default 900 s),
@@ -60,6 +61,11 @@ ensure_build() {
   fi
 }
 
+view_topic() {
+  $EXEC bash -lc "source /opt/ros/jazzy/setup.bash && \
+    ros2 run rqt_image_view rqt_image_view $1"
+}
+
 # Piped through `bash -s`, never `bash -c "<text>"`. `pkill -f` matches a
 # full command line, and with -c the patterns are IN the sweeping shell's
 # own command line — so `pkill -9 -f 'gz sim'` SIGKILLs the sweeper before
@@ -76,6 +82,7 @@ pkill -9 -f 'gz sim' 2>/dev/null
 pkill -9 -f fc_sim_node 2>/dev/null
 pkill -9 -f parameter_bridge 2>/dev/null
 pkill -9 -f line_tracer_node 2>/dev/null
+pkill -9 -f rqt_image_view 2>/dev/null
 pkill -9 -f 'ros2 launch' 2>/dev/null
 true
 SWEEP
@@ -99,18 +106,31 @@ case "${1:-gui}" in
     sweep
     trap 'echo; echo "[dev] stopping..."; sweep; exit 0' INT TERM
     echo "[dev] Gazebo GUI up (seed=$SEED); line_tracer follows in 8 s."
-    echo "[dev] Ctrl+C stops sim + tracer and sweeps strays."
+    echo "[dev] then two overlay windows: downward + sideways lookahead."
+    echo "[dev] Ctrl+C stops sim + tracer + viewers and sweeps strays."
     $EXEC bash -lc "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 launch world sim.launch.py marker_seed:=$SEED" &
     sleep 8
     $EXEC bash -lc "source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && ros2 launch line_tracer line_tracer.launch.py" &
+    # rqt_image_view binds the topic argument against what is advertised
+    # when it starts, so it has to come up after the tracer. The lookahead
+    # overlay now publishes in every FSM state, so its window is live
+    # immediately instead of black until the sweep begins.
+    sleep 6
+    view_topic /line_tracer/debug_image &
+    view_topic /line_tracer/lookahead_debug_image &
     wait
     ;;
 
   view)
     ensure_x_bridge
     ensure_container
-    echo "[dev] rqt_image_view on /line_tracer/debug_image (close the window or Ctrl+C to exit)"
-    $EXEC bash -lc "source /opt/ros/jazzy/setup.bash && ros2 run rqt_image_view rqt_image_view /line_tracer/debug_image"
+    case "${2:-down}" in
+      side|lookahead)   TOPIC=/line_tracer/lookahead_debug_image ;;
+      down|downward|"") TOPIC=/line_tracer/debug_image ;;
+      *) echo "usage: $0 view [down|side]" >&2; exit 1 ;;
+    esac
+    echo "[dev] rqt_image_view on $TOPIC (close the window or Ctrl+C to exit)"
+    view_topic "$TOPIC"
     ;;
 
   mission)
@@ -130,7 +150,7 @@ case "${1:-gui}" in
     ;;
 
   *)
-    echo "usage: $0 {gui [seed] | mission [run] [dur] [launch_args] | build}"
+    echo "usage: $0 {gui [seed] | view [down|side] | mission [run] [dur] [launch_args] | build}"
     exit 1
     ;;
 esac

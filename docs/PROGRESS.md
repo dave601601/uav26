@@ -33,7 +33,7 @@ ring, so grass qualified, and a white grid line clipping a grass quad is
 DICT_4X4_50's id 17 exactly. That is how r73 recorded a phantom id=17
 twelve metres from the marker. Both cameras now negate the grayscale
 before ArUco; grass rises above the threshold and the whole candidate
-class disappears. See [world](progress/world.md). 207 tests green.
+class disappears. See [world](progress/world.md). 209 tests green.
 
 Both runs used `scripts/dev.sh mission rNN 1150 [params_file:=...]`.
 The control file is `build/params_policy_off.yaml`.
@@ -123,7 +123,7 @@ recreation, and the zombie-sweep contract.
    rebuild-if-needed, X11 bridge, and teardown. `dev.sh view` shows
    the detection overlay. Container recreation drops
    `/workspace/install`; dev.sh rebuilds automatically.
-4. Smoke test: `colcon test --packages-select fc_core line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs` should give **225 passing tests** (18 fc_core gtest + 207 line_tracer pytest).
+4. Smoke test: `colcon test --packages-select fc_core line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs` should give **227 passing tests** (18 fc_core gtest + 209 line_tracer pytest).
 5. Analysis tools: `scripts/plot_mission.py <tracer.log>` (trajectory
    PNG + recorded-vs-GT diff; pass `--layout` with the runtime
    aruco_layout.yaml), `src/line_tracer/scripts/record_debug_video.py`

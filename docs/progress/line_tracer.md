@@ -2,6 +2,33 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Lookahead overlay publishes in every FSM state (2026-07-09)
+
+`/line_tracer/lookahead_debug_image` already existed, but `_on_lookahead`
+returned before publishing whenever the FSM sat outside the three search
+states (or before camera_info / altitude / grid arrived). The window was
+therefore black through the whole of TAKEOFF — exactly when you open it
+— and through the entire retrieval tour.
+
+Detection and publishing are now separate. Detection plus voting stays
+gated to the search states: it is the expensive half, candidates cannot
+change the mission once retrieval starts, and TAKEOFF/LAND attitudes are
+outside the projection's small-angle comfort zone. The overlay is drawn
+and published every frame regardless, annotated `detection paused
+(<reason>)` in amber when the detector did not run. Without that note an
+empty frame would read as "the side camera saw nothing", which is a
+different claim from "nothing looked".
+
+Verified live: the FIRST lookahead frame a subscriber receives carries
+2221 amber pixels, i.e. it is a paused frame that the old code would
+have dropped. Rates measured against a running sim: downward 15.5 Hz,
+lookahead 6.2 Hz (10 sim-Hz sensor at RTF ~0.6).
+
+`dev.sh gui` now brings up Gazebo, the tracer, and both overlay windows;
+`dev.sh view [down|side]` picks one. rqt binds its topic argument
+against what is advertised at start, so the viewers come up 6 s after
+the tracer. Both were smoke-tested offscreen against a live sim.
+
 ## Current state (2026-07-09 — visit policy verified, search -39 % against its own control)
 
 The candidate visit policy (M-D) is landed and measured. Two rules

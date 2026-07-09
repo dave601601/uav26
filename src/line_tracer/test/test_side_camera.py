@@ -231,6 +231,26 @@ class TestDetectArucoSide:
         out = draw_lookahead_overlay(img, dets, {2: (4.0, 8.0)})
         assert out.ndim == 3 and out.shape[:2] == img.shape
 
+    def test_overlay_renders_with_no_detections(self):
+        """The node publishes this frame in every FSM state, including the
+        ones where the detector never runs."""
+        blank = np.zeros((400, 640), dtype=np.uint8)
+        out = draw_lookahead_overlay(blank, [], {})
+        assert out.ndim == 3 and out.shape[:2] == blank.shape
+
+    def test_overlay_note_is_stamped_below_the_id_line(self):
+        """Without the note an empty frame reads as 'the side camera saw
+        nothing', when the truth is 'the detector did not run'."""
+        blank = np.zeros((400, 640), dtype=np.uint8)
+        plain = draw_lookahead_overlay(blank, [], {})
+        noted = draw_lookahead_overlay(
+            blank, [], {}, note="detection paused (FSM TAKEOFF)"
+        )
+        assert not np.array_equal(plain, noted)
+        # The id line lives at baseline y=20; the note must not overwrite it.
+        assert np.array_equal(plain[:26], noted[:26])
+        assert not np.array_equal(plain[26:60], noted[26:60])
+
 
 # ---------------------------------------------------------------------------
 # Candidate tracker
