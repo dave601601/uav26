@@ -11,6 +11,10 @@ Index. Each topic file holds the actual work log. Entries go newest-first inside
 - [tools](progress/tools.md) — standalone scripts (gain_sweep, etc.)
 - [docker](progress/docker.md) — build environment, compose layering, image rebuilds
 
+Planning docs (checklists, not logs):
+
+- [SIM_TO_REAL](SIM_TO_REAL.md) — hardware transition: estimator sources, loop placement, perception deltas, firmware re-tests
+
 ## Open
 
 ### Where to resume (2026-07-09 end — visit policy verified, search -39 %)
