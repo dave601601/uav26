@@ -17,6 +17,16 @@ Planning docs (checklists, not logs):
 
 ## Open
 
+### Comment refactor branch awaiting push (2026-07-14)
+
+`refactor/human-friendly-comments`: three commits rewriting fc_core and
+line_tracer vision comments for outside readers (jargon removed,
+mid-code comments capped at 2-3 lines, KNOWN BUG markers added at three
+firmware-parity traps). Comments-only, mechanically verified, 227 tests
+green. Push is blocked by the WSL DNS proxy failure — diagnosis and fix
+in [docker](progress/docker.md). Not yet refactored: line_tracer_node,
+state_machine, planner, dead_reckoning, grid (next pass, same recipe).
+
 ### Where to resume (2026-07-09 end — visit policy verified, search -39 %)
 
 M-D is met. The candidate visit policy replaced the unconditional
@@ -119,6 +129,7 @@ recreation, and the zombie-sweep contract.
 
 - [ ] Mixer `Allocation()` swaps `a`=1/(4·dx) and `b`=1/(4·dy) between roll and pitch terms — ~9 % asymmetry.
 - [ ] `quat_to_euler` returns `eul.y = -asinf(sinp)` (sign-flipped); sim shim compensates explicitly.
+- [ ] `GetAngle2Vec()` (linalg.c) assigns all three results to `res.x`, returning uninitialized y/z. Dead code (no callers in this repo); fix before first use.
 
 ## Conventions
 
