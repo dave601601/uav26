@@ -13,9 +13,11 @@ Frames and units (metric at this layer):
   - Grid node (i, j) maps to world (i * cell, j * cell) meters, arena
     SW corner at (0, 0). Default arena 30 x 21 m, 3 m cell -> 11 x 8
     intersection nodes.
-  - LineDetection.lateral_error is meters in the body axis perpendicular
-    to travel (see MISSION_INTERFACE section 6). angle_error is radians,
-    FLU +CCW. ArucoDetection center errors are body meters.
+  - LineDetection carries both grid-line offsets in body meters: dx is the
+    signed +y position of the nearest vertical line, dy the signed +x
+    position of the nearest horizontal line (the [dx, dy, flag] contract,
+    MISSION_INTERFACE section 6). angle_error is radians, FLU +CCW.
+    ArucoDetection center errors are body meters.
   - The ROS node converts pixels to meters (altitude / f) before it
     builds PerceptionData; this layer never sees pixels.
 
@@ -100,12 +102,19 @@ class Node:
 
 @dataclass
 class LineDetection:
-    """Followed-line estimate. lateral_error is meters in the body axis
-    perpendicular to travel (+y_body when traveling +/-x, +x_body when
-    traveling +/-y); angle_error is radians FLU (+CCW); confidence 0..1."""
+    """Grid-line estimate for both axes (the [dx, dy, flag] contract).
 
-    visible: bool = False
-    lateral_error: float = 0.0
+    dx is the signed body +y position of the nearest vertical grid line,
+    dy the signed body +x position of the nearest horizontal grid line
+    (meters, 0.0 when that line is absent — see has_vertical / has_horizontal).
+    angle_error is the followed line's heading vs the travel axis in radians
+    FLU (+CCW); confidence 0..1. The MCU selects dx or dy by travel axis; the
+    Jetson selects only angle_error."""
+
+    has_vertical: bool = False
+    has_horizontal: bool = False
+    dx: float = 0.0
+    dy: float = 0.0
     angle_error: float = 0.0
     confidence: float = 0.0
 
@@ -175,8 +184,9 @@ class McuCommand:
     (MISSION_INTERFACE section 6). Values are plain Python: metric
     meters/radians, ControlMode/MissionState/MoveDirection as ints,
     marker_id -1 when none. The C protocol layer owns the byte layout
-    (Q14 scaling, u8 confidences, the flags/flags2 bytes); the booleans
-    below pack into flags, vel_est_valid into flags2 bit0.
+    (Q14 scaling, u8 confidences, the flags/flags2 bytes); the
+    vertical_line/horizontal_line, intersection and marker booleans pack
+    into flags, vel_est_valid and emergency into flags2 bits 0/1.
     """
 
     mode: int = int(ControlMode.HOLD)
@@ -189,8 +199,10 @@ class McuCommand:
 
     target_altitude: float = 2.0
 
-    line_visible: bool = False
-    line_lateral_error: float = 0.0
+    vertical_line: bool = False
+    horizontal_line: bool = False
+    line_dx: float = 0.0
+    line_dy: float = 0.0
     line_angle_error: float = 0.0
     line_confidence: float = 0.0
 
@@ -663,7 +675,7 @@ class MissionManager:
         if self.state == MissionState.ENTER_GRID:
             # First grid line found: snap the node index from DR (one-time
             # init), pick a safe first direction, then start exploring.
-            if perception.line.visible:
+            if perception.line.has_vertical or perception.line.has_horizontal:
                 start = self._snap_node_from_dr() if self._last_dr[0] is not None else Node(0, 0)
                 self.current_node = start
                 self.home_node = start
@@ -794,8 +806,10 @@ class MissionManager:
             node_y=self.current_node.y,
             move_direction=int(self.move_direction),
             target_altitude=self.target_altitude,
-            line_visible=perception.line.visible,
-            line_lateral_error=perception.line.lateral_error,
+            vertical_line=perception.line.has_vertical,
+            horizontal_line=perception.line.has_horizontal,
+            line_dx=perception.line.dx,
+            line_dy=perception.line.dy,
             line_angle_error=perception.line.angle_error,
             line_confidence=perception.line.confidence,
             intersection_detected=perception.intersection.detected,
@@ -834,6 +848,7 @@ class MissionManager:
             f"state={MissionState(command.mission_state).name} seq={command.seq} "
             f"node=({command.node_x}, {command.node_y}) "
             f"dir={MoveDirection(command.move_direction).name} "
-            f"line_err={command.line_lateral_error:.3f} marker_id={command.marker_id} "
+            f"line_dx={command.line_dx:.3f} line_dy={command.line_dy:.3f} "
+            f"marker_id={command.marker_id} "
             f"vel_valid={command.vel_est_valid} emergency={command.emergency}"
         )

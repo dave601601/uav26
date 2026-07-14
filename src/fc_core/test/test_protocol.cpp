@@ -154,7 +154,8 @@ TEST(ProtocolMission, Roundtrip_QuantizationOnly) {
         in.node_y         = (int8_t)(50 - i);
         in.move_direction = (uint8_t)(i % 4);
         in.target_altitude    = frand(0.0f, 10.0f);
-        in.line_lateral_error = frand(-1.9f, 1.9f);
+        in.line_dx            = frand(-1.9f, 1.9f);
+        in.line_dy            = frand(-1.9f, 1.9f);
         in.line_angle_error   = frand(-1.5f, 1.5f);
         in.marker_error_x     = frand(-1.0f, 1.0f);
         in.marker_error_y     = frand(-1.0f, 1.0f);
@@ -189,7 +190,8 @@ TEST(ProtocolMission, Roundtrip_QuantizationOnly) {
         /* target_altitude quantizes to 1 cm. */
         EXPECT_NEAR(out.target_altitude, in.target_altitude, 0.01f);
         /* Q14 LSB = 1/16384; allow 2 LSB. */
-        EXPECT_NEAR(out.line_lateral_error, in.line_lateral_error, 2.0f / 16384.0f);
+        EXPECT_NEAR(out.line_dx,            in.line_dx,            2.0f / 16384.0f);
+        EXPECT_NEAR(out.line_dy,            in.line_dy,            2.0f / 16384.0f);
         EXPECT_NEAR(out.line_angle_error,   in.line_angle_error,   2.0f / 16384.0f);
         EXPECT_NEAR(out.marker_error_x,     in.marker_error_x,     2.0f / 16384.0f);
         EXPECT_NEAR(out.marker_error_y,     in.marker_error_y,     2.0f / 16384.0f);
@@ -201,7 +203,8 @@ TEST(ProtocolMission, Roundtrip_QuantizationOnly) {
 
 TEST(ProtocolMission, Q14SaturatesAtPlusMinusTwo) {
     fc_proto_mission_t in{};
-    in.line_lateral_error = 2.0f;    /* at the +/-2.0 Q14 rail */
+    in.line_dx            = 2.0f;    /* at the +/-2.0 Q14 rail */
+    in.line_dy            = -2.0f;
     in.marker_error_x     = -2.0f;
     in.vx_est             = 5.0f;    /* well past the rail */
     in.vy_est             = -5.0f;
@@ -212,7 +215,8 @@ TEST(ProtocolMission, Q14SaturatesAtPlusMinusTwo) {
     ASSERT_TRUE(fc_proto_decode_mission(buf, &out));
 
     /* +2.0 saturates to 32767/16384 ~= 1.99994; -2.0 is exact. */
-    EXPECT_NEAR(out.line_lateral_error,  1.99994f, 1.0f / 16384.0f);
+    EXPECT_NEAR(out.line_dx,             1.99994f, 1.0f / 16384.0f);
+    EXPECT_NEAR(out.line_dy,            -2.0f,     1.0f / 16384.0f);
     EXPECT_NEAR(out.marker_error_x,     -2.0f,     1.0f / 16384.0f);
     /* Beyond the rail clamps to the same rail values. */
     EXPECT_NEAR(out.vx_est,  1.99994f, 1.0f / 16384.0f);
@@ -221,33 +225,34 @@ TEST(ProtocolMission, Q14SaturatesAtPlusMinusTwo) {
 
 TEST(ProtocolMission, FlagsBitsPreserved) {
     fc_proto_mission_t in{};
-    in.flags = FC_PROTO_MFLAG_LINE_VISIBLE | FC_PROTO_MFLAG_RIGHT
-             | FC_PROTO_MFLAG_MARKER_DETECTED | FC_PROTO_MFLAG_EMERGENCY;
-    in.flags2 = FC_PROTO_MFLAG2_VEL_EST_VALID;
+    in.flags = FC_PROTO_MFLAG_VERTICAL_LINE | FC_PROTO_MFLAG_RIGHT
+             | FC_PROTO_MFLAG_MARKER_DETECTED;
+    in.flags2 = FC_PROTO_MFLAG2_VEL_EST_VALID | FC_PROTO_MFLAG2_EMERGENCY;
 
     uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
     ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
     fc_proto_mission_t out{};
     ASSERT_TRUE(fc_proto_decode_mission(buf, &out));
 
-    EXPECT_TRUE(out.flags & FC_PROTO_MFLAG_LINE_VISIBLE);
+    EXPECT_TRUE(out.flags & FC_PROTO_MFLAG_VERTICAL_LINE);
     EXPECT_TRUE(out.flags & FC_PROTO_MFLAG_RIGHT);
     EXPECT_TRUE(out.flags & FC_PROTO_MFLAG_MARKER_DETECTED);
-    EXPECT_TRUE(out.flags & FC_PROTO_MFLAG_EMERGENCY);
+    EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_HORIZONTAL_LINE);
     EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_INTERSECTION);
     EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_LEFT);
     EXPECT_TRUE(out.flags2 & FC_PROTO_MFLAG2_VEL_EST_VALID);
+    EXPECT_TRUE(out.flags2 & FC_PROTO_MFLAG2_EMERGENCY);
 }
 
 TEST(ProtocolMission, Decode_RejectsCorruptedCrc) {
     fc_proto_mission_t in{};
     in.mode = (uint8_t)FC_PROTO_MODE_ARM_BIT | 1u;
-    in.line_lateral_error = 0.3f;
+    in.line_dx = 0.3f;
 
     uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
     ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
 
-    buf[11] ^= 0x01;  /* flip a bit in line_lateral_error */
+    buf[11] ^= 0x01;  /* flip a bit in line_dx */
 
     fc_proto_mission_t out{};
     EXPECT_FALSE(fc_proto_decode_mission(buf, &out));

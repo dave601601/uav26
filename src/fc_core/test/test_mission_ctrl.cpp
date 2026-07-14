@@ -64,14 +64,16 @@ TEST_F(MissionCtrl, HoldHoldsAltitudeWithZeroVelocity) {
     EXPECT_EQ(COMP.last_ms, fc_now_ms);
 }
 
-TEST_F(MissionCtrl, FollowLineLateralAngleAndCruise) {
+TEST_F(MissionCtrl, FollowLineXTravelUsesLineDx) {
     /* Open-loop branch (no velocity estimate). X_POS travel: cruise on
-       +x_body, lateral on +y_body, wz from line_angle_error. */
+       +x_body, perp (from line_dx) on +y_body, wz from line_angle_error.
+       line_dy is the wrong-axis offset and must be ignored. */
     fc_proto_mission_t c = make_cmd(FC_CTRL_FOLLOW_LINE, true);
     c.move_direction = FC_DIR_X_POS;
-    c.line_lateral_error = 0.5f;    /* +y_body demand */
-    c.line_angle_error   = 0.1f;    /* +CCW */
-    c.flags = FC_PROTO_MFLAG_LINE_VISIBLE;
+    c.line_dx = 0.5f;               /* +y_body demand */
+    c.line_dy = 9.0f;               /* wrong axis -> ignored */
+    c.line_angle_error = 0.1f;      /* +CCW */
+    c.flags = FC_PROTO_MFLAG_VERTICAL_LINE;
     fc_mission_meas_t m = make_meas(2.0f, 0.0f, false);
 
     fc_mission_tick(&c, &m, 0.02f);
@@ -81,17 +83,39 @@ TEST_F(MissionCtrl, FollowLineLateralAngleAndCruise) {
     EXPECT_NEAR(COMP.pitch_sp,  0.17889f / G, 1e-4f);
     EXPECT_NEAR(COMP.roll_sp,  -0.35777f / G, 1e-4f);
     EXPECT_GT(COMP.pitch_sp, 0.0f);            /* forward cruise -> nose down/+x */
-    EXPECT_LT(COMP.roll_sp,  0.0f);            /* +y demand -> -roll */
+    EXPECT_LT(COMP.roll_sp,  0.0f);            /* +y demand from line_dx -> -roll */
     EXPECT_NEAR(COMP.yawrate_sp, -0.3f, 1e-4f);  /* -kp_yaw*angle, FLU->NED */
     EXPECT_NEAR(COMP.thrust_norm, 0.33f, 1e-4f);
     EXPECT_EQ(COMP.arm, 1u);
 }
 
-TEST_F(MissionCtrl, FollowLineFallsBackToHoldWhenLineNotVisible) {
+TEST_F(MissionCtrl, FollowLineYTravelUsesLineDy) {
+    /* Y_POS travel: cruise on +y_body, perp (from line_dy) on +x_body.
+       line_dx is the wrong-axis offset and must be ignored. */
     fc_proto_mission_t c = make_cmd(FC_CTRL_FOLLOW_LINE, true);
-    c.line_lateral_error = 0.5f;
-    c.line_angle_error   = 0.1f;
-    c.flags = 0u;                    /* line_visible clear */
+    c.move_direction = FC_DIR_Y_POS;
+    c.line_dy = 0.5f;               /* +x_body demand */
+    c.line_dx = 9.0f;               /* wrong axis -> ignored */
+    c.flags = FC_PROTO_MFLAG_HORIZONTAL_LINE;
+    fc_mission_meas_t m = make_meas(2.0f, 0.0f, false);
+
+    fc_mission_tick(&c, &m, 0.02f);
+
+    /* vy=cruise=0.2, vx=kp_xy*0.5=0.4, |v|=0.447 -> clamp to 0.4:
+       vx=0.35777, vy=0.17889. Open-loop: pitch=vx/g, roll=-vy/g. */
+    EXPECT_NEAR(COMP.pitch_sp,  0.35777f / G, 1e-4f);
+    EXPECT_NEAR(COMP.roll_sp,  -0.17889f / G, 1e-4f);
+    EXPECT_GT(COMP.pitch_sp, 0.0f);            /* +x_body demand from line_dy -> +pitch */
+    EXPECT_LT(COMP.roll_sp,  0.0f);            /* +y cruise -> -roll */
+}
+
+TEST_F(MissionCtrl, FollowLineXTravelHoldsWithoutVerticalLine) {
+    /* X travel with the vertical presence bit clear -> HOLD behavior. */
+    fc_proto_mission_t c = make_cmd(FC_CTRL_FOLLOW_LINE, true);
+    c.move_direction = FC_DIR_X_POS;
+    c.line_dx = 0.5f;
+    c.line_angle_error = 0.1f;
+    c.flags = FC_PROTO_MFLAG_HORIZONTAL_LINE;   /* wrong axis bit -> still HOLD */
     fc_mission_meas_t m = make_meas(2.0f, 0.0f, false);
 
     fc_mission_tick(&c, &m, 0.02f);
@@ -100,6 +124,21 @@ TEST_F(MissionCtrl, FollowLineFallsBackToHoldWhenLineNotVisible) {
     EXPECT_NEAR(COMP.roll_sp,    0.0f, 1e-6f);
     EXPECT_NEAR(COMP.yawrate_sp, 0.0f, 1e-6f);
     EXPECT_NEAR(COMP.thrust_norm, 0.33f, 1e-4f);
+}
+
+TEST_F(MissionCtrl, FollowLineYTravelHoldsWithoutHorizontalLine) {
+    /* Y travel with the horizontal presence bit clear -> HOLD behavior. */
+    fc_proto_mission_t c = make_cmd(FC_CTRL_FOLLOW_LINE, true);
+    c.move_direction = FC_DIR_Y_POS;
+    c.line_dy = 0.5f;
+    c.flags = FC_PROTO_MFLAG_VERTICAL_LINE;     /* wrong axis bit -> still HOLD */
+    fc_mission_meas_t m = make_meas(2.0f, 0.0f, false);
+
+    fc_mission_tick(&c, &m, 0.02f);
+
+    EXPECT_NEAR(COMP.pitch_sp,   0.0f, 1e-6f);
+    EXPECT_NEAR(COMP.roll_sp,    0.0f, 1e-6f);
+    EXPECT_NEAR(COMP.yawrate_sp, 0.0f, 1e-6f);
 }
 
 TEST_F(MissionCtrl, AlignMarkerMarkerErrorLaw) {
@@ -194,7 +233,8 @@ TEST_F(MissionCtrl, EmergencyLandIgnoresErrorsAndDescends) {
     fc_proto_mission_t c = make_cmd(FC_CTRL_EMERGENCY_LAND, true);
     c.marker_error_x = 5.0f;         /* huge errors, all must be ignored */
     c.marker_error_y = 5.0f;
-    c.line_lateral_error = 5.0f;
+    c.line_dx = 5.0f;
+    c.line_dy = 5.0f;
     c.flags = 0xFFu;
     fc_mission_meas_t m = make_meas(1.0f, -0.30f, true);
 
@@ -293,8 +333,8 @@ TEST_F(MissionCtrl, ThrustClampsAtMaxAndMin) {
 TEST_F(MissionCtrl, YawrateSignIsNegatedFromWz) {
     /* The fleet-critical FLU(+CCW) -> NED(+CW) flip: +wz -> -yawrate_sp. */
     fc_proto_mission_t c = make_cmd(FC_CTRL_FOLLOW_LINE, true);
-    c.flags = FC_PROTO_MFLAG_LINE_VISIBLE;
-    c.line_lateral_error = 0.0f;
+    c.flags = FC_PROTO_MFLAG_VERTICAL_LINE;
+    c.line_dx = 0.0f;
     fc_mission_meas_t m = make_meas(2.0f, 0.0f, true);
 
     c.line_angle_error = 0.5f;         /* +CCW -> wz=+1.5 */

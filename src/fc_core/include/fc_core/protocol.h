@@ -7,7 +7,7 @@
  *
  * Downlink (companion -> FC): 24 bytes little-endian. 200 Hz nominal.
  * Uplink   (FC -> companion): 40 bytes little-endian. 100 Hz nominal.
- * Mission  (companion -> FC): 31 bytes little-endian. 20-50 Hz nominal.
+ * Mission  (companion -> FC): 33 bytes little-endian. 20-50 Hz nominal.
  *
  * Fixed-point conventions:
  *   Q14 = float * 16384, range +/-2.0 -> +/-32768 (used for setpoints in rad / rad/s)
@@ -26,19 +26,26 @@
  *    6   node_y               i8     grid index
  *    7   move_direction       u8     MoveDirection
  *    8   target_altitude      u16    cm, 0..10 m
- *   10   line_lateral_error   i16    Q14 m,   clamp +/-2.0
- *   12   line_angle_error     i16    Q14 rad, FLU +CCW
- *   14   marker_error_x       i16    Q14 m,   body +x
- *   16   marker_error_y       i16    Q14 m,   body +y
- *   18   marker_yaw_error     i16    Q14 rad
- *   20   vx_est               i16    Q14 m/s, body +x
- *   22   vy_est               i16    Q14 m/s, body +y
- *   24   marker_id            i8     -1 = none
- *   25   line_confidence      u8     0..255
- *   26   marker_confidence    u8     0..255
- *   27   flags                u8     see FC_PROTO_MFLAG_* below
- *   28   flags2               u8     bit0 vel_est_valid, rest reserved
- *   29   crc16                u16    CRC16-CCITT over bytes 0..28
+ *   10   line_dx              i16    Q14 m,   clamp +/-2.0 (vertical line, body +y)
+ *   12   line_dy              i16    Q14 m,   clamp +/-2.0 (horizontal line, body +x)
+ *   14   line_angle_error     i16    Q14 rad, FLU +CCW
+ *   16   marker_error_x       i16    Q14 m,   body +x
+ *   18   marker_error_y       i16    Q14 m,   body +y
+ *   20   marker_yaw_error     i16    Q14 rad
+ *   22   vx_est               i16    Q14 m/s, body +x
+ *   24   vy_est               i16    Q14 m/s, body +y
+ *   26   marker_id            i8     -1 = none
+ *   27   line_confidence      u8     0..255
+ *   28   marker_confidence    u8     0..255
+ *   29   flags                u8     see FC_PROTO_MFLAG_* below
+ *   30   flags2               u8     see FC_PROTO_MFLAG2_* below
+ *   31   crc16                u16    CRC16-CCITT over bytes 0..30
+ *
+ * Line information travels as the full [dx, dy, flag] triple: both
+ * grid-line offsets (line_dx from the nearest vertical line, line_dy from
+ * the nearest horizontal line) plus per-line presence bits (flags bit0/1).
+ * The MCU picks the FOLLOW_LINE error by move_direction; the companion does
+ * no axis selection for the offsets (only line_angle_error is travel-selected).
  */
 
 #ifndef FC_CORE_PROTOCOL_H_
@@ -60,7 +67,7 @@ extern "C" {
 
 #define FC_PROTO_DOWN_LEN    24u
 #define FC_PROTO_UP_LEN      40u
-#define FC_PROTO_MISSION_LEN 31u
+#define FC_PROTO_MISSION_LEN 33u
 
 /* Bit 7 of the `mode` byte requests arm; bits 0..6 carry the MODE enum
  * (setpoint downlink) or the ControlMode enum (mission downlink). */
@@ -71,18 +78,21 @@ extern "C" {
 #define FC_PROTO_FLAG_LAND      (1u << 1)
 #define FC_PROTO_FLAG_HOLD_ALT  (1u << 2)
 
-/* Mission `flags` byte (offset 27). */
-#define FC_PROTO_MFLAG_LINE_VISIBLE     (1u << 0)
-#define FC_PROTO_MFLAG_INTERSECTION     (1u << 1)
-#define FC_PROTO_MFLAG_FWD              (1u << 2)
-#define FC_PROTO_MFLAG_LEFT             (1u << 3)
-#define FC_PROTO_MFLAG_RIGHT            (1u << 4)
-#define FC_PROTO_MFLAG_BACK             (1u << 5)
-#define FC_PROTO_MFLAG_MARKER_DETECTED  (1u << 6)
-#define FC_PROTO_MFLAG_EMERGENCY        (1u << 7)
+/* Mission `flags` byte (offset 29). bit0/bit1 are the per-line presence
+ * flags of the [dx, dy, flag] contract (vertical -> line_dx, horizontal
+ * -> line_dy); the branch/intersection/marker bits follow. */
+#define FC_PROTO_MFLAG_VERTICAL_LINE    (1u << 0)
+#define FC_PROTO_MFLAG_HORIZONTAL_LINE  (1u << 1)
+#define FC_PROTO_MFLAG_INTERSECTION     (1u << 2)
+#define FC_PROTO_MFLAG_FWD              (1u << 3)
+#define FC_PROTO_MFLAG_LEFT             (1u << 4)
+#define FC_PROTO_MFLAG_RIGHT            (1u << 5)
+#define FC_PROTO_MFLAG_BACK             (1u << 6)
+#define FC_PROTO_MFLAG_MARKER_DETECTED  (1u << 7)
 
-/* Mission `flags2` byte (offset 28). */
+/* Mission `flags2` byte (offset 30). */
 #define FC_PROTO_MFLAG2_VEL_EST_VALID   (1u << 0)
+#define FC_PROTO_MFLAG2_EMERGENCY       (1u << 1)
 
 typedef struct {
     uint8_t  mode;          /* enum MODE | arm bit */
@@ -120,7 +130,8 @@ typedef struct {
     int8_t   node_y;
     uint8_t  move_direction;      /* MoveDirection */
     float    target_altitude;     /* m  (wire u16 cm) */
-    float    line_lateral_error;  /* m,   Q14, clamp +/-2.0 */
+    float    line_dx;             /* m,   Q14, clamp +/-2.0, vertical line, body +y */
+    float    line_dy;             /* m,   Q14, clamp +/-2.0, horizontal line, body +x */
     float    line_angle_error;    /* rad, Q14, FLU +CCW */
     float    marker_error_x;      /* m,   Q14, body +x */
     float    marker_error_y;      /* m,   Q14, body +y */

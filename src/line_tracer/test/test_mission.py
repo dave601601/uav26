@@ -26,8 +26,11 @@ def _null(*_args) -> None:
 
 
 def _perception(
-    line_visible: bool = False,
-    lateral_error: float = 0.0,
+    line_visible: bool = False,   # convenience: sets both presence flags
+    has_vertical=None,
+    has_horizontal=None,
+    dx: float = 0.0,
+    dy: float = 0.0,
     angle_error: float = 0.0,
     line_conf: float = 0.0,
     intersection: bool = False,
@@ -41,8 +44,10 @@ def _perception(
     yaw: float = 0.0,
     aruco_conf: float = 0.0,
 ) -> PerceptionData:
+    has_v = line_visible if has_vertical is None else has_vertical
+    has_h = line_visible if has_horizontal is None else has_horizontal
     return PerceptionData(
-        line=LineDetection(line_visible, lateral_error, angle_error, line_conf),
+        line=LineDetection(has_v, has_h, dx, dy, angle_error, line_conf),
         intersection=IntersectionDetection(intersection, fwd, left, right, back),
         aruco=ArucoDetection(aruco_id is not None, aruco_id, cx, cy, yaw, aruco_conf),
     )
@@ -331,7 +336,8 @@ def test_mcu_command_field_passthrough_and_flags():
     m.grid_map.save_marker(9, Node(3, 2))      # already seen -> no MARKER_CONFIRM
 
     perc = _perception(
-        line_visible=True, lateral_error=0.12, angle_error=-0.05, line_conf=0.8,
+        has_vertical=True, has_horizontal=True, dx=0.12, dy=-0.07,
+        angle_error=-0.05, line_conf=0.8,
         fwd=True, left=False, right=True, back=False,
         aruco_id=9, cx=0.03, cy=-0.04, yaw=0.01, aruco_conf=0.7,
     )
@@ -343,8 +349,10 @@ def test_mcu_command_field_passthrough_and_flags():
     assert (cmd.node_x, cmd.node_y) == (3, 2)
     assert cmd.move_direction == int(MoveDirection.Y_POS)
 
-    assert cmd.line_visible is True
-    assert cmd.line_lateral_error == 0.12
+    assert cmd.vertical_line is True
+    assert cmd.horizontal_line is True
+    assert cmd.line_dx == 0.12
+    assert cmd.line_dy == -0.07
     assert cmd.line_angle_error == -0.05
     assert cmd.line_confidence == 0.8
 

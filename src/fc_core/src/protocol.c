@@ -221,21 +221,22 @@ bool fc_proto_encode_mission(const fc_proto_mission_t* in,
     put_i8 (out_buf + 6,  in->node_y);
     put_u8 (out_buf + 7,  in->move_direction);
     put_u16_le(out_buf + 8,  m_to_cm(in->target_altitude));
-    put_i16_le(out_buf + 10, f_to_q14(in->line_lateral_error));
-    put_i16_le(out_buf + 12, f_to_q14(in->line_angle_error));
-    put_i16_le(out_buf + 14, f_to_q14(in->marker_error_x));
-    put_i16_le(out_buf + 16, f_to_q14(in->marker_error_y));
-    put_i16_le(out_buf + 18, f_to_q14(in->marker_yaw_error));
-    put_i16_le(out_buf + 20, f_to_q14(in->vx_est));
-    put_i16_le(out_buf + 22, f_to_q14(in->vy_est));
-    put_i8 (out_buf + 24, in->marker_id);
-    put_u8 (out_buf + 25, in->line_confidence);
-    put_u8 (out_buf + 26, in->marker_confidence);
-    put_u8 (out_buf + 27, in->flags);
-    put_u8 (out_buf + 28, in->flags2);
+    put_i16_le(out_buf + 10, f_to_q14(in->line_dx));
+    put_i16_le(out_buf + 12, f_to_q14(in->line_dy));
+    put_i16_le(out_buf + 14, f_to_q14(in->line_angle_error));
+    put_i16_le(out_buf + 16, f_to_q14(in->marker_error_x));
+    put_i16_le(out_buf + 18, f_to_q14(in->marker_error_y));
+    put_i16_le(out_buf + 20, f_to_q14(in->marker_yaw_error));
+    put_i16_le(out_buf + 22, f_to_q14(in->vx_est));
+    put_i16_le(out_buf + 24, f_to_q14(in->vy_est));
+    put_i8 (out_buf + 26, in->marker_id);
+    put_u8 (out_buf + 27, in->line_confidence);
+    put_u8 (out_buf + 28, in->marker_confidence);
+    put_u8 (out_buf + 29, in->flags);
+    put_u8 (out_buf + 30, in->flags2);
 
     uint16_t crc = fc_proto_crc16_ccitt(out_buf, FC_PROTO_MISSION_LEN - 2u);
-    put_u16_le(out_buf + 29, crc);
+    put_u16_le(out_buf + 31, crc);
     return true;
 }
 
@@ -247,7 +248,7 @@ bool fc_proto_decode_mission(const uint8_t in_buf[FC_PROTO_MISSION_LEN],
     if (get_u8(in_buf + 1) != FC_PROTO_VERSION)       return false;
 
     uint16_t crc_calc = fc_proto_crc16_ccitt(in_buf, FC_PROTO_MISSION_LEN - 2u);
-    uint16_t crc_read = get_u16_le(in_buf + 29);
+    uint16_t crc_read = get_u16_le(in_buf + 31);
     if (crc_calc != crc_read) return false;
 
     out->mode               = get_u8 (in_buf + 2);
@@ -257,18 +258,19 @@ bool fc_proto_decode_mission(const uint8_t in_buf[FC_PROTO_MISSION_LEN],
     out->node_y             = get_i8 (in_buf + 6);
     out->move_direction     = get_u8 (in_buf + 7);
     out->target_altitude    = cm_to_m(get_u16_le(in_buf + 8));
-    out->line_lateral_error = q14_to_f(get_i16_le(in_buf + 10));
-    out->line_angle_error   = q14_to_f(get_i16_le(in_buf + 12));
-    out->marker_error_x     = q14_to_f(get_i16_le(in_buf + 14));
-    out->marker_error_y     = q14_to_f(get_i16_le(in_buf + 16));
-    out->marker_yaw_error   = q14_to_f(get_i16_le(in_buf + 18));
-    out->vx_est             = q14_to_f(get_i16_le(in_buf + 20));
-    out->vy_est             = q14_to_f(get_i16_le(in_buf + 22));
-    out->marker_id          = get_i8 (in_buf + 24);
-    out->line_confidence    = get_u8 (in_buf + 25);
-    out->marker_confidence  = get_u8 (in_buf + 26);
-    out->flags              = get_u8 (in_buf + 27);
-    out->flags2             = get_u8 (in_buf + 28);
+    out->line_dx            = q14_to_f(get_i16_le(in_buf + 10));
+    out->line_dy            = q14_to_f(get_i16_le(in_buf + 12));
+    out->line_angle_error   = q14_to_f(get_i16_le(in_buf + 14));
+    out->marker_error_x     = q14_to_f(get_i16_le(in_buf + 16));
+    out->marker_error_y     = q14_to_f(get_i16_le(in_buf + 18));
+    out->marker_yaw_error   = q14_to_f(get_i16_le(in_buf + 20));
+    out->vx_est             = q14_to_f(get_i16_le(in_buf + 22));
+    out->vy_est             = q14_to_f(get_i16_le(in_buf + 24));
+    out->marker_id          = get_i8 (in_buf + 26);
+    out->line_confidence    = get_u8 (in_buf + 27);
+    out->marker_confidence  = get_u8 (in_buf + 28);
+    out->flags              = get_u8 (in_buf + 29);
+    out->flags2             = get_u8 (in_buf + 30);
     return true;
 }
 

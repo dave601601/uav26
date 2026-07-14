@@ -85,20 +85,21 @@ static void clamp_vxy(float* vx, float* vy, float max_vxy) {
     }
 }
 
-/* FOLLOW_LINE body velocity: cruise along the travel axis, kp_xy * lateral
- * error on the perpendicular axis (+y_body for x-travel, +x_body for
- * y-travel), and wz = kp_yaw * line_angle_error. */
+/* FOLLOW_LINE body velocity: cruise along the travel axis, kp_xy * the
+ * grid-line offset for that axis on the perpendicular axis, and
+ * wz = kp_yaw * line_angle_error. +/-x travel drives body +y from line_dx
+ * (nearest vertical line); +/-y travel drives body +x from line_dy (nearest
+ * horizontal line). The caller gates this on the matching presence bit. */
 static void line_velocity(const fc_proto_mission_t* c,
                           const fc_mission_gains_t* g,
                           float* vx, float* vy, float* wz) {
     float along = g->cruise;
-    float perp  = g->kp_xy * c->line_lateral_error;
     switch (c->move_direction) {
-        case FC_DIR_X_POS: *vx = +along; *vy = perp; break;
-        case FC_DIR_X_NEG: *vx = -along; *vy = perp; break;
-        case FC_DIR_Y_POS: *vy = +along; *vx = perp; break;
-        case FC_DIR_Y_NEG: *vy = -along; *vx = perp; break;
-        default:           *vx = +along; *vy = perp; break;
+        case FC_DIR_X_POS: *vx = +along; *vy = g->kp_xy * c->line_dx; break;
+        case FC_DIR_X_NEG: *vx = -along; *vy = g->kp_xy * c->line_dx; break;
+        case FC_DIR_Y_POS: *vy = +along; *vx = g->kp_xy * c->line_dy; break;
+        case FC_DIR_Y_NEG: *vy = -along; *vx = g->kp_xy * c->line_dy; break;
+        default:           *vx = +along; *vy = g->kp_xy * c->line_dx; break;
     }
     *wz = clampfloat(g->kp_yaw * c->line_angle_error, -g->max_wz, g->max_wz);
 }
@@ -180,16 +181,22 @@ void fc_mission_tick(const fc_proto_mission_t* cmd,
         return;
     }
 
-    bool line_visible    = (cmd->flags & FC_PROTO_MFLAG_LINE_VISIBLE) != 0;
+    bool vertical_line   = (cmd->flags & FC_PROTO_MFLAG_VERTICAL_LINE) != 0;
+    bool horizontal_line = (cmd->flags & FC_PROTO_MFLAG_HORIZONTAL_LINE) != 0;
     bool marker_detected = (cmd->flags & FC_PROTO_MFLAG_MARKER_DETECTED) != 0;
 
     /* ---- body-velocity intent (compute_body_velocity port) ---- */
     float vx = 0.0f, vy = 0.0f, wz = 0.0f;
     switch (ctrl_mode) {
-        case FC_CTRL_FOLLOW_LINE:
-            /* line_visible=0 -> zero velocity == HOLD behavior. */
-            if (line_visible) line_velocity(cmd, g, &vx, &vy, &wz);
+        case FC_CTRL_FOLLOW_LINE: {
+            /* Pick the followed line by travel axis and require its presence
+               bit; missing bit -> zero velocity == HOLD behavior. */
+            bool x_travel = (cmd->move_direction == FC_DIR_X_POS
+                          || cmd->move_direction == FC_DIR_X_NEG);
+            bool have = x_travel ? vertical_line : horizontal_line;
+            if (have) line_velocity(cmd, g, &vx, &vy, &wz);
             break;
+        }
         case FC_CTRL_ALIGN_MARKER:
             /* marker_detected=0 -> HOLD (covers the TAKEOFF climb). */
             if (marker_detected) {

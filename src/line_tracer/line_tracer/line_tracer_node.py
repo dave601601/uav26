@@ -49,6 +49,10 @@ try:
     from fc_sim_msgs.msg import Setpoint
 except ImportError:                       # pragma: no cover
     Setpoint = None                       # type: ignore[assignment]
+try:
+    from fc_sim_msgs.msg import McuCommand
+except ImportError:                       # pragma: no cover
+    McuCommand = None                     # type: ignore[assignment]
 from rclpy.node import Node
 from rclpy.qos import (
     QoSDurabilityPolicy,
@@ -77,9 +81,22 @@ from .dead_reckoning import (
 )
 from .geom import CameraIntrinsics
 from .grid import Grid
+from . import mission_adapter
+from .mission import (
+    ArucoDetection as MissionAruco,
+    ControlMode,
+    IntersectionDetection,
+    LineDetection,
+    MissionManager,
+    MoveDirection,
+    PerceptionData,
+    SensorData,
+)
 from .perception import (
+    IntersectionDetector,
     PerceptionConfig,
     PerceptionResult,
+    classify_lines,
     draw_debug_overlay,
     process_image,
     resolve_aruco_dict,
@@ -148,6 +165,10 @@ class LineTracerNode(Node):
         super().__init__("line_tracer_node")
 
         # --- parameters (declared with defaults, overridable via params.yaml) -
+        # Mission backend: 'skeleton' runs MissionManager and publishes the
+        # high-level McuCommand for the MCU outer loop; 'legacy' keeps today's
+        # FSM + Setpoint path unchanged.
+        self.declare_parameter("mission_backend", "skeleton")
         self.declare_parameter("target_altitude", 2.0)
         self.declare_parameter("kp_xy", 0.8)
         # kp_yaw=1.0 left an ~0.07 rad steady-state error against the
@@ -484,12 +505,30 @@ class LineTracerNode(Node):
         # yaw inject). Real-flight builds get position from PF on landmarks.
         self._odom_truth_pose_xy: Optional[tuple] = None
 
+        self._mission_backend = str(self.get_parameter("mission_backend").value)
+        if self._mission_backend not in ("skeleton", "legacy"):
+            self.get_logger().warn(
+                f"unknown mission_backend {self._mission_backend!r}; using 'skeleton'"
+            )
+            self._mission_backend = "skeleton"
+
         # --- pubs/subs/srvs --------------------------------------------------
         # The flight controller (fc_sim_node in sim, real STM32 over USART2
         # later) consumes attitude/thrust setpoints, not body-frame Twist.
         # _build_setpoint() maps the planner's body-velocity intent through
         # a small-angle attitude map + altitude-hold P controller.
-        if Setpoint is None:
+        self._pub_mcu = None
+        if self._mission_backend == "skeleton":
+            # Skeleton backend: the MCU (fc_sim_node) owns control, so publish
+            # the high-level McuCommand and never the legacy Setpoint.
+            if McuCommand is None:
+                self.get_logger().error(
+                    "fc_sim_msgs.McuCommand unavailable; skeleton backend cannot run"
+                )
+            self._pub_cmd = None
+            self._pub_mcu = self.create_publisher(McuCommand, "/fc/mcu_command", 10)
+            self._setpoint_pub = False
+        elif Setpoint is None:
             self.get_logger().warn(
                 "fc_sim_msgs not available; falling back to /cmd_vel Twist."
             )
@@ -555,13 +594,28 @@ class LineTracerNode(Node):
                 "line_tracer_msgs not available; /line_tracer/set_state disabled"
             )
 
+        # --- skeleton mission backend --------------------------------------
+        # Instantiate MissionManager + the intersection pulse detector once;
+        # the mission is driven from the downward image callback, not a timer.
+        self._mission = None
+        self._intersection_detector = None
+        self._sk_log_counter = 0
+        if self._mission_backend == "skeleton":
+            self._mission = MissionManager(logger=self.get_logger().info)
+            self._mission.target_altitude = target_alt
+            self._mission.send_command_to_mcu = self._publish_mcu_command
+            self._intersection_detector = IntersectionDetector()
+
         dt = float(self.get_parameter("dr_dt").value)
         self._dr_dt = dt
-        self._timer = self.create_timer(dt, self._on_dr_tick)
+        # Legacy backend runs its FSM + Setpoint on the DR timer. The skeleton
+        # backend drives MissionManager from _on_color instead.
+        if self._mission_backend == "legacy":
+            self._timer = self.create_timer(dt, self._on_dr_tick)
 
         self.get_logger().info(
-            f"line_tracer_node up (state={self._fsm.state.name}, "
-            f"target_alt={target_alt}, dr_dt={dt})"
+            f"line_tracer_node up (backend={self._mission_backend}, "
+            f"state={self._fsm.state.name}, target_alt={target_alt}, dr_dt={dt})"
         )
 
     # ------------------------------------------------------------------
@@ -619,6 +673,11 @@ class LineTracerNode(Node):
                 self._pub_debug.publish(debug_msg)
             except Exception as e:                            # pragma: no cover
                 self.get_logger().warn(f"debug publish failed: {e}")
+
+        # Skeleton backend runs the mission per downward frame; the debug
+        # overlay above still publishes in both backends.
+        if self._mission_backend == "skeleton":
+            self._skeleton_tick(result)
 
     def _on_pixel_error_external(self, msg: Vector3) -> None:
         self._external_pixel_error = msg
@@ -1103,6 +1162,157 @@ class LineTracerNode(Node):
         sp.vz_sp = 0.0
         sp.thrust_norm = cmd.thrust_norm
         return sp
+
+    # ------------------------------------------------------------------
+    # Skeleton mission backend (per downward image frame)
+    # ------------------------------------------------------------------
+
+    def _skeleton_tick(self, result: PerceptionResult) -> None:
+        """Build PerceptionData + SensorData from one downward frame, step
+        MissionManager, and publish the McuCommand. The MCU owns control, so
+        this path emits no legacy Setpoint. Metric conversions are the pure
+        functions in mission_adapter."""
+        intr = self._intrinsics
+        altitude = self._altitude_m
+        if intr is None or altitude is None:
+            return                       # wait for camera_info + first altitude
+
+        now = self.get_clock().now().nanoseconds * 1e-9
+        move_dir = self._mission.move_direction
+        travel_axis = "x" if move_dir in (
+            MoveDirection.X_POS, MoveDirection.X_NEG) else "y"
+
+        # Line: both grid-line offsets + presence; angle is travel-selected.
+        dx, has_v, dy, has_h = mission_adapter.line_offsets_m(
+            result.du, result.dv, altitude, intr.fx, intr.fy
+        )
+        angle = mission_adapter.line_angle_error_rad(
+            travel_axis, result.psi_err, result.horizontal_line
+        )
+        followed_present = has_v if travel_axis == "x" else has_h
+        line = LineDetection(
+            has_vertical=has_v, has_horizontal=has_h, dx=dx, dy=dy,
+            angle_error=angle if angle is not None else 0.0,
+            confidence=1.0 if followed_present else 0.0,   # no confidence model yet
+        )
+
+        # Intersection pulse + branch flags. The detector labels flags for
+        # positive-axis travel; flip forward/back and left/right on X_NEG/Y_NEG.
+        vert, horiz = classify_lines(result.all_lines, self._perception_cfg)
+        ev = self._intersection_detector.update(vert, horiz, travel_axis, intr)
+        fwd, bwd, left, right = ev.forward, ev.backward, ev.left, ev.right
+        if move_dir in (MoveDirection.X_NEG, MoveDirection.Y_NEG):
+            fwd, bwd = bwd, fwd
+            left, right = right, left
+        intersection = IntersectionDetection(
+            detected=ev.detected, forward=fwd, left=left, right=right, backward=bwd,
+        )
+
+        # Marker: nearest-to-center detection wins.
+        markers = [(d.id, d.center_uv[0], d.center_uv[1]) for d in result.aruco]
+        chosen = mission_adapter.nearest_marker(markers, intr.cx, intr.cy)
+        if chosen is not None:
+            mid, mu, mv = chosen
+            err_x, err_y = mission_adapter.marker_center_errors_m(
+                mu, mv, intr.cx, intr.cy, altitude, intr.fx, intr.fy
+            )
+            aruco = MissionAruco(
+                detected=True, marker_id=mid,
+                center_error_x=err_x, center_error_y=err_y,
+                yaw_error=0.0, confidence=1.0,
+            )
+        else:
+            aruco = MissionAruco(detected=False, marker_id=None, confidence=0.0)
+
+        perception_data = PerceptionData(
+            line=line, intersection=intersection, aruco=aruco
+        )
+
+        # Sensors: battery/imu/lidar/rc stubbed healthy in sim; DR world pose
+        # and body velocity come from the /odom_truth callbacks.
+        dr_x = dr_y = None
+        if self._odom_truth_pose_xy is not None:
+            dr_x, dr_y = self._odom_truth_pose_xy
+        yaw = self._odom_truth_yaw if self._odom_truth_yaw is not None else 0.0
+        vx_est = vy_est = None
+        if (self._latest_vxy_world is not None
+                and self._latest_vxy_t is not None
+                and (now - self._latest_vxy_t) <= 0.5):
+            vx_est, vy_est = world_to_body(
+                self._latest_vxy_world[0], self._latest_vxy_world[1], yaw
+            )
+        sensors = SensorData(
+            altitude=float(altitude), battery_voltage=15.5,
+            imu_ok=True, lidar_ok=True, rc_connected=True,
+            dr_x=dr_x, dr_y=dr_y, vx_est=vx_est, vy_est=vy_est,
+        )
+
+        # Step (publishes McuCommand via the send hook), then emit the grep-able
+        # >> FSM / >> RECORD markers dev.sh's mission summary greps for.
+        prev_state = self._mission.state
+        prev_ids = set(self._mission.grid_map.marker_id_to_node.keys())
+        cmd = self._mission.step(now, sensors, perception_data)
+        if self._mission.state != prev_state:
+            self.get_logger().info(
+                f">> FSM: {prev_state.name} -> {self._mission.state.name} "
+                f"(alt={altitude:.2f})"
+            )
+        new_ids = set(self._mission.grid_map.marker_id_to_node.keys()) - prev_ids
+        for mid in sorted(new_ids):
+            node = self._mission.grid_map.marker_id_to_node[mid]
+            wx, wy = self._mission.grid_map.node_world(node)
+            self.get_logger().info(
+                f">> RECORD aruco id={mid} at ({wx:+.2f}, {wy:+.2f})"
+            )
+
+        # Throttled status line, format mirrors the legacy backend's.
+        self._sk_log_counter = (self._sk_log_counter + 1) % 20
+        if self._sk_log_counter == 0:
+            sx = dr_x if dr_x is not None else 0.0
+            sy = dr_y if dr_y is not None else 0.0
+            self.get_logger().info(
+                f"[{self._mission.state.name}/skeleton] "
+                f"xy=({sx:+.2f},{sy:+.2f}) yaw={yaw:+.2f} alt={altitude:.2f} "
+                f"mode={ControlMode(cmd.mode).name} "
+                f"dir={MoveDirection(cmd.move_direction).name}"
+            )
+
+    def _publish_mcu_command(self, cmd) -> None:
+        """MissionManager dispatch hook: publish the McuCommand dataclass on
+        /fc/mcu_command. mode carries no arm bit; arm is a separate field that
+        fc_sim_node folds into the wire mode byte. STOP (mission FINISHED)
+        requests disarm; the MCU also disarms on land cutoff."""
+        msg = McuCommand()
+        msg.mode = int(cmd.mode)
+        msg.arm = cmd.mode != int(ControlMode.STOP)
+        msg.mission_state = int(cmd.mission_state)
+        msg.seq = int(cmd.seq)
+        msg.node_x = int(cmd.node_x)
+        msg.node_y = int(cmd.node_y)
+        msg.move_direction = int(cmd.move_direction)
+        msg.target_altitude = float(cmd.target_altitude)
+        msg.line_dx = float(cmd.line_dx)
+        msg.line_dy = float(cmd.line_dy)
+        msg.vertical_line = bool(cmd.vertical_line)
+        msg.horizontal_line = bool(cmd.horizontal_line)
+        msg.line_angle_error = float(cmd.line_angle_error)
+        msg.line_confidence = float(cmd.line_confidence)
+        msg.intersection_detected = bool(cmd.intersection_detected)
+        msg.intersection_forward = bool(cmd.intersection_forward)
+        msg.intersection_left = bool(cmd.intersection_left)
+        msg.intersection_right = bool(cmd.intersection_right)
+        msg.intersection_backward = bool(cmd.intersection_backward)
+        msg.marker_detected = bool(cmd.marker_detected)
+        msg.marker_id = int(cmd.marker_id)
+        msg.marker_error_x = float(cmd.marker_error_x)
+        msg.marker_error_y = float(cmd.marker_error_y)
+        msg.marker_yaw_error = float(cmd.marker_yaw_error)
+        msg.marker_confidence = float(cmd.marker_confidence)
+        msg.vx_est = float(cmd.vx_est)
+        msg.vy_est = float(cmd.vy_est)
+        msg.vel_est_valid = bool(cmd.vel_est_valid)
+        msg.emergency = bool(cmd.emergency)
+        self._pub_mcu.publish(msg)
 
     # ------------------------------------------------------------------
     # ArUco markers → world frame

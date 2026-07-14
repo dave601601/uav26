@@ -2,6 +2,23 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Skeleton pipeline integrated end-to-end (2026-07-14)
+
+line_tracer_node gains mission_backend = skeleton (default) | legacy.
+Skeleton path per image frame: perception -> mission_adapter (pure
+pixel->metric functions, new module + 11 tests) -> PerceptionData /
+SensorData -> MissionManager.step -> fc_sim_msgs/McuCommand on
+/fc/mcu_command; no Setpoint is published (the MCU owns control).
+Line info follows the user's [dx, dy, flag] contract: both grid-line
+offsets plus per-line presence bits travel to the MCU, which selects
+by move_direction (wire frame now 33 bytes; emergency moved to
+flags2). fc_sim_node runs fc_mission_tick before Control() whenever a
+mission command is fresh (<300 ms); with none, legacy behavior is
+byte-identical. Suites: fc_core 41 gtests, line_tracer 263 pytest,
+all green. Known gaps before the live run: skeleton mode leaves
+/waypoints/aruco RViz spheres on the unticked DR state (debug viz
+only); failsafe inputs are hard-stubbed healthy in sim.
+
 ## Intersection pulse detector (2026-07-14)
 
 New IntersectionDetector in perception.py (additive): fires exactly one
