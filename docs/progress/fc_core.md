@@ -18,6 +18,9 @@ pitch (both already tracked as deferred firmware items), and
 `GetAngle2Vec()` returning uninitialized y/z — newly noticed in this
 pass; dead code, no callers in this repo, must be fixed before use.
 The other 14 fc_core files were already jargon-free and untouched.
+Follow-up on review feedback: mid-code comments are capped at 2-3
+lines (long prose belongs in the file header only); the stale-link
+fallback contract moved into controller.c's header comment.
 
 ### Thrust scale switched to the real power train: 900 g/motor, 2212-920KV on 4S (2026-07-08)
 

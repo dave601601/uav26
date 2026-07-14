@@ -17,6 +17,13 @@ Frame conventions (camera mounted bottom of drone, optical +Z = -Z_body):
 These signs match `line_tracer.dead_reckoning.compute_body_velocity` once
 the node maps:  dx_body = -dv * d / fy,  dy_body = -du * d / fx,
                 psi_err passes through.
+
+ArUco false-positive hazard: OpenCV builds candidate quads only out of
+dark regions, so on a grass field a patch bounded by white grid lines can
+qualify as a quad and decode as an exact codeword — a real false positive.
+The mitigation belongs in the record path (multi-frame voting plus a
+marker-size check): the downward camera currently commits a record from a
+single frame with no vote and no size check.
 """
 from __future__ import annotations
 
@@ -34,10 +41,8 @@ from .geom import CameraIntrinsics
 # Config
 # ---------------------------------------------------------------------------
 
-# ArUco dictionary registry (param string -> cv2 constant). The rules give
-# marker IDs 0..49 without naming a dictionary; 0..49 exactly matches the
-# 50-marker dictionaries, so 4X4_50 is the working default — swap the
-# node's `aruco_dict` param the day the rules confirm.
+# Param string -> cv2 constant. The rules give marker IDs 0..49 without
+# naming a dictionary; 4X4_50 is the working default until they confirm.
 ARUCO_DICTS = {
     "4X4_50": cv2.aruco.DICT_4X4_50,
     "5X5_50": cv2.aruco.DICT_5X5_50,
@@ -66,28 +71,14 @@ class PerceptionConfig:
     hough_threshold: int = 60
     hough_min_line_length: int = 40
     hough_max_line_gap: int = 20
-    # bands of angle (rad, in [0, pi)) considered "vertical" / "horizontal".
-    # vertical_half_width is half-width in rad: a line whose normalized angle
-    # in [0,pi) is within this many radians of pi/2 (resp. 0 or pi) counts.
+    # Angle-band half-widths (rad): a line whose angle in [0, pi) is within
+    # this of pi/2 counts as vertical; within this of 0 or pi, horizontal.
     vertical_half_width: float = pi / 6.0     # 30°
     horizontal_half_width: float = pi / 6.0   # 30°
     aruco_dict: int = ARUCO_DICTS[DEFAULT_ARUCO_DICT]
-    # Negate the grayscale before ArUco detection. False for this world:
-    # the rules ("background black, marker white") describe a standard
-    # ArUco (black field, white cells), which OpenCV detects natively, so
-    # no negation. The knob exists only for a genuinely inverted marker
-    # (code negated, white border ring), which the default detector cannot
-    # see; negating once here is the cheap fix if the rules ever call for
-    # one. Prefer it over DetectorParameters.detectInvertedMarker, which
-    # accepts both polarities and so doubles the false-accept surface.
-    #
-    # A separate hazard stays live even at the standard polarity: OpenCV
-    # builds candidate quads only out of dark regions, so on a grass field
-    # a patch bounded by white grid lines can qualify as a quad and decode
-    # as an exact codeword — a real false positive. The mitigation belongs
-    # in the record path, not here: multi-frame voting plus a marker-size
-    # check, because the downward camera currently commits a record from a
-    # single frame with no vote and no size check.
+    # False: the rules' marker is a standard ArUco (black field, white
+    # cells). Set True only for a genuinely inverted marker; prefer this over
+    # detectInvertedMarker, whose both-polarity mode doubles false accepts.
     aruco_white_on_black: bool = False
 
 

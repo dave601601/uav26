@@ -165,9 +165,8 @@ class SideCameraConfig:
         an exact codeword match.
     """
     aruco_dict: int = ARUCO_DICTS[DEFAULT_ARUCO_DICT]
-    # Same physical sheet the downward camera sees: a standard ArUco
-    # (black field, white cells), so no negation. See
-    # perception.PerceptionConfig.aruco_white_on_black.
+    # Same standard ArUco sheet the downward camera sees, so no negation;
+    # see perception.PerceptionConfig.aruco_white_on_black.
     aruco_white_on_black: bool = False
     adaptive_thresh_win_min: int = 3
     adaptive_thresh_win_max: int = 23
@@ -176,10 +175,8 @@ class SideCameraConfig:
     polygonal_approx_accuracy_rate: float = 0.05
     perspective_remove_pixel_per_cell: int = 8
     error_correction_rate: float = 0.8
-    # IPM (rectify to a synthetic nadir view before detecting) is not
-    # needed while only the adjacent-row band (+3 m on the official grid)
-    # is load-bearing; revisit if a longer-range band comes back
-    # (full-res sensor or higher altitude).
+    # IPM (synthetic nadir rectification) is unneeded while only the adjacent
+    # +3 m band matters; revisit if a longer-range band comes back.
     use_ipm: bool = False
 
 

@@ -49,10 +49,8 @@ extern PIDvec pid_rate;
 extern PIDvec pid_euler;
 extern PIDvec pid_vel;
 
-/* Deadband factors applied to RATEControl / ATTIControl (units of
- * maxratecmd / maxatticmd). Default 0.04 matches the firmware's SBUS
- * stick-center deadzone; fc_sim_node lowers this to ~0 to pass the
- * companion's precise setpoints through. */
+/* Deadband factors for RATEControl / ATTIControl, as fractions of
+ * maxratecmd / maxatticmd; fc_sim_node lowers them to ~0 for sim. */
 extern float fc_rate_deadband_factor;
 extern float fc_atti_deadband_factor;
 
@@ -64,10 +62,8 @@ enum MODE{
     posmode
 };
 
-/* Companion setpoint struct populated either by the real USART2 RX ISR
- * on STM32 or by the sim FC node from a ROS Setpoint message. Layout is
- * shared between hardware and sim; the controller does not care which
- * side wrote it. */
+/* Companion setpoints, written by the STM32 USART2 RX ISR or by the sim
+ * FC node from a ROS Setpoint message; the controller reads either. */
 typedef struct {
     float roll_sp;       /* rad */
     float pitch_sp;      /* rad */

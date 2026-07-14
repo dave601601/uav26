@@ -16,6 +16,9 @@ reads "adjacent-row band (+3 m on the official grid)". Noticed but not
 applied (code change, out of scope for this pass): `detect_aruco` uses
 default `DetectorParameters()` while the side camera tunes its own — a
 shared detector-params helper would keep the two paths consistent.
+Follow-up on review feedback: mid-code comments are capped at 2-3
+lines; the grass false-positive hazard moved from the field comment
+into the perception.py module docstring.
 
 ## Lookahead overlay publishes in every FSM state (2026-07-09)
 

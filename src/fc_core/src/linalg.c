@@ -524,10 +524,8 @@ float norm(quaternion a){
     return sqrt(a.re * a.re + a.im.x * a.im.x + a.im.y * a.im.y + a.im.z * a.im.z);
 }
 
-/* KNOWN BUG (firmware parity): the returned pitch is sign-flipped
- * (eul.y = -asinf(sinp), and the matching -copysignf gimbal branch).
- * Kept to match the STM32 firmware; the sim node compensates for the
- * flip explicitly. Fix only together with a paired firmware re-test. */
+/* KNOWN BUG (firmware parity): the returned pitch is sign-flipped; the
+ * sim node compensates. Fix only with a paired firmware re-test. */
 vec3d quat_to_euler(quaternion q) {
     vec3d eul;
 
@@ -579,10 +577,8 @@ vec3d GetAngle(vec3d vec3){
     return res;
 }
 
-/* KNOWN BUG (firmware parity): all three statements assign res.x, so
- * res.y and res.z are returned uninitialized. No callers in this repo;
- * kept as-is to match the STM32 firmware. Must be fixed before anyone
- * uses this function. */
+/* KNOWN BUG (firmware parity): every statement assigns res.x, so res.y
+ * and res.z are uninitialized. No callers; must be fixed before use. */
 vec3d GetAngle2Vec(vec3d ang2){
     vec3d res;
     res.x =  cos(ang2.y) * cos(ang2.x);
