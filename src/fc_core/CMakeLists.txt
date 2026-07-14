@@ -23,6 +23,7 @@ set(FC_CORE_SOURCES
   src/sbus_parse.c
   src/lidar_parse.c
   src/protocol.c
+  src/mission_ctrl.c
 )
 
 add_library(fc_core SHARED ${FC_CORE_SOURCES})
@@ -53,6 +54,7 @@ if(BUILD_TESTING)
     test/test_atti_pid.cpp
     test/test_quat.cpp
     test/test_protocol.cpp
+    test/test_mission_ctrl.cpp
   )
   if(TARGET test_fc_core)
     target_link_libraries(test_fc_core fc_core)

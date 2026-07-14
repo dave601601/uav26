@@ -4,6 +4,24 @@ Pure C library carrying the STM32 firmware controller into ROS2 land.
 
 ## Done
 
+### Mission downlink frame + mission_ctrl outer loop (2026-07-14)
+
+Per docs/MISSION_INTERFACE.md: the MCU now owns the outer control
+loops. New 31-byte mission downlink (magic 0xA6, Q14 metric errors,
+flags byte, CRC16-CCITT; byte table in protocol.h is the wire source
+of truth) alongside the untouched 24-byte setpoint frame. New
+mission_ctrl.{h,c} ports the companion's Python laws 1:1
+(compute_body_velocity + body_vel_to_atti_thr, gains included):
+per-mode velocity intent, velocity-error P when an estimate is valid
+else open-loop v/g, altitude PD with takeoff burst, land descent with
+cutoff+disarm, and the FLU->NED yawrate negation at the COMP write.
+Control() is unchanged — mission_ctrl writes the same COMP struct the
+old path wrote. 39 gtests green (17 pre-existing + 22 new: frame
+roundtrip/saturation/tamper, every ControlMode, burst, cutoff, signs).
+Port notes: Python's unused compute_body_velocity.vz omitted; cruise
+default 0.2 m/s from the LINE_FOLLOW behavior; gains in a module
+global mirroring the pid_rate retuning pattern.
+
 ### Comments rewritten for outside readers + known-bug warnings (2026-07-14)
 
 Comments-only pass, no code changes (verified by stripping comments and

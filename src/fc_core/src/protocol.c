@@ -7,11 +7,15 @@
 
 #include "fc_core/protocol.h"
 #include "fc_core/linalg.h"
+#include "fc_core/mission_ctrl.h"
 #include <string.h>
 
 /* -------- Little-endian field helpers -------- */
 static inline void put_u8(uint8_t* p, uint8_t v) { p[0] = v; }
 static inline uint8_t get_u8(const uint8_t* p)   { return p[0]; }
+
+static inline void put_i8(uint8_t* p, int8_t v) { p[0] = (uint8_t)v; }
+static inline int8_t get_i8(const uint8_t* p)   { return (int8_t)p[0]; }
 
 static inline void put_u16_le(uint8_t* p, uint16_t v) {
     p[0] = (uint8_t)(v & 0xFFu);
@@ -71,6 +75,15 @@ static inline uint16_t f_to_q15(float v) {
     return (uint16_t)(v * Q15_SCALE);
 }
 static inline float q15_to_f(uint16_t q) { return (float)q / Q15_SCALE; }
+
+/* Altitude in metres <-> centimetres on the wire, clamped to 0..10 m. */
+static inline uint16_t m_to_cm(float m) {
+    float cm = m * 100.0f;
+    if (cm < 0.0f)    cm = 0.0f;
+    if (cm > 1000.0f) cm = 1000.0f;
+    return (uint16_t)(cm + 0.5f);
+}
+static inline float cm_to_m(uint16_t cm) { return (float)cm / 100.0f; }
 
 /* -------- CRC16-CCITT (poly 0x1021, init 0xFFFF, no reflection) -------- */
 uint16_t fc_proto_crc16_ccitt(const uint8_t* data, size_t len) {
@@ -191,4 +204,77 @@ void fc_proto_apply_down(const fc_proto_down_t* msg, uint32_t now_ms) {
     COMP.vz_sp        = msg->vz_sp;
     COMP.thrust_norm  = msg->thrust_norm;
     COMP.last_ms      = now_ms;
+}
+
+/* -------- Mission downlink (companion -> FC) -------- */
+bool fc_proto_encode_mission(const fc_proto_mission_t* in,
+                             uint8_t out_buf[FC_PROTO_MISSION_LEN])
+{
+    if (!in || !out_buf) return false;
+
+    put_u8 (out_buf + 0,  FC_PROTO_MISSION_MAGIC);
+    put_u8 (out_buf + 1,  FC_PROTO_VERSION);
+    put_u8 (out_buf + 2,  in->mode);
+    put_u8 (out_buf + 3,  in->mission_state);
+    put_u8 (out_buf + 4,  in->seq);
+    put_i8 (out_buf + 5,  in->node_x);
+    put_i8 (out_buf + 6,  in->node_y);
+    put_u8 (out_buf + 7,  in->move_direction);
+    put_u16_le(out_buf + 8,  m_to_cm(in->target_altitude));
+    put_i16_le(out_buf + 10, f_to_q14(in->line_lateral_error));
+    put_i16_le(out_buf + 12, f_to_q14(in->line_angle_error));
+    put_i16_le(out_buf + 14, f_to_q14(in->marker_error_x));
+    put_i16_le(out_buf + 16, f_to_q14(in->marker_error_y));
+    put_i16_le(out_buf + 18, f_to_q14(in->marker_yaw_error));
+    put_i16_le(out_buf + 20, f_to_q14(in->vx_est));
+    put_i16_le(out_buf + 22, f_to_q14(in->vy_est));
+    put_i8 (out_buf + 24, in->marker_id);
+    put_u8 (out_buf + 25, in->line_confidence);
+    put_u8 (out_buf + 26, in->marker_confidence);
+    put_u8 (out_buf + 27, in->flags);
+    put_u8 (out_buf + 28, in->flags2);
+
+    uint16_t crc = fc_proto_crc16_ccitt(out_buf, FC_PROTO_MISSION_LEN - 2u);
+    put_u16_le(out_buf + 29, crc);
+    return true;
+}
+
+bool fc_proto_decode_mission(const uint8_t in_buf[FC_PROTO_MISSION_LEN],
+                             fc_proto_mission_t* out)
+{
+    if (!in_buf || !out) return false;
+    if (get_u8(in_buf + 0) != FC_PROTO_MISSION_MAGIC) return false;
+    if (get_u8(in_buf + 1) != FC_PROTO_VERSION)       return false;
+
+    uint16_t crc_calc = fc_proto_crc16_ccitt(in_buf, FC_PROTO_MISSION_LEN - 2u);
+    uint16_t crc_read = get_u16_le(in_buf + 29);
+    if (crc_calc != crc_read) return false;
+
+    out->mode               = get_u8 (in_buf + 2);
+    out->mission_state      = get_u8 (in_buf + 3);
+    out->seq                = get_u8 (in_buf + 4);
+    out->node_x             = get_i8 (in_buf + 5);
+    out->node_y             = get_i8 (in_buf + 6);
+    out->move_direction     = get_u8 (in_buf + 7);
+    out->target_altitude    = cm_to_m(get_u16_le(in_buf + 8));
+    out->line_lateral_error = q14_to_f(get_i16_le(in_buf + 10));
+    out->line_angle_error   = q14_to_f(get_i16_le(in_buf + 12));
+    out->marker_error_x     = q14_to_f(get_i16_le(in_buf + 14));
+    out->marker_error_y     = q14_to_f(get_i16_le(in_buf + 16));
+    out->marker_yaw_error   = q14_to_f(get_i16_le(in_buf + 18));
+    out->vx_est             = q14_to_f(get_i16_le(in_buf + 20));
+    out->vy_est             = q14_to_f(get_i16_le(in_buf + 22));
+    out->marker_id          = get_i8 (in_buf + 24);
+    out->line_confidence    = get_u8 (in_buf + 25);
+    out->marker_confidence  = get_u8 (in_buf + 26);
+    out->flags              = get_u8 (in_buf + 27);
+    out->flags2             = get_u8 (in_buf + 28);
+    return true;
+}
+
+void fc_proto_apply_mission(const fc_proto_mission_t* msg, uint32_t now_ms) {
+    if (!msg) return;
+    MISSION.cmd     = *msg;
+    MISSION.last_ms = now_ms;
+    MISSION.valid   = true;
 }
