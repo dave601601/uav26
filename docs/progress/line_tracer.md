@@ -2,6 +2,21 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Mission skeleton architecture adopted (2026-07-14)
+
+Team skeleton (docs/mission_skeleton.py) becomes the target interface:
+MissionManager.step(SensorData, PerceptionData) -> McuCommand, with the
+MCU (fc_core/STM32) running the outer control loops on raw vision
+errors. User decisions: node-based (intersection-counting) navigation
+is the main algorithm with world meters logged alongside; fc_core gets
+the outer loop (real STM32 is the deployment target); intersection
+detection gets a real implementation; the side/lookahead camera is
+deferred. Grid confirmed 30 x 21 m (11 x 8 nodes), not the skeleton's
+24 x 15. Full contract in docs/MISSION_INTERFACE.md, including the
+two DR snap points (grid entry, marker confirm) that re-zero counting
+drift, and the deviations list. Legacy Setpoint path stays behind a
+node parameter for A/B.
+
 ## Vision comments rewritten for outside readers (2026-07-14)
 
 Comments-only pass over perception.py and side_camera.py (geom.py was
