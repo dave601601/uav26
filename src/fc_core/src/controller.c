@@ -80,26 +80,22 @@ void ControllerInit(void){
                 vec(0.5f, 0.5f, 0.3f * 9.81f));
 }
 
-/* maxratecmd was 1.0 rad/s — calibrated for SBUS stick travel on the
- * hand-held drone the firmware originally targeted. In sim the
- * line_tracer companion needs more authority to fight the residual
- * yaw torque DartSim introduces during the takeoff transient
- * (kp_yaw=3 with max_wz=2.5 was clipped by this limit, leaving
- * ~0.2 rad/s steady-state yaw drift that curled the cruise track
- * off-axis — r30..r34). 3.0 rad/s lets the companion's ±2.5
- * yawrate_sp pass through unchanged. Re-tune on real hardware once
- * mixer/motor asymmetries are characterized. */
+/* Max body-rate command magnitude, rad/s. Raised from the firmware's
+ * 1.0 rad/s (calibrated for SBUS stick travel) to 3.0 rad/s so the
+ * line_tracer companion's yaw-rate setpoints (up to +/-2.5 rad/s) pass
+ * through unclipped; the 1.0 limit clipped them and left steady-state
+ * yaw drift that curled the cruise track off-axis. Re-tune on real
+ * hardware once mixer/motor asymmetries are characterized. */
 static float maxratecmd = 3.0f;                       /* rad/s */
 static float maxatticmd = 30.0f * PI / 180.0f;        /* rad   */
 
-/* Deadband thresholds, multiplied by maxratecmd / maxatticmd. The
- * absolute deadband used to be 0.04 rad/s (= 0.04 * maxratecmd_old=1.0).
- * After bumping maxratecmd to 3.0 the factor is scaled 1/3 to keep the
- * same absolute deadband — without this the rate deadband would widen
- * to 0.12 rad/s and small rate commands would get zeroed (test_atti_pid
- * failed because pqr_cmd at the steady state was below the deadband
- * floor). fc_sim_node overrides both to 0.001 for sim where setpoints
- * are precise. */
+/* Deadband thresholds, as fractions of maxratecmd / maxatticmd. When
+ * maxratecmd was raised from 1.0 to 3.0 rad/s the rate factor was
+ * scaled by 1/3 to hold the absolute rate deadband at 0.04 rad/s;
+ * without that it would have widened to 0.12 rad/s and zeroed small
+ * rate commands, including the steady-state hold command.
+ * fc_sim_node overrides both to 0.001 for sim, where setpoints are
+ * precise. */
 float fc_rate_deadband_factor = 0.0133f;
 float fc_atti_deadband_factor = 0.04f;
 static float maxvelXYcmd = 2.0f;
@@ -124,9 +120,9 @@ static float mass = 0.0f;
  * 4 * this * 9.81/1000 newtons of total lift. 900 g matches the real
  * power train: 2212 920KV motors on a 4S pack with 9450/1045-class
  * props (bench range 800-1000 g/motor; the previous 600 g constant
- * assumed the same motor on 3S). F2PWM's thrust-to-DSHOT curve is
- * still calibrated for the 600 g train and needs a thrust-stand
- * recalibration before hardware flight — see docs/progress/fc_core.md. */
+ * assumed the same motor on 3S). WARNING: F2PWM's thrust-to-DSHOT
+ * curve is still calibrated for the 600 g train and must be
+ * recalibrated on a thrust stand before any hardware flight. */
 static float max_thrust_g_per_motor = 900.0f;
 
 static enum MODE mode = attithrmode;
@@ -220,6 +216,12 @@ vec3d VELControl(vec3d veldes, vec3d vel, float dt){
     return vec(0.0f, 0.0f, 0.0f);
 }
 
+/* KNOWN BUG (firmware parity): a = 1/(4*dx) scales the roll moment L and
+ * b = 1/(4*dy) scales pitch M, but roll acts through the motors' y-offset
+ * and pitch through the x-offset — a and b are swapped between the roll
+ * and pitch terms, giving roughly 9 percent asymmetry since dx and dy
+ * differ by that much. Kept as-is to match the STM32 firmware; fix only
+ * together with a paired firmware re-test. */
 thrvec Allocation(vec3d LMN, vec3d dim, float Fz){
     thrvec T;
     float dxL = dim.x, dyL = dim.y;

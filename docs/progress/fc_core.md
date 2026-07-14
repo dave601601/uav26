@@ -4,6 +4,21 @@ Pure C library carrying the STM32 firmware controller into ROS2 land.
 
 ## Done
 
+### Comments rewritten for outside readers + known-bug warnings (2026-07-14)
+
+Comments-only pass, no code changes (verified by stripping comments and
+comparing byte-identical against the previous revision; full test suite
+green). controller.c constant rationales lose the internal run numbers
+and work-log pointers but keep the physics: the yaw-rate limit bump,
+the deadband 1/3 rescale, and the F2PWM thrust-stand recalibration
+warning. Three known traps that carried no in-code warning are now
+marked KNOWN BUG at the function: `Allocation()`'s roll/pitch
+arm-length swap (~9 % asymmetry), `quat_to_euler()`'s sign-flipped
+pitch (both already tracked as deferred firmware items), and
+`GetAngle2Vec()` returning uninitialized y/z — newly noticed in this
+pass; dead code, no callers in this repo, must be fixed before use.
+The other 14 fc_core files were already jargon-free and untouched.
+
 ### Thrust scale switched to the real power train: 900 g/motor, 2212-920KV on 4S (2026-07-08)
 
 `Control()`'s thrust mapping assumed 600 g max thrust per motor (the
