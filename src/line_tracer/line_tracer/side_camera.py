@@ -148,11 +148,9 @@ class SideCameraConfig:
     """ArUco detection tuned for the oblique side view.
 
     Markers appear foreshortened (vertical extent ~ sin(depression)) and
-    small: the +3 m row at 640x400 / f=1000 is ~61 px tall (~10.2 px per
-    module — the code now fills the 0.4 m sheet edge to edge, so the
-    module pitch is 0.4/6 = 6.67 cm, a third coarser than the old
-    1-module-margin texture and correspondingly easier to read far off).
-    Deviations from OpenCV defaults:
+    small: the +3 m row at 640x400 / f=1000 is ~61 px tall, ~10.2 px per
+    module (the 0.4 m sheet is filled edge to edge, module pitch 0.4/6 =
+    6.67 cm). Deviations from OpenCV defaults:
       - adaptiveThreshWinSizeStep 10 -> 4: more threshold scales so the
         thin foreshortened quad survives binarization.
       - minMarkerPerimeterRate 0.03 -> 0.02: keep small far quads.
@@ -162,9 +160,9 @@ class SideCameraConfig:
         projection (1 px ~= 6 cm at the near band).
       - errorCorrectionRate 0.6 -> 0.8: bits sampled at ~10 px/module
         flip more easily; the vote threshold filters residual misreads.
-        Note DICT_4X4_50 has maxCorrectionBits=1, so int(1*0.8)=0 bits
-        are actually corrected — the rate buys nothing here and every
-        accepted quad is an exact codeword match.
+        DICT_4X4_50 has maxCorrectionBits=1, so int(1*0.8)=0 bits are
+        corrected — the rate buys nothing here and every accepted quad is
+        an exact codeword match.
     """
     aruco_dict: int = ARUCO_DICTS[DEFAULT_ARUCO_DICT]
     # Same physical sheet the downward camera sees: a standard ArUco
@@ -179,8 +177,9 @@ class SideCameraConfig:
     perspective_remove_pixel_per_cell: int = 8
     error_correction_rate: float = 0.8
     # IPM (rectify to a synthetic nadir view before detecting) is not
-    # needed while only the +4 m band is load-bearing; revisit if a
-    # longer-range band comes back (full-res sensor or higher altitude).
+    # needed while only the adjacent-row band (+3 m on the official grid)
+    # is load-bearing; revisit if a longer-range band comes back
+    # (full-res sensor or higher altitude).
     use_ipm: bool = False
 
 

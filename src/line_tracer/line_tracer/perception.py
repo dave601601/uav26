@@ -72,27 +72,22 @@ class PerceptionConfig:
     vertical_half_width: float = pi / 6.0     # 30°
     horizontal_half_width: float = pi / 6.0   # 30°
     aruco_dict: int = ARUCO_DICTS[DEFAULT_ARUCO_DICT]
-    # Negate the grayscale before ArUco detection. FALSE for this world:
-    # the rules' "(바탕) 검정색, (마커) 하얀색" describes a STANDARD ArUco
-    # (black field, white cells), which OpenCV detects natively. The knob
-    # exists because a genuinely INVERTED marker — code negated, white
-    # border ring — is invisible to the default detector, and negating
-    # once here is the cheap fix if the rules ever call for one. Prefer
-    # it over DetectorParameters.detectInvertedMarker, which accepts both
-    # polarities and doubles the false-accept surface.
+    # Negate the grayscale before ArUco detection. False for this world:
+    # the rules ("background black, marker white") describe a standard
+    # ArUco (black field, white cells), which OpenCV detects natively, so
+    # no negation. The knob exists only for a genuinely inverted marker
+    # (code negated, white border ring), which the default detector cannot
+    # see; negating once here is the cheap fix if the rules ever call for
+    # one. Prefer it over DetectorParameters.detectInvertedMarker, which
+    # accepts both polarities and so doubles the false-accept surface.
     #
-    # Beware what negation silently does here besides fixing polarity: it
-    # lifts the grass above the threshold. OpenCV builds candidate quads
-    # only out of DARK regions and then demands a dark border ring, so on
-    # this grass field a patch bounded by white grid lines is a legal
-    # candidate. That is how r73 recorded a phantom id=17 on a bare
-    # crossing 12 m from the real marker — the rectified interior held a
-    # white 2x2 block where a line clipped it, which is id 17's exact
-    # codeword (DICT_4X4_50 corrects int(1 * 0.6) = 0 bits, so the match
-    # had to be exact). With the standard polarity that hazard is LIVE,
-    # and the mitigation has to be in the record path, not here: the
-    # downward camera still commits a record on one frame's id with no
-    # vote and no size check.
+    # A separate hazard stays live even at the standard polarity: OpenCV
+    # builds candidate quads only out of dark regions, so on a grass field
+    # a patch bounded by white grid lines can qualify as a quad and decode
+    # as an exact codeword — a real false positive. The mitigation belongs
+    # in the record path, not here: multi-frame voting plus a marker-size
+    # check, because the downward camera currently commits a record from a
+    # single frame with no vote and no size check.
     aruco_white_on_black: bool = False
 
 

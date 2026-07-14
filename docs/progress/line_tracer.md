@@ -2,6 +2,21 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Vision comments rewritten for outside readers (2026-07-14)
+
+Comments-only pass over perception.py and side_camera.py (geom.py was
+already clean); the docstring-stripped AST is identical before and
+after, and the full test suite is green. The aruco_white_on_black
+comment now states the constraints without the run-history: standard
+marker so no negation; grass patches bounded by white grid lines can
+decode as an exact codeword; the mitigation belongs in the record path
+(multi-frame vote + size gate). The Korean rule quote is translated.
+The use_ipm comment's "+4 m band" was stale pre-respec wording and now
+reads "adjacent-row band (+3 m on the official grid)". Noticed but not
+applied (code change, out of scope for this pass): `detect_aruco` uses
+default `DetectorParameters()` while the side camera tunes its own — a
+shared detector-params helper would keep the two paths consistent.
+
 ## Lookahead overlay publishes in every FSM state (2026-07-09)
 
 `/line_tracer/lookahead_debug_image` already existed, but `_on_lookahead`
