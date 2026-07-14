@@ -13,6 +13,20 @@ beyond the exit band, so a one-frame Hough miss cannot double-count.
 Branch flags are labeled for positive-axis travel; the mission layer
 owns the X_NEG/Y_NEG flip. 30 synthetic-image tests; suite at 232.
 
+## Node-based mission core landed (2026-07-14)
+
+line_tracer/mission.py: pure-Python (stdlib-only) mission layer per
+docs/MISSION_INTERFACE.md — fixed-value enums, metric dataclasses,
+preallocated 11x8 GridMap with node_world/nearest_node, self-contained
+BFS PathPlanner, boustrophedon ExplorationPlanner that never leaves the
+grid and re-sweeps on exhaustion, and MissionManager with injected
+now/logger, DR snap at grid entry and at marker confirm (off-by-one fix
++ counting-drift re-zero), and node+meters+DR in every state log line.
+Skeleton names preserved for team diffability. 20 new tests; suite at
+252. Deviations from the sketch are listed in the spec section 10 plus:
+initial direction is planner-chosen at grid entry (an edge snap would
+otherwise walk out of bounds on the first move).
+
 ## Mission skeleton architecture adopted (2026-07-14)
 
 Team skeleton (docs/mission_skeleton.py) becomes the target interface:
