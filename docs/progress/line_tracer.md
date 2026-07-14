@@ -2,6 +2,17 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Intersection pulse detector (2026-07-14)
+
+New IntersectionDetector in perception.py (additive): fires exactly one
+pulse per physical grid crossing via an enter/exit hysteresis band on
+the crossing line's center offset (40/90 px at 640x400, ~2 m alt), and
+reports forward/left/right/backward branch flags from the Hough
+segments at the firing frame. Re-arms only when the crossing is SEEN
+beyond the exit band, so a one-frame Hough miss cannot double-count.
+Branch flags are labeled for positive-axis travel; the mission layer
+owns the X_NEG/Y_NEG flip. 30 synthetic-image tests; suite at 232.
+
 ## Mission skeleton architecture adopted (2026-07-14)
 
 Team skeleton (docs/mission_skeleton.py) becomes the target interface:

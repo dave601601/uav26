@@ -374,3 +374,237 @@ def draw_debug_overlay(
             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA,
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Intersection (grid-crossing) detection
+# ---------------------------------------------------------------------------
+#
+# The drone follows one white grid line with yaw locked, so the followed line
+# and the crossing line have fixed image orientations that depend only on the
+# body axis of travel:
+#   travel_axis 'x' (moving +/-x_body): followed line is vertical in the image,
+#                 crossing lines are horizontal.
+#   travel_axis 'y' (sideways strafe, moving +/-y_body): followed line is
+#                 horizontal, crossing lines are vertical.
+# The caller passes the already-classified Hough sets (lines_vertical,
+# lines_horizontal) from `classify_lines`, so this stage owns only the pulse
+# state machine and the branch geometry, not the Canny/Hough tuning.
+
+
+def _seg_length(line: Tuple[int, int, int, int]) -> float:
+    x1, y1, x2, y2 = line
+    return hypot(x2 - x1, y2 - y1)
+
+
+def _line_intersection(
+    l1: Tuple[int, int, int, int], l2: Tuple[int, int, int, int]
+) -> Optional[Tuple[float, float]]:
+    """Intersection of two infinite lines through the given segments.
+
+    Returns None when the lines are (near) parallel, which for a followed
+    vs crossing pair means one of them was misclassified.
+    """
+    x1, y1, x2, y2 = l1
+    x3, y3, x4, y4 = l2
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-9:
+        return None
+    a = x1 * y2 - y1 * x2
+    b = x3 * y4 - y3 * x4
+    px = (a * (x3 - x4) - (x1 - x2) * b) / denom
+    py = (a * (y3 - y4) - (y1 - y2) * b) / denom
+    return px, py
+
+
+@dataclass(frozen=True)
+class IntersectionConfig:
+    """Pixel thresholds for the crossing pulse, tuned for a 640x400 downward
+    frame at ~2 m altitude with fx~fy in 500-1000 and 3 m grid cells. At that
+    scale one pixel is roughly alt/f = 2-4 mm on the ground and the 3 m cell
+    spacing (>=750 px) means only one crossing line is ever near the center,
+    so a simple nearest-line + one-shot band works.
+    """
+
+    # Crossing must reach within this of the image center (|offset| < enter_px)
+    # to fire: ~8-16 cm half-band, a few white-line widths, wide enough that at
+    # cruise <=1 m/s and >=15 Hz the crossing lands inside it on several frames.
+    enter_px: float = 40.0
+    # Crossing must then pass beyond this (|offset| > exit_px) before the next
+    # pulse is allowed: ~18-36 cm, comfortably past the line and its Hough
+    # fragments so centroid jitter cannot re-arm mid-junction. Must exceed enter_px.
+    exit_px: float = 90.0
+    # An endpoint within this of the junction counts as not extending, so a
+    # T-stem that merely touches the bar is not read as crossing through.
+    branch_margin_px: float = 15.0
+    # Ignore crossing candidates shorter than this: a real grid crossing spans
+    # much of the frame, so this rejects stray Hough fragments near the center.
+    min_crossing_length_px: float = 40.0
+
+    def __post_init__(self) -> None:
+        if not self.exit_px > self.enter_px:
+            raise ValueError(
+                f"exit_px ({self.exit_px}) must exceed enter_px ({self.enter_px})"
+            )
+
+
+@dataclass
+class IntersectionEvent:
+    """Result of one `IntersectionDetector.update` call.
+
+    `detected` is the pulse: true for exactly one frame per physical crossing
+    (see the class docstring). `forward/backward/left/right` are meaningful only
+    on the firing frame and are relative to the travel direction (see
+    `IntersectionDetector`). The rest are diagnostics for the debug overlay.
+    """
+
+    detected: bool = False
+    forward: bool = False
+    left: bool = False
+    right: bool = False
+    backward: bool = False
+    # Diagnostics (debug overlay / logging; consumer may ignore):
+    crossing_line: Optional[Tuple[int, int, int, int]] = None
+    offset_px: Optional[float] = None   # signed offset of the crossing from center
+    armed: bool = True                  # detector state after this update
+
+
+class IntersectionDetector:
+    """Stateful pulse detector for grid crossings (hysteresis across frames).
+
+    Feed it the classified Hough sets each frame; it emits `detected=True` for
+    exactly one frame per physical crossing. A crossing (the grid line
+    perpendicular to travel) fires when its signed offset from the image center
+    enters the band |offset| < enter_px while the detector is armed, and the
+    detector only re-arms after seeing the crossing leave the wider band
+    |offset| > exit_px. It does not re-arm merely because the crossing dropped
+    out of view, so a one-frame Hough miss right after firing cannot double-count.
+
+    Branch flags are labeled relative to the positive body axis being forward:
+    for travel_axis 'x', forward is +x_body (image up) and left is +y_body
+    (image left); for 'y', forward is +y_body (image left) and left is -x_body
+    (image down). Yaw is locked, so this image-to-body mapping is fixed. A
+    caller moving in the negative direction (X_NEG / Y_NEG) swaps forward with
+    backward and left with right; the detector cannot recover travel sign from
+    vision alone, so it reports the +axis convention and leaves that flip to the
+    mission layer, which knows the commanded MoveDirection.
+    """
+
+    def __init__(self, cfg: Optional[IntersectionConfig] = None) -> None:
+        self.cfg = cfg or IntersectionConfig()
+        self._armed = True
+
+    @property
+    def armed(self) -> bool:
+        return self._armed
+
+    def reset(self) -> None:
+        """Re-arm and forget history (e.g. after a direction change)."""
+        self._armed = True
+
+    def update(
+        self,
+        lines_vertical: Sequence[Tuple[int, int, int, int]],
+        lines_horizontal: Sequence[Tuple[int, int, int, int]],
+        travel_axis: str,
+        intr: CameraIntrinsics,
+    ) -> IntersectionEvent:
+        cx, cy = intr.principal_point()
+        if travel_axis == "x":
+            followed_lines, crossing_lines = lines_vertical, lines_horizontal
+        elif travel_axis == "y":
+            followed_lines, crossing_lines = lines_horizontal, lines_vertical
+        else:
+            raise ValueError(f"travel_axis must be 'x' or 'y', got {travel_axis!r}")
+
+        crossing = self._pick_crossing(crossing_lines, cx, cy)
+        followed = pick_nearest_line(followed_lines, cx, cy)
+
+        offset: Optional[float] = None
+        if crossing is not None:
+            if travel_axis == "x":
+                offset = _signed_perp_dv(crossing, cx, cy)   # + when below center
+            else:
+                offset = _signed_perp_du(crossing, cx, cy)   # + when right of center
+
+        # Re-arm only on a crossing seen beyond the exit band, never on a mere
+        # dropout, so a flicker right after firing cannot re-trigger.
+        if offset is not None and abs(offset) > self.cfg.exit_px:
+            self._armed = True
+
+        detected = False
+        fwd = bwd = left = right = False
+        if self._armed and offset is not None and abs(offset) < self.cfg.enter_px:
+            detected = True
+            self._armed = False
+            fwd, bwd, left, right = self._branch_flags(
+                crossing, followed, travel_axis, cx, cy
+            )
+
+        return IntersectionEvent(
+            detected=detected,
+            forward=fwd,
+            left=left,
+            right=right,
+            backward=bwd,
+            crossing_line=crossing,
+            offset_px=offset,
+            armed=self._armed,
+        )
+
+    def _pick_crossing(
+        self,
+        lines: Sequence[Tuple[int, int, int, int]],
+        cx: float,
+        cy: float,
+    ) -> Optional[Tuple[int, int, int, int]]:
+        best: Optional[Tuple[int, int, int, int]] = None
+        best_d = float("inf")
+        for ln in lines:
+            if _seg_length(ln) < self.cfg.min_crossing_length_px:
+                continue
+            d = _abs_perp_distance(ln, cx, cy)
+            if d < best_d:
+                best_d = d
+                best = ln
+        return best
+
+    def _branch_flags(
+        self,
+        crossing: Tuple[int, int, int, int],
+        followed: Optional[Tuple[int, int, int, int]],
+        travel_axis: str,
+        cx: float,
+        cy: float,
+    ) -> Tuple[bool, bool, bool, bool]:
+        """Which of forward/backward/left/right have a line segment leaving the
+        junction, from the Hough endpoints. See the class docstring for the sign
+        convention. Returns (forward, backward, left, right).
+        """
+        margin = self.cfg.branch_margin_px
+        junction = _line_intersection(followed, crossing) if followed is not None else None
+        jx, jy = junction if junction is not None else (cx, cy)
+
+        cxs = (crossing[0], crossing[2])
+        cys = (crossing[1], crossing[3])
+        fwd = bwd = left = right = False
+        if travel_axis == "x":
+            # Crossing is horizontal: it can reach body-left (image -u) or
+            # body-right (image +u) of the junction.
+            left = min(cxs) < jx - margin
+            right = max(cxs) > jx + margin
+            # Followed is vertical: forward is image up (-v), backward image down.
+            if followed is not None:
+                fys = (followed[1], followed[3])
+                fwd = min(fys) < jy - margin
+                bwd = max(fys) > jy + margin
+        else:
+            # Crossing is vertical: body-left is image down (+v), body-right up.
+            left = max(cys) > jy + margin
+            right = min(cys) < jy - margin
+            # Followed is horizontal: forward is image left (-u), backward right.
+            if followed is not None:
+                fxs = (followed[0], followed[2])
+                fwd = min(fxs) < jx - margin
+                bwd = max(fxs) > jx + margin
+        return fwd, bwd, left, right
