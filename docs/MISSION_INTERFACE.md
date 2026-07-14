@@ -118,8 +118,9 @@ metric and radians; the Jetson converts pixels to meters with
 | node_x, node_y | i8 | grid index | telemetry/logging |
 | move_direction | u8 | MoveDirection | selects travel axis |
 | target_altitude | u16 | cm, 0..10 m | |
-| line_lateral_error | i16 Q14 | m, clamp +/-2.0 | signed perpendicular position of the followed line relative to the drone, in the body axis perpendicular to travel: +y_body when traveling +/-x, +x_body when traveling +/-y. Jetson mapping: -du*alt/fx (x-travel), -dv*alt/fy (y-travel). |
-| line_angle_error | i16 Q14 | rad, FLU +CCW | line direction vs travel axis (perception psi_err) |
+| line_dx | i16 Q14 | m, clamp +/-2.0 | vertical-line offset: signed body +y position of the nearest vertical grid line relative to the drone. Jetson mapping: -du*alt/fx. 0 when absent (see flags bit0). |
+| line_dy | i16 Q14 | m, clamp +/-2.0 | horizontal-line offset: signed body +x position of the nearest horizontal grid line. Jetson mapping: -dv*alt/fy. 0 when absent (see flags bit1). |
+| line_angle_error | i16 Q14 | rad, FLU +CCW | followed-line direction vs travel axis (Jetson selects the line by travel axis; angle only) |
 | marker_error_x | i16 Q14 | m, body +x | -(v-cy)*alt/fy |
 | marker_error_y | i16 Q14 | m, body +y | -(u-cx)*alt/fx |
 | marker_yaw_error | i16 Q14 | rad | 0 for now (centering only) |
@@ -127,8 +128,17 @@ metric and radians; the Jetson converts pixels to meters with
 | marker_id | i8 | -1 = none | |
 | line_confidence | u8 | 0..255 | |
 | marker_confidence | u8 | 0..255 | |
-| flags | u8 | bit0 line_visible, bit1 intersection_detected, bit2 fwd, bit3 left, bit4 right, bit5 back, bit6 marker_detected, bit7 emergency | |
-| flags2 | u8 | bit0 vel_est_valid | rest reserved |
+| flags | u8 | bit0 vertical_line, bit1 horizontal_line, bit2 intersection_detected, bit3 fwd, bit4 left, bit5 right, bit6 back, bit7 marker_detected | line presence per axis (the [dx, dy, flag] contract) |
+| flags2 | u8 | bit0 vel_est_valid, bit1 emergency | rest reserved |
+
+Line information is deliberately sent as the full [dx, dy, flag]
+triple — both grid-line offsets plus per-line presence bits — rather
+than a single travel-axis-selected lateral error. The MCU picks the
+error for its FOLLOW_LINE law by move_direction (dx for +/-x travel,
+dy for +/-y travel) and checks the matching presence bit; the Jetson
+does no axis selection for offsets (angle_error is the one
+travel-selected value, since it comes from the followed line's
+orientation in the image).
 
 Wire framing follows the existing protocol style: magic `0xA6`,
 version, payload above, CRC16-CCITT trailer, little-endian, fixed
@@ -169,7 +179,7 @@ Mode behavior table:
 | ControlMode | xy source | z target | notes |
 |---|---|---|---|
 | HOLD | zero velocity | target_altitude | |
-| FOLLOW_LINE | cruise + lateral + angle | target_altitude | line_visible=0 -> HOLD behavior |
+| FOLLOW_LINE | cruise + lateral + angle | target_altitude | lateral error = line_dx for +/-x travel, line_dy for +/-y travel; missing presence bit for that axis -> HOLD behavior |
 | ALIGN_MARKER | marker errors | target_altitude | marker_detected=0 -> HOLD (covers TAKEOFF climb) |
 | SEARCH_LINE / MOVE_TO_LANDMARK | slow cruise in move_direction | target_altitude | |
 | LAND_ON_MARKER | marker errors | descend (land law) | cutoff -> disarm |
@@ -216,3 +226,6 @@ Control() stale fallback stays the safety net.
 5. Battery/RC failsafe thresholds kept, values stubbed healthy in sim.
 6. `time.time()` -> injected `now` (sim time; testability).
 7. print() -> injected logger.
+8. Line info is the [dx, dy, flag] triple (both line offsets + per-line
+   presence bits, user requirement) instead of the skeleton's single
+   visible/lateral_error pair; the MCU selects by move_direction.
