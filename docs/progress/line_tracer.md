@@ -2,6 +2,41 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## First skeleton-backend flight: r77 + debugging state (2026-07-14, IN PROGRESS)
+
+r77 (600 s, seed 42) flew the skeleton pipeline live: TAKEOFF ->
+LOCALIZE -> ENTER_GRID -> EXPLORE, 20 node advances by intersection
+pulses, correct serpentine turn at the row end, zero gz aborts. Two
+defects found:
+
+1. Node off-by-one. The ENTER_GRID snap picks the NEAREST node
+   (DR (2.0, 3.0) -> node (1,1) at world (3,3)) although the x=3 line
+   has not been crossed yet, so the first pulse double-advances and
+   nominal x leads DR by one cell for the whole run. Fix (not yet
+   applied): snap the travel axis to the node BEHIND the drone (floor
+   for positive travel, ceil for negative), perpendicular axis nearest.
+
+2. Lateral oscillation (serious). Along the y=3 row, DR y went 3.00 ->
+   3.29 -> 2.44 -> 1.96: a growing oscillation that leaves the line
+   footprint. Debug findings so far (instrumented run): the MCU
+   velocity loop IS closed and correct (vel_valid=1, vy_body tracks
+   truth, roll matches the law) — open-loop hypothesis disproven. The
+   oscillation period (~20 s) matches the grid-crossing interval
+   (3 m / 0.13 m/s), and line_dx spikes to 0.8+ m exactly at crossings
+   (horizontal flag set): perception injects a lateral kick at each
+   junction — junction Hough fragments misclassified as the followed
+   line, or the nearest-line pick jumping. Next step: denser logging
+   with true position to pin the injection point, then filter the
+   followed-line pick near crossings (e.g. hold the previous line
+   while the crossing is inside the center band).
+
+Effective forward speed was 0.07-0.14 m/s vs commanded 0.2 (velocity
+loop is honest, unlike the legacy open-loop path that accelerated to
+~2 m/s) — full-sweep missions need a cruise decision later.
+Uncommitted: temporary velocity-loop diagnostics in fc_sim_node.cpp
+(+15 lines), kept for the resumed session. Debugging was interrupted
+by the Claude session usage limit.
+
 ## Skeleton pipeline integrated end-to-end (2026-07-14)
 
 line_tracer_node gains mission_backend = skeleton (default) | legacy.
