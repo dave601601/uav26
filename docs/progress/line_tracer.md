@@ -2,6 +2,25 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## r78: full mission on the skeleton backend, 4/4 exact records (2026-07-17)
+
+r78 (1800 sim s cap, seed 42) ran the fixed pipeline through the whole
+search phase: serpentine EXPLORE with node counting, all four markers
+recorded EXACTLY at their ground-truth intersections (id 8 (24,18),
+14 (3,6), 15 (6,6), 17 (21,15) — marker-confirm DR snap lands the node
+every time), rescue path planned in ascending ID order
+(8 -> 14 -> 15 -> 17 -> home) and walked with ~0.22 m node-vs-DR
+agreement. The run hit the time cap mid-rescue (~24 nodes + LAND
+remaining), so LAND/FINISHED on the skeleton backend is still
+unverified in flight (the land law itself is gtest-covered and shared
+with the exercised code path). Zero gz aborts.
+
+Timing reality check: cruise 0.2 m/s is now honestly enforced by the
+MCU velocity loop, so the full-arena sweep alone costs ~1300 sim s
+(the legacy path's apparent speed was the open-loop acceleration
+defect, and row-skip is parked with the side camera). Raising the
+mission cruise gain and porting row-skip are the two speed levers.
+
 ## r77 defects root-caused and fixed; dbg2 verifies (2026-07-14..17)
 
 r77 (600 s, seed 42) flew the skeleton pipeline live and exposed two
