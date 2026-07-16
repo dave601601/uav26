@@ -186,11 +186,14 @@ public:
                 (float)this->declare_parameter<double>("atti_kd_roll",  0.20),
                 (float)this->declare_parameter<double>("atti_kd_pitch", 0.20),
                 0.0f);
-            // Squash the firmware's SBUS-centering deadband so the
-            // companion's precise setpoints reach the rate loop. 0.001
-            // = 1 mrad/s of rate deadband.
-            fc_rate_deadband_factor = (float)this->declare_parameter<double>("rate_deadband", 0.001);
-            fc_atti_deadband_factor = (float)this->declare_parameter<double>("atti_deadband", 0.001);
+            // Remove the firmware's SBUS-centering deadband entirely: it
+            // zeroes SETPOINTS below the bound (measurement noise passes
+            // regardless), and there are no sticks in sim. Even 0.001
+            // (3 mrad/s of rate deadband) left a +/-7.5 mrad attitude
+            // dead zone that turned mission FOLLOW_LINE trim commands
+            // into a +/-0.4 m lateral limit cycle.
+            fc_rate_deadband_factor = (float)this->declare_parameter<double>("rate_deadband", 0.0);
+            fc_atti_deadband_factor = (float)this->declare_parameter<double>("atti_deadband", 0.0);
             RCLCPP_INFO(get_logger(),
                 "sim retune: pid_rate.kp=(%.2f,%.2f,%.2f) ki=0; "
                 "pid_euler.kp=(%.2f,%.2f,0) kd=(%.2f,%.2f,0)",

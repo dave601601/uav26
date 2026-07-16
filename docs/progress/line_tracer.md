@@ -2,40 +2,58 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
-## First skeleton-backend flight: r77 + debugging state (2026-07-14, IN PROGRESS)
+## r77 defects root-caused and fixed; dbg2 verifies (2026-07-14..17)
 
-r77 (600 s, seed 42) flew the skeleton pipeline live: TAKEOFF ->
-LOCALIZE -> ENTER_GRID -> EXPLORE, 20 node advances by intersection
-pulses, correct serpentine turn at the row end, zero gz aborts. Two
-defects found:
+r77 (600 s, seed 42) flew the skeleton pipeline live and exposed two
+defects. Both are fixed and verified in dbg2 (400 s, same seed).
 
-1. Node off-by-one. The ENTER_GRID snap picks the NEAREST node
-   (DR (2.0, 3.0) -> node (1,1) at world (3,3)) although the x=3 line
-   has not been crossed yet, so the first pulse double-advances and
-   nominal x leads DR by one cell for the whole run. Fix (not yet
-   applied): snap the travel axis to the node BEHIND the drone (floor
-   for positive travel, ceil for negative), perpendicular axis nearest.
+1. Node off-by-one. The ENTER_GRID snap picked the NEAREST node
+   (DR (2.0, 3.0) -> node (1,1)) although the x=3 line was not yet
+   crossed, so the first pulse double-advanced and nominal x led DR by
+   one cell all run. Fix: GridMap.entry_node — travel axis takes the
+   last line already crossed (floor for positive travel, ceil for
+   negative), perpendicular axis nearest; used only at the ENTER_GRID
+   snap (marker-confirm snap stays nearest). dbg2: snap lands (0,1),
+   all 14 [GRID] advances agree with DR within 0.24 m (the pulse fires
+   at the detector enter-band, slightly before the node).
 
-2. Lateral oscillation (serious). Along the y=3 row, DR y went 3.00 ->
-   3.29 -> 2.44 -> 1.96: a growing oscillation that leaves the line
-   footprint. Debug findings so far (instrumented run): the MCU
-   velocity loop IS closed and correct (vel_valid=1, vy_body tracks
-   truth, roll matches the law) — open-loop hypothesis disproven. The
-   oscillation period (~20 s) matches the grid-crossing interval
-   (3 m / 0.13 m/s), and line_dx spikes to 0.8+ m exactly at crossings
-   (horizontal flag set): perception injects a lateral kick at each
-   junction — junction Hough fragments misclassified as the followed
-   line, or the nearest-line pick jumping. Next step: denser logging
-   with true position to pin the injection point, then filter the
-   followed-line pick near crossings (e.g. hold the previous line
-   while the crossing is inside the center band).
+2. Lateral divergence on the followed row (r77: y 3.00 -> 3.29 -> 1.96,
+   leaves the footprint). Instrumented runs disproved the suspects in
+   order: the MCU velocity loop IS closed and sign-correct (vel_valid=1,
+   vy_body tracks truth, roll matches the law); command age << 300 ms;
+   perception line_dx tracks the true offset within ~0.05 m even across
+   junctions (the earlier "junction kick" reading was the real error,
+   not a perception artifact). The actual causes, measured:
 
-Effective forward speed was 0.07-0.14 m/s vs commanded 0.2 (velocity
-loop is honest, unlike the legacy open-loop path that accelerated to
-~2 m/s) — full-sweep missions need a cruise decision later.
-Uncommitted: temporary velocity-loop diagnostics in fc_sim_node.cpp
-(+15 lines), kept for the resumed session. Debugging was interrupted
-by the Claude session usage limit.
+   a. Gain mismatch vs the legacy loop (H4). Logging actual vs
+      commanded roll showed the attitude cascade lags roll_sp by
+      ~1.4 s at ~0.4x amplitude at the loop frequency — and the
+      mission FOLLOW_LINE law demanded kp_xy=0.8 lateral stiffness
+      (ωn ≈ 0.9 rad/s) that this actuator cannot follow: negative
+      damping, x1.85 growth per half-cycle, ~10 s limit cycle bounded
+      only by losing the line at |dx| ≈ 1.3 m. The legacy waypoint law
+      never flew that stiffness: its ~2.4 m/s raw along-track demand
+      saturated the max_vxy vector clamp, squeezing the effective
+      lateral gain to ~0.13-0.2. Fix at the point of truth:
+      fc_mission_gains.kp_xy default 0.8 -> 0.2 (mission_ctrl.c, doc
+      note in MISSION_INTERFACE section 7, gtest regression pins that
+      a 1 m line offset no longer saturates the clamp).
+
+   b. Setpoint deadband dead zone. With kp_xy=0.2 a bounded +-0.4 m
+      limit cycle remained: the sim's rate_deadband 0.001 zeroes rate
+      setpoints below 3 mrad/s, i.e. attitude commands below 7.5 mrad,
+      i.e. FOLLOW_LINE trim corrections below ~0.37 m of offset. The
+      deadband exists for SBUS stick centering (no sticks in sim) and
+      gates only the setpoint, not the noise path — sim defaults now
+      0.0 (fc_sim_node). This also explained the forward-speed deficit:
+      0.126 m/s was the dead-zone boundary of the pitch trim
+      (0.1*(0.2-v) < 7.5 mrad), not drag.
+
+   dbg2 (400 s): first X_POS leg y in [3.000, 3.060] over 28 m
+   (residual +0.05 m = known one-pixel line-edge bias), return X_NEG
+   row y in [5.80, 6.21], serpentine turn clean, cruise realized at
+   0.200 m/s sim-time (was 0.07-0.14). Suites: fc_core 43 gtests,
+   line_tracer 265 pytest, all green.
 
 ## Skeleton pipeline integrated end-to-end (2026-07-14)
 

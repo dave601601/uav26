@@ -61,8 +61,13 @@ X_POS=0 X_NEG=1 Y_POS=2 Y_NEG=3   (body FLU: +x forward, +y left)
   1. Logging: every node update / state change logs
      `node=(i,j) -> nominal (x,y) m, dr=(x,y) m` using the DR estimate.
   2. Snap corrections:
-     - ENTER_GRID -> EXPLORE: `home_node = current_node =` grid node
-       nearest to the DR position (one-time initialization).
+     - ENTER_GRID -> EXPLORE: `home_node = current_node =` the grid-entry
+       node (one-time initialization): on the travel axis the last line
+       already crossed (floor of the DR coordinate for positive travel,
+       ceil for negative), on the perpendicular axis the nearest line.
+       Snapping to the nearest node on the travel axis indexed one cell
+       ahead whenever the drone had not yet crossed the nearest line, and
+       every later node update inherited the offset (r77).
      - MARKER_CONFIRM completion: the drone has spent 3 s centering on
        a marker that sits ON an intersection, so
        `current_node =` node nearest to the DR position, and the marker
@@ -160,8 +165,8 @@ fc_mission_tick(cmd,            /* latest decoded McuCommand        */
     -> writes COMP (roll_sp, pitch_sp, yawrate_sp, thrust_norm, arm)
 ```
 
-It ports the two Python laws verbatim (same gains, same defaults,
-from `dead_reckoning.py`):
+It ports the two Python laws verbatim (same gains and defaults as
+`dead_reckoning.py`, except `kp_xy`, see below):
 
 1. `compute_body_velocity`: v_along = cruise (MCU param) in the
    commanded MoveDirection axis; v_perp = kp_xy * line_lateral_error
@@ -173,6 +178,14 @@ from `dead_reckoning.py`):
    takeoff burst below takeoff_z_threshold, LAND descent on
    land_descent_vz with land_cutoff_alt thrust cut,
    yawrate_sp = -wz (FLU -> NED, the sign the whole fleet depends on).
+
+`kp_xy` defaults to 0.2 on the MCU, not the Jetson's 0.8. The legacy
+waypoint law pushed kp_xy * (distance to a waypoint ~3 m away) through
+the max_vxy vector clamp, which scaled the lateral component down to an
+effective gain of ~0.13-0.2; FOLLOW_LINE's constant cruise removes that
+squeeze, so a raw 0.8 is a 4-6x stiffer lateral loop than the legacy
+path ever flew and diverges against the attitude loop's response lag
+(r77 weave). 0.2 restores the flown effective stiffness.
 
 Mode behavior table:
 

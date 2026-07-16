@@ -159,8 +159,36 @@ def test_enter_grid_snaps_home_from_dr():
     m.state = MissionState.ENTER_GRID
     m.step(0.0, _sensors(dr_x=3.1, dr_y=0.0), _perception(line_visible=True))
     assert m.state == MissionState.EXPLORE
-    assert m.current_node == Node(1, 0)     # DR (3.1, 0) -> node (1, 0)
+    assert m.current_node == Node(1, 0)     # x=3 line already crossed at 3.1
     assert m.home_node == Node(1, 0)
+
+
+def test_enter_grid_snap_takes_node_behind_travel():
+    """r77 off-by-one: DR (2.0, 3.0) traveling X_POS had NOT crossed x=3
+    yet, so the entry snap must pick (0, 1) — the line behind — and the
+    first intersection pulse then lands on (1, 1), the line ahead."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.ENTER_GRID
+    m.move_direction = MoveDirection.X_POS
+    m.step(0.0, _sensors(dr_x=2.0, dr_y=3.0), _perception(line_visible=True))
+    assert m.state == MissionState.EXPLORE
+    assert m.current_node == Node(0, 1)
+    assert m.home_node == Node(0, 1)
+
+    m.step(1.0, _sensors(dr_x=3.0, dr_y=3.0), _perception(intersection=True))
+    assert m.current_node == Node(1, 1)
+
+
+def test_entry_node_direction_semantics():
+    g = GridMap(11, 8, cell_size_m=3.0, logger=_null)
+    # Travel axis: floor for positive travel, ceil for negative.
+    assert g.entry_node(2.0, 3.0, MoveDirection.X_POS) == Node(0, 1)
+    assert g.entry_node(2.0, 3.0, MoveDirection.X_NEG) == Node(1, 1)
+    assert g.entry_node(3.0, 4.0, MoveDirection.Y_POS) == Node(1, 1)
+    assert g.entry_node(3.0, 4.0, MoveDirection.Y_NEG) == Node(1, 2)
+    # Perpendicular axis keeps nearest; results clamp into bounds.
+    assert g.entry_node(2.9, 1.6, MoveDirection.X_POS) == Node(0, 1)
+    assert g.entry_node(-1.0, -1.0, MoveDirection.X_POS) == Node(0, 0)
 
 
 def test_explore_intersection_advances_node_and_turns_at_edge():

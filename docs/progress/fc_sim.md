@@ -4,6 +4,17 @@ ROS2 C++ wrapper around `fc_core` that flies the simulated drone in Gazebo Harmo
 
 ## Done (recent)
 
+### Sim setpoint deadband removed (2026-07-17)
+
+rate_deadband / atti_deadband defaults 0.001 -> 0.0. The firmware
+deadband zeroes SETPOINTS below the bound (the measurement/noise path
+is unaffected) and exists for SBUS stick centering — no sticks in sim.
+At 0.001 it zeroed rate setpoints below 3 mrad/s = attitude commands
+below 7.5 mrad, which turned mission FOLLOW_LINE trim into a +-0.4 m
+lateral limit cycle and capped forward speed at 0.126 m/s (the pitch
+trim's dead-zone boundary, previously misread as drag). Evidence in
+[line_tracer](line_tracer.md).
+
 ### Prime altitude hold, disarm path, single-writer guard (2026-07-08)
 
 - Auto-hover prime is now a real altitude hold (rate-limited descent

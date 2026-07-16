@@ -35,6 +35,7 @@ from __future__ import annotations
 from collections import Counter, deque
 from dataclasses import dataclass
 from enum import IntEnum
+from math import ceil, floor
 from typing import Callable, Dict, List, Optional, Tuple
 
 
@@ -358,6 +359,30 @@ class GridMap:
         j = max(0, min(self.node_count_y - 1, j))
         return Node(i, j)
 
+    def entry_node(self, x: float, y: float, direction: MoveDirection) -> Node:
+        """World meters -> the grid-entry node, given the travel direction.
+
+        On the travel axis take the last grid line already crossed (floor
+        for positive travel, ceil for negative); on the perpendicular axis
+        take the nearest line. Snapping to the NEAREST node on the travel
+        axis put the index one cell ahead whenever the drone had not yet
+        crossed the nearest line, so the first intersection pulse landed a
+        full cell in front of the physical position (r77)."""
+
+        ti = x / self.cell_size_m
+        tj = y / self.cell_size_m
+        if direction == MoveDirection.X_POS:
+            i, j = floor(ti), round(tj)
+        elif direction == MoveDirection.X_NEG:
+            i, j = ceil(ti), round(tj)
+        elif direction == MoveDirection.Y_POS:
+            i, j = round(ti), floor(tj)
+        else:
+            i, j = round(ti), ceil(tj)
+        i = max(0, min(self.node_count_x - 1, i))
+        j = max(0, min(self.node_count_y - 1, j))
+        return Node(i, j)
+
     # -------- adjacency ---------------------------------------------------
 
     def are_adjacent(self, a: Node, b: Node) -> bool:
@@ -639,6 +664,16 @@ class MissionManager:
             return self.current_node
         return self.grid_map.nearest_node(dx, dy)
 
+    def _entry_node_from_dr(self) -> Node:
+        """Grid-entry node from DR: behind the drone along move_direction
+        on the travel axis, nearest on the perpendicular axis. current_node
+        when DR is None."""
+
+        dx, dy = self._last_dr
+        if dx is None or dy is None:
+            return self.current_node
+        return self.grid_map.entry_node(dx, dy, self.move_direction)
+
     # -------- main tick ---------------------------------------------------
 
     def update(
@@ -675,8 +710,10 @@ class MissionManager:
         if self.state == MissionState.ENTER_GRID:
             # First grid line found: snap the node index from DR (one-time
             # init), pick a safe first direction, then start exploring.
+            # The entry snap takes the node BEHIND the drone on the travel
+            # axis so the first pulse advances onto the line actually ahead.
             if perception.line.has_vertical or perception.line.has_horizontal:
-                start = self._snap_node_from_dr() if self._last_dr[0] is not None else Node(0, 0)
+                start = self._entry_node_from_dr() if self._last_dr[0] is not None else Node(0, 0)
                 self.current_node = start
                 self.home_node = start
                 self.grid_map.mark_node_visited(start)

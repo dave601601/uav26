@@ -70,7 +70,7 @@ TEST_F(MissionCtrl, FollowLineXTravelUsesLineDx) {
        line_dy is the wrong-axis offset and must be ignored. */
     fc_proto_mission_t c = make_cmd(FC_CTRL_FOLLOW_LINE, true);
     c.move_direction = FC_DIR_X_POS;
-    c.line_dx = 0.5f;               /* +y_body demand */
+    c.line_dx = 2.0f;               /* +y_body demand (wire clamp max) */
     c.line_dy = 9.0f;               /* wrong axis -> ignored */
     c.line_angle_error = 0.1f;      /* +CCW */
     c.flags = FC_PROTO_MFLAG_VERTICAL_LINE;
@@ -78,7 +78,7 @@ TEST_F(MissionCtrl, FollowLineXTravelUsesLineDx) {
 
     fc_mission_tick(&c, &m, 0.02f);
 
-    /* vx=cruise=0.2, vy=kp_xy*0.5=0.4, |v|=0.447 -> clamp to 0.4:
+    /* vx=cruise=0.2, vy=kp_xy*2.0=0.4, |v|=0.447 -> clamp to 0.4:
        vx=0.17889, vy=0.35777. Open-loop: pitch=vx/g, roll=-vy/g. */
     EXPECT_NEAR(COMP.pitch_sp,  0.17889f / G, 1e-4f);
     EXPECT_NEAR(COMP.roll_sp,  -0.35777f / G, 1e-4f);
@@ -94,19 +94,40 @@ TEST_F(MissionCtrl, FollowLineYTravelUsesLineDy) {
        line_dx is the wrong-axis offset and must be ignored. */
     fc_proto_mission_t c = make_cmd(FC_CTRL_FOLLOW_LINE, true);
     c.move_direction = FC_DIR_Y_POS;
-    c.line_dy = 0.5f;               /* +x_body demand */
+    c.line_dy = 2.0f;               /* +x_body demand (wire clamp max) */
     c.line_dx = 9.0f;               /* wrong axis -> ignored */
     c.flags = FC_PROTO_MFLAG_HORIZONTAL_LINE;
     fc_mission_meas_t m = make_meas(2.0f, 0.0f, false);
 
     fc_mission_tick(&c, &m, 0.02f);
 
-    /* vy=cruise=0.2, vx=kp_xy*0.5=0.4, |v|=0.447 -> clamp to 0.4:
+    /* vy=cruise=0.2, vx=kp_xy*2.0=0.4, |v|=0.447 -> clamp to 0.4:
        vx=0.35777, vy=0.17889. Open-loop: pitch=vx/g, roll=-vy/g. */
     EXPECT_NEAR(COMP.pitch_sp,  0.35777f / G, 1e-4f);
     EXPECT_NEAR(COMP.roll_sp,  -0.17889f / G, 1e-4f);
     EXPECT_GT(COMP.pitch_sp, 0.0f);            /* +x_body demand from line_dy -> +pitch */
     EXPECT_LT(COMP.roll_sp,  0.0f);            /* +y cruise -> -roll */
+}
+
+TEST_F(MissionCtrl, FollowLineLateralGainKeepsCruiseThroughClamp) {
+    /* Regression for the r77 lateral divergence. At a 1 m line offset
+       (typical worst in-view error at 2 m altitude) the lateral demand
+       kp_xy*1.0 must not saturate the max_vxy vector clamp: the clamp
+       preserves direction, so a saturating lateral demand also cuts the
+       forward cruise. With the old kp_xy=0.8 the clamp halved vx and the
+       lateral stiffness sat far above what the attitude loop can track. */
+    fc_proto_mission_t c = make_cmd(FC_CTRL_FOLLOW_LINE, true);
+    c.move_direction = FC_DIR_X_POS;
+    c.line_dx = 1.0f;
+    c.flags = FC_PROTO_MFLAG_VERTICAL_LINE;
+    fc_mission_meas_t m = make_meas(2.0f, 0.0f, true);   /* at rest, vel loop */
+
+    fc_mission_tick(&c, &m, 0.02f);
+
+    /* Unsqueezed cruise: pitch = kp_vel*cruise = 0.02 exactly. */
+    EXPECT_NEAR(COMP.pitch_sp, 0.02f, 1e-4f);
+    /* Lateral demand stays proportional (no clamp): roll = -kp_vel*kp_xy. */
+    EXPECT_NEAR(COMP.roll_sp, -0.1f * 0.2f * 1.0f, 1e-4f);
 }
 
 TEST_F(MissionCtrl, FollowLineXTravelHoldsWithoutVerticalLine) {
@@ -144,14 +165,14 @@ TEST_F(MissionCtrl, FollowLineYTravelHoldsWithoutHorizontalLine) {
 TEST_F(MissionCtrl, AlignMarkerMarkerErrorLaw) {
     /* Velocity-loop branch, drone at rest: pitch=kp_vel*vx_cmd. */
     fc_proto_mission_t c = make_cmd(FC_CTRL_ALIGN_MARKER, true);
-    c.marker_error_x = 0.2f;
-    c.marker_error_y = -0.1f;
+    c.marker_error_x = 0.8f;
+    c.marker_error_y = -0.4f;
     c.flags = FC_PROTO_MFLAG_MARKER_DETECTED;
     fc_mission_meas_t m = make_meas(2.0f, 0.0f, true);
 
     fc_mission_tick(&c, &m, 0.02f);
 
-    /* vx=kp_xy*0.2=0.16, vy=kp_xy*-0.1=-0.08 (|v|<max, no clamp).
+    /* vx=kp_xy*0.8=0.16, vy=kp_xy*-0.4=-0.08 (|v|<max, no clamp).
        pitch=+kp_vel*0.16=0.016, roll=-kp_vel*-0.08=+0.008. */
     EXPECT_NEAR(COMP.pitch_sp, 0.016f, 1e-5f);
     EXPECT_NEAR(COMP.roll_sp,  0.008f, 1e-5f);

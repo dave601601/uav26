@@ -15,7 +15,8 @@
  *                             roll/pitch, altitude PD around hover with a
  *                             takeoff burst, and a land descent law.
  * Gains and defaults are the line_tracer node parameters and SetpointGains
- * values; see fc_mission_gains_default().
+ * values, except kp_xy (0.2, legacy-equivalent effective lateral
+ * stiffness — rationale at fc_mission_gains); see fc_mission_gains_default().
  *
  * Frames: measurements and body-velocity intent are REP-103 FLU
  * (+x forward, +y left, +z up). The FLU->NED yawrate negation

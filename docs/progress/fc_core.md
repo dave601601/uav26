@@ -4,6 +4,17 @@ Pure C library carrying the STM32 firmware controller into ROS2 land.
 
 ## Done
 
+### mission_ctrl kp_xy default 0.8 -> 0.2 (2026-07-17)
+
+The r77 lateral divergence root-caused to this gain: FOLLOW_LINE's
+constant cruise removed the vector-clamp squeeze that had limited the
+legacy waypoint law's effective lateral gain to ~0.13-0.2, so the
+ported 0.8 demanded a stiffness the attitude cascade cannot follow
+(measured ~1.4 s roll lag at 0.4x amplitude -> negative damping).
+Full evidence chain and verification in
+[line_tracer](line_tracer.md). New gtest pins that a 1 m line offset
+no longer saturates the max_vxy clamp (43 gtests green).
+
 ### Mission downlink frame + mission_ctrl outer loop (2026-07-14)
 
 Per docs/MISSION_INTERFACE.md: the MCU now owns the outer control

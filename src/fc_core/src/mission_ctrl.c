@@ -3,7 +3,8 @@
  *
  * MCU-side mission outer loop; see mission_ctrl.h for the architecture and
  * frame conventions. Ports compute_body_velocity + body_vel_to_atti_thr
- * from line_tracer/dead_reckoning.py, with the same gains and defaults.
+ * from line_tracer/dead_reckoning.py, with the same gains and defaults
+ * except kp_xy (see the note at fc_mission_gains).
  *
  * Pure C99. clampfloat / g0 / sqrtf come in through controller.h ->
  * planner.h -> linalg.h; COMP, fc_now_ms and the MODE enum from
@@ -17,10 +18,20 @@
 /* Global mission-command state; fc_proto_apply_mission fills it. */
 fc_mission_cmd_state_t MISSION = {0};
 
-/* Defaults applied at load so the module is usable without an init call. */
+/* Defaults applied at load so the module is usable without an init call.
+ *
+ * kp_xy deviates from the Jetson default (0.8) on purpose. The legacy
+ * waypoint law ran kp_xy through the max_vxy vector clamp with a raw
+ * along-track demand of ~2.4 m/s, which squeezed the effective lateral
+ * gain to ~0.13-0.2 on a 3 m leg. FOLLOW_LINE replaces that demand with
+ * the constant cruise (0.2), removing the squeeze: kp_xy=0.8 became a
+ * 4-6x stiffer lateral loop than the one ever flown, and the attitude
+ * cascade cannot follow it (r77/dbg2b: roll lags the setpoint ~1.4 s at
+ * 0.4x amplitude -> negative damping, +/-1.4 m growing weave). 0.2
+ * restores the proven effective stiffness. */
 fc_mission_gains_t fc_mission_gains = {
-    /* line_tracer node velocity-shaping defaults */
-    .kp_xy   = 0.8f,
+    /* line_tracer node velocity-shaping defaults (kp_xy: see above) */
+    .kp_xy   = 0.2f,
     .kp_yaw  = 3.0f,
     .max_vxy = 0.4f,
     .max_wz  = 2.5f,
@@ -41,7 +52,7 @@ fc_mission_gains_t fc_mission_gains = {
 
 void fc_mission_gains_default(fc_mission_gains_t* g) {
     if (!g) return;
-    g->kp_xy   = 0.8f;
+    g->kp_xy   = 0.2f;   /* legacy-equivalent effective stiffness, see above */
     g->kp_yaw  = 3.0f;
     g->max_vxy = 0.4f;
     g->max_wz  = 2.5f;
