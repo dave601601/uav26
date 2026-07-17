@@ -2,6 +2,23 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## r80: cruise 1.0 m/s — row slip at transits, 1/4 markers (2026-07-17)
+
+r80 (900 s cap, mission_cruise:=1.0 mission_max_vxy:=1.3): straight
+legs are clean at 1.0 m/s (row y=3 node-vs-DR ~0.2 m), but every
+row-to-row transit slips: the drone carries ~1 m/s of transit momentum
+into the turn, the kp_xy=0.2 lateral loop cannot brake it, and it
+slides ~2.9 m past the target row and captures the NEXT row's line —
+the grid is self-similar every 3 m, so vision cannot tell and node
+counting cannot see it (crossing pulses on the travel axis keep firing
+correctly). The mission flew row 9 believing row 6, skipped ids 15/14
+entirely, and finished the cap with 1/4 records. Notable positive: the
+marker-confirm DR snap corrected a 5.6 m node error when id 17 was
+found — the re-zero design absorbs even a full-row slip. Fix planned
+at the mission layer (no protocol change): after an axis-changing
+turn, hold until the DR velocity settles, re-acquire the line, then
+resume cruise; retest as r81.
+
 ## r79: cruise 0.5 m/s — stable, 4/4 exact, phantom rejected (2026-07-17)
 
 r79 (900 sim s cap, seed 42, mission_cruise:=0.5 mission_max_vxy:=0.8
