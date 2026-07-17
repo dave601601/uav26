@@ -290,6 +290,38 @@
         <always_on>1</always_on>
       </sensor>
 
+      <!-- ===== Forward wide camera (Sony IMX219 8MP + 120 deg lens) =====
+           Front mount, boresight +X_body depressed 45 deg. SDF rpy composes
+           R = Rz(yaw)*Ry(pitch); yaw=0, pitch=+0.7854 maps the gz-camera
+           view axis +X to (cos45, 0, -sin45) in body — same depression sign
+           convention as the sideways lookahead camera.
+           Color sensor (IMX219 is Bayer) -> R8G8B8, like the downward color
+           camera. Real sensor is 3280x2464 (8MP); sim renders 1024x768 (4:3)
+           because rendering full 8MP would wreck RTF.
+           FOV ASSUMPTION: 120 deg applied as horizontal_fov; vendors often
+           quote a wide lens' 120 as the DIAGONAL — recheck vs the datasheet. -->
+      <sensor name="front_camera" type="camera">
+        <pose>0.08 0 -0.03 0 0.7853981634 0</pose>
+        <topic>uav26_quad/camera/front/image</topic>
+        <gz_frame_id>front_optical_frame</gz_frame_id>
+        <!-- 10 Hz like the lookahead: keeps the shared sensor-render thread
+             from starving the control-critical downward camera. -->
+        <update_rate>10</update_rate>
+        <camera>
+          <horizontal_fov>2.0943951</horizontal_fov>  <!-- 120 deg in rad -->
+          <image>
+            <width>1024</width>
+            <height>768</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.05</near>
+            <far>100.0</far>
+          </clip>
+        </camera>
+        <always_on>1</always_on>
+      </sensor>
+
       <!-- IMU (line_tracer 는 사용 안 하지만 가짜 FC 가 angular rate 추정에 씀) -->
       <sensor name="imu" type="imu">
         <topic>uav26_quad/imu</topic>

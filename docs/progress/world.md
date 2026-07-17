@@ -4,6 +4,23 @@ Gazebo Harmonic simulation package: arena, drone model, sensor plugins, bridge, 
 
 ## Done (recent)
 
+### Front camera added: IMX219 8MP 120 deg, 45 deg down (2026-07-17)
+
+Hardware spec change (user, 2026-07-17): the planned additional camera
+is now a Sony IMX219 8MP module with a 120 deg wide lens, mounted at
+the body front, boresight pitched 45 deg below horizontal — replacing
+the earlier OV9281 side-camera hardware plan (the side camera stays in
+the sim model for legacy A/B). Sim sensor front_camera: pose
+(0.08, 0, -0.03), rpy (0, +45 deg, 0), color 1024x768 (real 3280x2464
+noted in the SDF), horizontal_fov 120 deg (ASSUMPTION: vendor 120 is
+usually diagonal — pending lens datasheet), 10 Hz like the lookahead.
+Bridged as /front_camera/image + /front_camera/camera_info
+(fx = fy = 295.6, matches 1024/(2 tan 60)). Measured in the headless
+container: physics RTF unaffected (~1.0); the software renderer caps
+delivery at ~4.5 Hz regardless of config, and dropping the config
+30 -> 10 Hz freed the shared render thread — the control-critical
+downward camera went from ~10-12 to 13.65 Hz.
+
 ### Marker polarity: a plain ArUco, code flush to the sheet (2026-07-09)
 
 The survey notice says "크기 : 0.4m x 0.4m" and "색상 : (바탕) 검정색,

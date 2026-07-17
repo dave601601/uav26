@@ -46,6 +46,19 @@
   gz_type_name: "gz.msgs.CameraInfo"
   direction: GZ_TO_ROS
 
+# === Forward wide camera (IMX219 120 deg model; color R8G8B8 in ROS) ===
+- ros_topic_name: "/front_camera/image"
+  gz_topic_name: "/uav26_quad/camera/front/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/front_camera/camera_info"
+  gz_topic_name: "/uav26_quad/camera/front/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
 # === IMU (디버그 / 가짜 FC 내부 사용) ===
 - ros_topic_name: "/imu"
   gz_topic_name: "/uav26_quad/imu"
