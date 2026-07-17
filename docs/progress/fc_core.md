@@ -4,6 +4,16 @@ Pure C library carrying the STM32 firmware controller into ROS2 land.
 
 ## Done
 
+### Cruise defaults promoted to 0.5 / 0.8 (2026-07-17)
+
+fc_mission_gains cruise 0.2 -> 0.5 and max_vxy 0.4 -> 0.8, the values
+flight-proven in sim; fc_sim parameter and sim.launch defaults mirror
+them, gtest expectations recomputed exactly. 1.0 m/s cruise needs a
+protocol-level deceleration concept and is future work. Coverage note:
+with kp_xy 0.2 and wire-bounded +/-2.0 line offsets, no realistic
+FOLLOW_LINE input saturates clamp_vxy under the 0.8 envelope anymore —
+add a synthetic-input clamp test when the envelope next changes.
+
 ### mission_ctrl kp_xy default 0.8 -> 0.2 (2026-07-17)
 
 The r77 lateral divergence root-caused to this gain: FOLLOW_LINE's

@@ -78,10 +78,11 @@ TEST_F(MissionCtrl, FollowLineXTravelUsesLineDx) {
 
     fc_mission_tick(&c, &m, 0.02f);
 
-    /* vx=cruise=0.2, vy=kp_xy*2.0=0.4, |v|=0.447 -> clamp to 0.4:
-       vx=0.17889, vy=0.35777. Open-loop: pitch=vx/g, roll=-vy/g. */
-    EXPECT_NEAR(COMP.pitch_sp,  0.17889f / G, 1e-4f);
-    EXPECT_NEAR(COMP.roll_sp,  -0.35777f / G, 1e-4f);
+    /* vx=cruise=0.5, vy=kp_xy*2.0=0.4, |v|=0.640 < max_vxy 0.8 -> no clamp:
+       the max encodable offset stays inside the envelope. Open-loop:
+       pitch=vx/g, roll=-vy/g. */
+    EXPECT_NEAR(COMP.pitch_sp,  0.5f / G, 1e-4f);
+    EXPECT_NEAR(COMP.roll_sp,  -0.4f / G, 1e-4f);
     EXPECT_GT(COMP.pitch_sp, 0.0f);            /* forward cruise -> nose down/+x */
     EXPECT_LT(COMP.roll_sp,  0.0f);            /* +y demand from line_dx -> -roll */
     EXPECT_NEAR(COMP.yawrate_sp, -0.3f, 1e-4f);  /* -kp_yaw*angle, FLU->NED */
@@ -101,10 +102,10 @@ TEST_F(MissionCtrl, FollowLineYTravelUsesLineDy) {
 
     fc_mission_tick(&c, &m, 0.02f);
 
-    /* vy=cruise=0.2, vx=kp_xy*2.0=0.4, |v|=0.447 -> clamp to 0.4:
-       vx=0.35777, vy=0.17889. Open-loop: pitch=vx/g, roll=-vy/g. */
-    EXPECT_NEAR(COMP.pitch_sp,  0.35777f / G, 1e-4f);
-    EXPECT_NEAR(COMP.roll_sp,  -0.17889f / G, 1e-4f);
+    /* vy=cruise=0.5, vx=kp_xy*2.0=0.4, |v|=0.640 < max_vxy 0.8 -> no clamp.
+       Open-loop: pitch=vx/g, roll=-vy/g. */
+    EXPECT_NEAR(COMP.pitch_sp,  0.4f / G, 1e-4f);
+    EXPECT_NEAR(COMP.roll_sp,  -0.5f / G, 1e-4f);
     EXPECT_GT(COMP.pitch_sp, 0.0f);            /* +x_body demand from line_dy -> +pitch */
     EXPECT_LT(COMP.roll_sp,  0.0f);            /* +y cruise -> -roll */
 }
@@ -124,8 +125,8 @@ TEST_F(MissionCtrl, FollowLineLateralGainKeepsCruiseThroughClamp) {
 
     fc_mission_tick(&c, &m, 0.02f);
 
-    /* Unsqueezed cruise: pitch = kp_vel*cruise = 0.02 exactly. */
-    EXPECT_NEAR(COMP.pitch_sp, 0.02f, 1e-4f);
+    /* Unsqueezed cruise: pitch = kp_vel*cruise = 0.05 exactly. */
+    EXPECT_NEAR(COMP.pitch_sp, 0.05f, 1e-4f);
     /* Lateral demand stays proportional (no clamp): roll = -kp_vel*kp_xy. */
     EXPECT_NEAR(COMP.roll_sp, -0.1f * 0.2f * 1.0f, 1e-4f);
 }
@@ -201,9 +202,9 @@ TEST_F(MissionCtrl, SearchLineSlowCruiseInMoveDirection) {
 
     fc_mission_tick(&c, &m, 0.02f);
 
-    /* vy=cruise=0.2, vx=0. vel-loop at rest: roll=-kp_vel*vy=-0.02. */
+    /* vy=cruise=0.5, vx=0. vel-loop at rest: roll=-kp_vel*vy=-0.05. */
     EXPECT_NEAR(COMP.pitch_sp, 0.0f,   1e-6f);
-    EXPECT_NEAR(COMP.roll_sp, -0.02f,  1e-5f);
+    EXPECT_NEAR(COMP.roll_sp, -0.05f,  1e-5f);
     EXPECT_EQ(COMP.arm, 1u);
 }
 
@@ -294,21 +295,21 @@ TEST_F(MissionCtrl, TakeoffBurstSuppressedOnceRising) {
 
 TEST_F(MissionCtrl, VelocityLoopVersusOpenLoopAttitude) {
     fc_proto_mission_t c = make_cmd(FC_CTRL_MOVE_TO_LANDMARK, true);
-    c.move_direction = FC_DIR_X_POS;    /* vx=cruise=0.2, vy=0 */
+    c.move_direction = FC_DIR_X_POS;    /* vx=cruise=0.5, vy=0 */
 
     /* Open-loop: pitch = vx/g. */
     fc_mission_meas_t open_m = make_meas(2.0f, 0.0f, false);
     fc_mission_tick(&c, &open_m, 0.02f);
-    EXPECT_NEAR(COMP.pitch_sp, 0.2f / G, 1e-5f);
+    EXPECT_NEAR(COMP.pitch_sp, 0.5f / G, 1e-5f);
 
-    /* Velocity loop at rest: pitch = kp_vel*(0.2-0) = 0.02. */
+    /* Velocity loop at rest: pitch = kp_vel*(0.5-0) = 0.05. */
     fc_mission_meas_t rest_m = make_meas(2.0f, 0.0f, true);
     fc_mission_tick(&c, &rest_m, 0.02f);
-    EXPECT_NEAR(COMP.pitch_sp, 0.02f, 1e-5f);
+    EXPECT_NEAR(COMP.pitch_sp, 0.05f, 1e-5f);
 
     /* Velocity loop at commanded speed: error 0 -> level. */
     fc_mission_meas_t moving_m = make_meas(2.0f, 0.0f, true);
-    moving_m.vx_body = 0.2f;
+    moving_m.vx_body = 0.5f;
     fc_mission_tick(&c, &moving_m, 0.02f);
     EXPECT_NEAR(COMP.pitch_sp, 0.0f, 1e-6f);
 }

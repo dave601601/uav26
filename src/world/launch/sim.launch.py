@@ -13,8 +13,8 @@ Launch arguments:
   headless       : 'true' 면 -s (서버 only)
   use_sim_time   : ROS 노드들이 /clock 사용 (기본 true)
   marker_seed    : marker_randomize.py 의 --seed (-1 = 시계 기반)
-  mission_cruise : 미션 순항 속도 override, m/s (기본 0.2)
-  mission_max_vxy: 미션 xy 속도 클램프 override, m/s (기본 0.4)
+  mission_cruise : 미션 순항 속도 override, m/s (기본 0.5)
+  mission_max_vxy: 미션 xy 속도 클램프 override, m/s (기본 0.8)
 """
 from __future__ import annotations
 
@@ -182,9 +182,9 @@ def generate_launch_description() -> LaunchDescription:
     # Mission outer-loop gains, overridable so cruise-speed experiments run
     # without rebuilding fc_sim. max_vxy clamps total xy velocity, so raising
     # cruise past it is a no-op unless max_vxy rises too. Defaults match
-    # fc_mission_gains (cruise 0.2, max_vxy 0.4).
-    mission_cruise_arg   = DeclareLaunchArgument("mission_cruise",   default_value="0.2")
-    mission_max_vxy_arg  = DeclareLaunchArgument("mission_max_vxy",  default_value="0.4")
+    # fc_mission_gains (cruise 0.5, max_vxy 0.8).
+    mission_cruise_arg   = DeclareLaunchArgument("mission_cruise",   default_value="0.5")
+    mission_max_vxy_arg  = DeclareLaunchArgument("mission_max_vxy",  default_value="0.8")
 
     # The simulated FC: fc_core control loop ticked from /clock, publishing
     # actuator_msgs/Actuators back through the bridge into Gazebo.
