@@ -2,6 +2,19 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## r79: cruise 0.5 m/s — stable, 4/4 exact, phantom rejected (2026-07-17)
+
+r79 (900 sim s cap, seed 42, mission_cruise:=0.5 mission_max_vxy:=0.8
+via the new fc_sim overrides): line hold and node counting stayed
+clean at 2.5x the r78 speed — entry snap (0,1), node-vs-DR ~0.2 m all
+run, 4/4 markers recorded exactly at ground truth again. One
+MARKER_CONFIRM cycle ended "confirmation failed" at (27, 5.7), where
+no marker exists: a grass phantom ArUco triggered the confirm and the
+3 s majority vote rejected it — first in-flight proof that the vote
+gate catches the documented dark-quad false-positive hazard. The cap
+again cut the run just short of home (~30 s), so LAND remains unflown;
+r80 at 1.0 m/s should finish well inside 900 s.
+
 ## r78: full mission on the skeleton backend, 4/4 exact records (2026-07-17)
 
 r78 (1800 sim s cap, seed 42) ran the fixed pipeline through the whole
