@@ -2,6 +2,24 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## r81: turn-settle helps but 1.0 m/s stays infeasible (2026-07-17)
+
+The turn-settle phase (HOLD after axis-changing turns until the DR
+speed drops below 0.25 m/s; mission.py only, 8 new tests, suite 273)
+fired exactly where designed in r81, but braking authority is the
+binding constraint: from 1.3 m/s the attitude clamp (0.15 rad) plus
+the ~1.4 s cascade lag stretches the stop to 2-3.1 m — a full cell —
+so the drone still slid one row during the second settle, and the
+first turn carried it to x = 31.8, OUTSIDE the 30 m arena. A later
+lost-line stall parked the drone mid-cell for ~700 s: there is no
+lost-line recovery behavior yet (new robustness item). Conclusion:
+the protocol has no deceleration concept (direction x fixed cruise
+only), so 3 m legs cap the implementable cruise at ~0.5 m/s. Path to
+1.0+: a speed_scale field in the mission frame (slow before row ends
+and on transits) plus the front camera disambiguating the
+self-similar rows. Defaults promoted to the flight-proven
+cruise 0.5 / max_vxy 0.8.
+
 ## r80: cruise 1.0 m/s — row slip at transits, 1/4 markers (2026-07-17)
 
 r80 (900 s cap, mission_cruise:=1.0 mission_max_vxy:=1.3): straight

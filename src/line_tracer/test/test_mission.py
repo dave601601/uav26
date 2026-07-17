@@ -197,12 +197,149 @@ def test_explore_intersection_advances_node_and_turns_at_edge():
     m.current_node = Node(9, 0)
     m.move_direction = MoveDirection.X_POS
 
-    m.step(0.0, _sensors(), _perception(intersection=True))
+    cmd = m.step(0.0, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
     assert m.current_node == Node(10, 0)
     assert m.move_direction == MoveDirection.Y_POS     # turned at the x edge
+    assert cmd.mode == int(ControlMode.HOLD)           # settling the turn
+
+    # the turn settles once the DR speed bleeds off; the next pulse then steps up
+    m.step(0.5, _sensors(vx=0.0, vy=0.0), _perception())
+    m.step(1.0, _sensors(vx=0.0, vy=0.0), _perception(intersection=True))
+    assert m.current_node == Node(10, 1)               # stepped up, stayed in grid
+
+
+# ---------------------------------------------------------------------------
+# turn settle (brake before an axis-changing / reversing leg)
+# ---------------------------------------------------------------------------
+
+def test_explore_axis_change_enters_settle_hold():
+    """An axis-changing turn (X -> Y) commands HOLD, not FOLLOW_LINE, while
+    it still carries transit momentum."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(9, 0)
+    m.move_direction = MoveDirection.X_POS     # at the x edge -> planner turns Y
+
+    cmd = m.step(0.0, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+    assert m.current_node == Node(10, 0)
+    assert m.move_direction == MoveDirection.Y_POS    # axis changed X -> Y
+    assert cmd.mode == int(ControlMode.HOLD)          # settling, not cruising
+
+
+def test_settle_exits_on_speed_drop():
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(9, 0)
+    m.move_direction = MoveDirection.X_POS
+
+    m.step(0.0, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+    cmd = m.step(0.5, _sensors(vx=0.9, vy=0.0), _perception())
+    assert cmd.mode == int(ControlMode.HOLD)          # still moving -> hold
+
+    cmd = m.step(1.0, _sensors(vx=0.2, vy=0.1), _perception())
+    assert cmd.mode == int(ControlMode.FOLLOW_LINE)   # speed < 0.25 -> resume
+
+
+def test_settle_exits_on_timeout():
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(9, 0)
+    m.move_direction = MoveDirection.X_POS
+
+    m.step(0.0, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+    cmd = m.step(3.9, _sensors(vx=1.0, vy=0.0), _perception())
+    assert cmd.mode == int(ControlMode.HOLD)          # never slowed, 3.9 s < 4.0
+
+    cmd = m.step(4.0, _sensors(vx=1.0, vy=0.0), _perception())
+    assert cmd.mode == int(ControlMode.FOLLOW_LINE)   # timeout fired
+
+
+def test_settle_falls_back_to_min_time_without_velocity():
+    """No velocity estimate: settle holds for settle_min_s, then resumes."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(9, 0)
+    m.move_direction = MoveDirection.X_POS
 
     m.step(0.0, _sensors(), _perception(intersection=True))
-    assert m.current_node == Node(10, 1)               # stepped up, stayed in grid
+    cmd = m.step(1.0, _sensors(), _perception())
+    assert cmd.mode == int(ControlMode.HOLD)          # 1.0 s < 1.5 s min hold
+
+    cmd = m.step(1.5, _sensors(), _perception())
+    assert cmd.mode == int(ControlMode.FOLLOW_LINE)   # min hold elapsed
+
+
+def test_pulses_during_settle_do_not_advance_node():
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(9, 0)
+    m.move_direction = MoveDirection.X_POS
+
+    m.step(0.0, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+    node_at_settle = m.current_node          # (10, 0), the counted node
+    dir_at_settle = m.move_direction         # Y_POS
+
+    # pump pulses while still settling: navigation must not move
+    for t in (0.5, 1.0, 1.5):
+        cmd = m.step(t, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+        assert cmd.mode == int(ControlMode.HOLD)
+        assert m.current_node == node_at_settle
+        assert m.move_direction == dir_at_settle
+
+
+def test_same_axis_reversal_settles():
+    """The degenerate single-row fallback flips X_POS -> X_NEG with no Y move;
+    that reversal settles too."""
+    grid = GridMap(node_count_x=3, node_count_y=1, cell_size_m=3.0, logger=_null)
+    m = MissionManager(grid_map=grid, logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(1, 0)
+    m.move_direction = MoveDirection.X_POS
+
+    cmd = m.step(0.0, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+    assert m.current_node == Node(2, 0)               # advanced to the x edge
+    assert m.move_direction == MoveDirection.X_NEG    # reversed on the same axis
+    assert cmd.mode == int(ControlMode.HOLD)          # reversal settles
+
+
+def test_straight_advance_does_not_settle():
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(2, 0)
+    m.move_direction = MoveDirection.X_POS
+
+    cmd = m.step(0.0, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+    assert m.current_node == Node(3, 0)
+    assert m.move_direction == MoveDirection.X_POS    # kept cruising the row
+    assert cmd.mode == int(ControlMode.FOLLOW_LINE)   # no settle
+    assert m._settle_until_mode is None
+
+
+def test_follow_rescue_path_turn_settles():
+    """An L-turn in the rescue path (X_POS -> Y_POS) settles at the corner."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.FOLLOW_RESCUE_PATH
+    m.current_node = Node(0, 0)
+    m.rescue_path = [Node(1, 0), Node(1, 1)]
+    m.path_index = 0
+
+    cmd = m.step(0.0, _sensors(vx=1.0, vy=0.0), _perception())
+    assert m.move_direction == MoveDirection.X_POS
+    assert cmd.mode == int(ControlMode.FOLLOW_LINE)
+
+    # reaching the corner peeks the turn and settles
+    cmd = m.step(1.0, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+    assert m.current_node == Node(1, 0)
+    assert m.move_direction == MoveDirection.Y_POS
+    assert cmd.mode == int(ControlMode.HOLD)
+
+    # a pulse while settling is ignored; resume once the speed drops
+    cmd = m.step(1.5, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+    assert cmd.mode == int(ControlMode.HOLD)
+    assert m.current_node == Node(1, 0)
+    cmd = m.step(2.0, _sensors(vx=0.0, vy=0.0), _perception())
+    assert cmd.mode == int(ControlMode.FOLLOW_LINE)
+    assert m.move_direction == MoveDirection.Y_POS
 
 
 # ---------------------------------------------------------------------------
@@ -287,11 +424,12 @@ def test_rescue_path_ascending_id_then_land_finished():
     idxs = [m.rescue_path.index(n) for n in marker_nodes]
     assert idxs == sorted(idxs)
 
-    # walk the whole path via intersection pulses
+    # walk the whole path via intersection pulses; vx/vy=0 lets the row-end
+    # reversal (X_POS -> X_NEG) settle immediately instead of stalling.
     for _ in range(200):
         if m.state != MissionState.FOLLOW_RESCUE_PATH:
             break
-        m.step(0.0, _sensors(), _perception(intersection=True))
+        m.step(0.0, _sensors(vx=0.0, vy=0.0), _perception(intersection=True))
     assert m.state == MissionState.LAND
     assert m.current_node == Node(0, 0)     # returned home
 

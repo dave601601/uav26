@@ -35,7 +35,7 @@ from __future__ import annotations
 from collections import Counter, deque
 from dataclasses import dataclass
 from enum import IntEnum
-from math import ceil, floor
+from math import ceil, floor, hypot
 from typing import Callable, Dict, List, Optional, Tuple
 
 
@@ -611,10 +611,24 @@ class MissionManager:
         grid_map: Optional[GridMap] = None,
         logger: Callable[[str], None] = print,
         required_marker_count: int = 4,
+        settle_speed_mps: float = 0.25,
+        settle_timeout_s: float = 4.0,
+        settle_min_s: float = 1.5,
     ):
         self._log = logger
         self.state = MissionState.INIT
         self.target_altitude = 2.0
+
+        # Turn-settle: after a node advance that changes the travel axis (or
+        # reverses it), hold on the node until the DR speed bleeds off so
+        # transit momentum cannot slide the drone onto the next row's line.
+        self.settle_speed_mps = settle_speed_mps
+        self.settle_timeout_s = settle_timeout_s
+        self.settle_min_s = settle_min_s
+        # None means no settle is active; otherwise the mode to resume once it
+        # completes (the state's normal cruise mode).
+        self._settle_until_mode: Optional[ControlMode] = None
+        self._settle_started_t: Optional[float] = None
 
         self.grid_map = grid_map if grid_map is not None else GridMap(
             node_count_x=11, node_count_y=8, cell_size_m=3.0, logger=logger
@@ -674,6 +688,43 @@ class MissionManager:
             return self.current_node
         return self.grid_map.entry_node(dx, dy, self.move_direction)
 
+    # -------- turn settle -------------------------------------------------
+
+    def _begin_settle(self, now: float, resume_mode: ControlMode) -> None:
+        """Park on the just-counted node and brake before the new leg. Records
+        the start time; leaves current_node and move_direction untouched."""
+
+        self._settle_until_mode = resume_mode
+        self._settle_started_t = now
+        self._log(f"[SETTLE] enter dir={self.move_direction.name} {self._context_str()}")
+
+    def _settle_complete(self, now: float, sensors: SensorData) -> bool:
+        """True once braked enough to cruise: DR body speed below
+        settle_speed_mps, or the timeout fired. When no velocity estimate is
+        available, fall back to a fixed minimum hold."""
+
+        elapsed = now - self._settle_started_t
+        if elapsed >= self.settle_timeout_s:
+            return True
+        if sensors.vx_est is None or sensors.vy_est is None:
+            return elapsed >= self.settle_min_s
+        return hypot(sensors.vx_est, sensors.vy_est) < self.settle_speed_mps
+
+    def _settling_mode(self, now: float, sensors: SensorData) -> Optional[ControlMode]:
+        """Drive an active settle: HOLD while braking, the resume mode on the
+        tick it completes, None when no settle is active. Intersection pulses
+        are ignored while this returns non-None (the caller returns early)."""
+
+        if self._settle_until_mode is None:
+            return None
+        if not self._settle_complete(now, sensors):
+            return ControlMode.HOLD
+        resume = self._settle_until_mode
+        self._settle_until_mode = None
+        self._settle_started_t = None
+        self._log(f"[SETTLE] exit dir={self.move_direction.name} {self._context_str()}")
+        return resume
+
     # -------- main tick ---------------------------------------------------
 
     def update(
@@ -724,6 +775,12 @@ class MissionManager:
             return ControlMode.SEARCH_LINE
 
         if self.state == MissionState.EXPLORE:
+            # 0. Settle the previous turn before doing anything else, so pulses
+            #    that arrive while parked on the counted node are ignored.
+            settle_mode = self._settling_mode(now, sensors)
+            if settle_mode is not None:
+                return settle_mode
+
             # 1. A new, unseen marker starts the 3 s confirmation.
             if (
                 perception.aruco.detected
@@ -742,6 +799,7 @@ class MissionManager:
                 self.current_node = move_to_next_node(prev_node, self.move_direction)
                 self.grid_map.add_edge(prev_node, self.current_node)
                 self.grid_map.mark_edge_visited(prev_node, self.current_node)
+                prev_direction = self.move_direction
                 self.move_direction = self.exploration_planner.choose_direction(
                     self.grid_map, self.current_node, self.move_direction
                 )
@@ -749,6 +807,11 @@ class MissionManager:
                     f"[GRID] move_direction={self.move_direction.name}"
                     f"({int(self.move_direction)}) {self._context_str()}"
                 )
+                # A turn (axis change or same-axis reversal) settles first; a
+                # straight-through advance keeps cruising the row.
+                if self.move_direction != prev_direction:
+                    self._begin_settle(now, ControlMode.FOLLOW_LINE)
+                    return ControlMode.HOLD
 
             # 3. Enough markers found: plan the rescue route.
             if self.grid_map.marker_count() >= self.required_marker_count:
@@ -789,6 +852,11 @@ class MissionManager:
             return ControlMode.HOLD
 
         if self.state == MissionState.FOLLOW_RESCUE_PATH:
+            # Settle the previous turn first; pulses while parked are ignored.
+            settle_mode = self._settling_mode(now, sensors)
+            if settle_mode is not None:
+                return settle_mode
+
             if self.path_index >= len(self.rescue_path):
                 self.change_state(MissionState.LAND)
                 return ControlMode.HOLD
@@ -797,6 +865,7 @@ class MissionManager:
             self.move_direction = direction_to_adjacent_node(self.current_node, target_node)
 
             if perception.intersection.detected:
+                prev_direction = self.move_direction
                 self.current_node = move_to_next_node(self.current_node, self.move_direction)
                 self._log(
                     f"[FOLLOW] target=({target_node.x}, {target_node.y}) "
@@ -805,6 +874,16 @@ class MissionManager:
                 )
                 if self.current_node == target_node:
                     self.path_index += 1
+                    # If the next leg turns off this axis (or reverses), brake
+                    # on the corner before cruising it.
+                    if self.path_index < len(self.rescue_path):
+                        next_dir = direction_to_adjacent_node(
+                            self.current_node, self.rescue_path[self.path_index]
+                        )
+                        if next_dir != prev_direction:
+                            self.move_direction = next_dir
+                            self._begin_settle(now, ControlMode.FOLLOW_LINE)
+                            return ControlMode.HOLD
             return ControlMode.FOLLOW_LINE
 
         if self.state == MissionState.RETURN_HOME:
