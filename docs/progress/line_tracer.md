@@ -2,6 +2,19 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## r83: FULL mission complete on the skeleton backend (2026-07-17)
+
+r83 (1500 s cap, seed 42, stock defaults cruise 0.5 / max_vxy 0.8):
+the whole mission ran to FINISHED for the first time on the skeleton
+backend — takeoff, serpentine explore with turn-settles, 4/4 markers
+recorded exactly at ground truth, rescue path in ascending ID order,
+return, LAND -> FINISHED at 0.19 m. Zero gz aborts. r82 (1200 s cap)
+had already reproduced everything but ran out of cap mid-rescue: the
+honest full-mission budget at 0.5 m/s is ~1300 sim s (search ~825 s
+incl. 14 settles + 5 confirms, rescue ~450 s incl. landing) — use a
+1500 s cap for full runs. This closes the end-to-end validation:
+skeleton pipeline verified in flight from INIT to FINISHED.
+
 ## r81: turn-settle helps but 1.0 m/s stays infeasible (2026-07-17)
 
 The turn-settle phase (HOLD after axis-changing turns until the DR

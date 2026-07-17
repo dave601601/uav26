@@ -17,15 +17,27 @@ Planning docs (checklists, not logs):
 
 ## Open
 
-### Comment refactor branch awaiting push (2026-07-14)
+### Skeleton mission architecture: verified end-to-end (2026-07-17)
 
-`refactor/human-friendly-comments`: three commits rewriting fc_core and
-line_tracer vision comments for outside readers (jargon removed,
-mid-code comments capped at 2-3 lines, KNOWN BUG markers added at three
-firmware-parity traps). Comments-only, mechanically verified, 227 tests
-green. Push is blocked by the WSL DNS proxy failure — diagnosis and fix
-in [docker](progress/docker.md). Not yet refactored: line_tracer_node,
-state_machine, planner, dead_reckoning, grid (next pass, same recipe).
+`feat/mission-skeleton-interface` (pushed through the r80 log; later
+commits local): the mission layer now follows the team skeleton —
+MissionManager.step -> McuCommand -> fc_core outer loop (STM32-shared),
+node-based navigation with DR snaps, [dx, dy, flag] line contract.
+Contract in [MISSION_INTERFACE](MISSION_INTERFACE.md). r83 flew the
+FULL mission to FINISHED: 4/4 exact records, ID-order rescue, landing.
+316 tests green. Cruise default 0.5 m/s (flight-proven); 1.0 needs a
+protocol speed_scale + the new front camera (IMX219 8MP 120 deg, 45 deg
+down, in sim) — that integration is the next work item, along with
+lost-line recovery and the FAILSAFE stubs. Legacy FSM stays selectable
+(mission_backend:=legacy). Full history:
+[line_tracer](progress/line_tracer.md) r77-r83 entries.
+
+### Comment refactor branch (2026-07-14, merged into the above)
+
+`refactor/human-friendly-comments` (pushed): comments-only pass over
+fc_core and line_tracer vision, KNOWN BUG markers at three
+firmware-parity traps. Not yet refactored: line_tracer_node,
+state_machine, planner, dead_reckoning, grid (same recipe applies).
 
 ### Where to resume (2026-07-09 end — visit policy verified, search -39 %)
 
