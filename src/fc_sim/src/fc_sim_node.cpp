@@ -202,6 +202,18 @@ public:
                 pid_euler.kd.x, pid_euler.kd.y);
         }
 
+        // Mission outer-loop gain overrides, so cruise-speed experiments
+        // run without rebuilding. Defaults match fc_mission_gains
+        // (cruise 0.2, max_vxy 0.4). max_vxy clamps the total xy velocity,
+        // so raising cruise past it is a no-op unless max_vxy rises too.
+        fc_mission_gains.cruise = (float)this->declare_parameter<double>(
+            "mission_cruise", 0.2);
+        fc_mission_gains.max_vxy = (float)this->declare_parameter<double>(
+            "mission_max_vxy", 0.4);
+        RCLCPP_INFO(get_logger(),
+            "mission gains: cruise=%.2f max_vxy=%.2f",
+            fc_mission_gains.cruise, fc_mission_gains.max_vxy);
+
         RCLCPP_INFO(get_logger(),
             "fc_sim_node up. motor_constant=%.3e max_omega=%.1f rad/s telem=%.0f Hz",
             motor_constant_, max_motor_omega_, publish_telemetry_hz_);

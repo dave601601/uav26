@@ -4,6 +4,18 @@ ROS2 C++ wrapper around `fc_core` that flies the simulated drone in Gazebo Harmo
 
 ## Done (recent)
 
+### Mission-gain override parameters (2026-07-17)
+
+fc_sim_node declares mission_cruise (default 0.2) and mission_max_vxy
+(default 0.4) and writes them into fc_mission_gains at startup, the
+same pattern as the PID retunes. sim.launch.py forwards both as launch
+args; dev.sh mission gained an optional 5th argument forwarded to the
+sim launch (the 4th still goes to the tracer), run_mission.sh passes
+it through. Enables cruise-speed experiments without recompiling.
+max_vxy clamps total xy velocity, so it must rise with cruise past
+0.4. Verified live: override run logs cruise=0.50 max_vxy=0.80 and
+reaches EXPLORE; a no-arg run keeps 0.20/0.40.
+
 ### Sim setpoint deadband removed (2026-07-17)
 
 rate_deadband / atti_deadband defaults 0.001 -> 0.0. The firmware
