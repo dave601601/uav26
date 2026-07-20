@@ -2,6 +2,17 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## r86: recovery validated in flight (2026-07-20)
+
+r86 (defaults, 1.0 m/s): full mission to FINISHED, 4/4 exact records,
+zero aborts — and the new lost-line recovery fired twice on REAL
+losses, both times legitimately and both times reacquiring: a 1.46 m
+lateral drift on the rescue path's row 18 (virtual line pulled the
+drone from x=1.54 to 2.01 toward nominal 3.0, real line back in 3
+frames) and a post-confirm braking drift at (7,2). No false triggers
+from crossing flicker. Earlier runs survived these same moments by
+luck; recovery makes them deterministic.
+
 ## Lost-line recovery landed (2026-07-20)
 
 The r81 gap is closed: a cruising state that loses the followed
