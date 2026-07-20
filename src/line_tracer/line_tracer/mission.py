@@ -28,253 +28,40 @@ grid entry and each marker confirmation both re-zero the node index
 against the companion dead-reckoning (DR) estimate.
 
 No binary packing lives here. McuCommand mirrors the wire fields as
-plain Python values; the C protocol layer owns the byte layout.
+plain Python values; the contract and its serialiser (pack_mcu_command)
+live in mission_interface.py, which this module re-exports.
 """
 from __future__ import annotations
 
 from collections import Counter, deque
 from dataclasses import dataclass
-from enum import IntEnum
 from math import ceil, floor, hypot
 from typing import Callable, Dict, List, Optional, Tuple
 
-
-# ============================================================
-# 1. Enums (fixed values, shared Jetson/MCU)
-# ============================================================
-
-
-class MissionState(IntEnum):
-    """Mission state, fixed values so a serial log reading state=4 is
-    immediately meaningful on both the Jetson and the MCU."""
-
-    INIT = 0
-    TAKEOFF = 1
-    LOCALIZE = 2
-    ENTER_GRID = 3
-    EXPLORE = 4
-    MARKER_CONFIRM = 5
-    PLAN_RESCUE_PATH = 6
-    FOLLOW_RESCUE_PATH = 7
-    RETURN_HOME = 8
-    LAND = 9
-    FINISHED = 10
-    FAILSAFE = 11
-
-
-class ControlMode(IntEnum):
-    """Control mode requested from the MCU outer loop. Replaces the
-    skeleton's mode strings: a serial link cannot carry strings, so the
-    byte value travels and .name is logged for readability."""
-
-    HOLD = 0
-    FOLLOW_LINE = 1
-    ALIGN_MARKER = 2
-    SEARCH_LINE = 3
-    MOVE_TO_LANDMARK = 4
-    LAND_ON_MARKER = 5
-    STOP = 6
-    EMERGENCY_LAND = 7
-
-
-class MoveDirection(IntEnum):
-    """Fixed-yaw body-frame travel direction (FLU: +x forward, +y left).
-    Grid axes are aligned with body axes under yaw lock."""
-
-    X_POS = 0
-    X_NEG = 1
-    Y_POS = 2
-    Y_NEG = 3
-
-
-@dataclass(frozen=True)
-class Node:
-    """Grid intersection index. Node(1, 0) is one cell along +x, i.e.
-    one cell width (cell_size_m meters) from the origin."""
-
-    x: int
-    y: int
+# The Jetson<->MCU contract (enums, dataclasses, direction helpers, and the
+# serial packer) lives in mission_interface.py. Re-export it so every
+# existing import path — node, adapter, tests — keeps working unchanged.
+from .mission_interface import (  # noqa: F401
+    ArucoDetection,
+    ControlMode,
+    IntersectionDetection,
+    LineDetection,
+    McuCommand,
+    MissionState,
+    MoveDirection,
+    Node,
+    PerceptionData,
+    SensorData,
+    direction_to_adjacent_node,
+    move_direction_vector,
+    move_to_next_node,
+    pack_mcu_command,
+)
 
 
 # ============================================================
-# 2. Perception / sensor / command dataclasses
+# 3. Direction helpers (private, logic-only)
 # ============================================================
-
-
-@dataclass
-class LineDetection:
-    """Grid-line estimate for both axes (the [dx, dy, flag] contract).
-
-    dx is the signed body +y position of the nearest vertical grid line,
-    dy the signed body +x position of the nearest horizontal grid line
-    (meters, 0.0 when that line is absent — see has_vertical / has_horizontal).
-    angle_error is the followed line's heading vs the travel axis in radians
-    FLU (+CCW); confidence 0..1. The MCU selects dx or dy by travel axis; the
-    Jetson selects only angle_error."""
-
-    has_vertical: bool = False
-    has_horizontal: bool = False
-    dx: float = 0.0
-    dy: float = 0.0
-    angle_error: float = 0.0
-    confidence: float = 0.0
-
-
-@dataclass
-class IntersectionDetection:
-    """Grid-crossing detector output. detected is a PULSE: true for
-    exactly one result per physical crossing (hysteresis lives in
-    perception). The four booleans report which branches extend from
-    the crossing, relative to the current travel axis."""
-
-    detected: bool = False
-    forward: bool = False
-    left: bool = False
-    right: bool = False
-    backward: bool = False
-
-
-@dataclass
-class ArucoDetection:
-    """ArUco marker estimate. center_error_x/y are body-frame meters
-    (+x forward, +y left); yaw_error is radians; confidence 0..1.
-    marker_id is None when nothing is detected."""
-
-    detected: bool = False
-    marker_id: Optional[int] = None
-    center_error_x: float = 0.0
-    center_error_y: float = 0.0
-    yaw_error: float = 0.0
-    confidence: float = 0.0
-
-
-@dataclass
-class PerceptionData:
-    """One perception frame handed to MissionManager (all metric)."""
-
-    line: LineDetection
-    intersection: IntersectionDetection
-    aruco: ArucoDetection
-
-
-@dataclass
-class SensorData:
-    """Companion / flight-controller telemetry for one loop.
-
-    dr_x, dr_y are the dead-reckoning world position estimate in meters,
-    used ONLY for the two snap points (grid entry, marker confirm) and
-    for logging; None when no estimate is available. vx_est, vy_est are
-    the DR body-frame velocity in m/s that pass through to McuCommand
-    with vel_est_valid; None when the estimate is not valid.
-    """
-
-    altitude: float
-    battery_voltage: float
-    imu_ok: bool
-    lidar_ok: bool
-    rc_connected: bool
-    dr_x: Optional[float] = None
-    dr_y: Optional[float] = None
-    vx_est: Optional[float] = None
-    vy_est: Optional[float] = None
-
-
-@dataclass
-class McuCommand:
-    """High-level command sent to the MCU, one field per wire field
-    (MISSION_INTERFACE section 6). Values are plain Python: metric
-    meters/radians, ControlMode/MissionState/MoveDirection as ints,
-    marker_id -1 when none. The C protocol layer owns the byte layout
-    (Q14 scaling, u8 confidences, the flags/flags2 bytes); the
-    vertical_line/horizontal_line, intersection and marker booleans pack
-    into flags, vel_est_valid and emergency into flags2 bits 0/1.
-    """
-
-    mode: int = int(ControlMode.HOLD)
-    mission_state: int = int(MissionState.INIT)
-    seq: int = 0
-
-    node_x: int = 0
-    node_y: int = 0
-    move_direction: int = int(MoveDirection.X_POS)
-
-    target_altitude: float = 2.0
-
-    vertical_line: bool = False
-    horizontal_line: bool = False
-    line_dx: float = 0.0
-    line_dy: float = 0.0
-    line_angle_error: float = 0.0
-    line_confidence: float = 0.0
-
-    intersection_detected: bool = False
-    intersection_forward: bool = False
-    intersection_left: bool = False
-    intersection_right: bool = False
-    intersection_backward: bool = False
-
-    marker_detected: bool = False
-    marker_id: int = -1
-    marker_error_x: float = 0.0
-    marker_error_y: float = 0.0
-    marker_yaw_error: float = 0.0
-    marker_confidence: float = 0.0
-
-    vx_est: float = 0.0
-    vy_est: float = 0.0
-    vel_est_valid: bool = False
-
-    emergency: bool = False
-
-    # Cruise scaling percent 0..100 (100 = full cruise); the MCU applies
-    # effective_cruise = cruise * speed_scale / 100. Values >100 clamp on decode.
-    speed_scale: int = 100
-
-
-# ============================================================
-# 3. Direction helpers
-# ============================================================
-
-
-def move_direction_vector(direction: MoveDirection) -> Tuple[int, int]:
-    """MoveDirection -> unit (dx, dy) in body/grid indices. Body x/y and
-    grid x/y are aligned; change only this function if that changes."""
-
-    if direction == MoveDirection.X_POS:
-        return 1, 0
-    if direction == MoveDirection.X_NEG:
-        return -1, 0
-    if direction == MoveDirection.Y_POS:
-        return 0, 1
-    if direction == MoveDirection.Y_NEG:
-        return 0, -1
-    raise ValueError(f"Unknown move direction: {direction}")
-
-
-def move_to_next_node(node: Node, direction: MoveDirection) -> Node:
-    """Advance the node index by one crossing in the travel direction."""
-
-    dx, dy = move_direction_vector(direction)
-    return Node(node.x + dx, node.y + dy)
-
-
-def direction_to_adjacent_node(current: Node, target: Node) -> MoveDirection:
-    """Travel direction from current to an orthogonally adjacent target."""
-
-    dx = target.x - current.x
-    dy = target.y - current.y
-
-    if dx == 1 and dy == 0:
-        return MoveDirection.X_POS
-    if dx == -1 and dy == 0:
-        return MoveDirection.X_NEG
-    if dx == 0 and dy == 1:
-        return MoveDirection.Y_POS
-    if dx == 0 and dy == -1:
-        return MoveDirection.Y_NEG
-    raise ValueError(
-        f"Target node {target} is not adjacent to current node {current}"
-    )
 
 
 def _flip_x(direction: MoveDirection) -> MoveDirection:

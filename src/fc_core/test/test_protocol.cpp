@@ -322,3 +322,57 @@ TEST(ProtocolMission, ApplyMission_PopulatesGlobalState) {
     EXPECT_EQ(MISSION.cmd.seq, 7u);
     EXPECT_NEAR(MISSION.cmd.target_altitude, 2.0f, 1e-6f);
 }
+
+TEST(ProtocolMission, GoldenVectorFromJetson) {
+    /* Cross-language golden vector: these 34 bytes are produced by the
+     * Jetson packer pack_mcu_command() and asserted byte-for-byte in
+     * src/line_tracer/test/test_mission_interface.py (GOLDEN_FRAME) —
+     * change together or the Jetson->STM32 wire check is meaningless.
+     * Decoding here must succeed (CRC + magic) and recover every field. */
+    const uint8_t golden[FC_PROTO_MISSION_LEN] = {
+        0xA6, 0x01, 0x81, 0x04, 0x2A, 0x05, 0xFD, 0x02,
+        0xFA, 0x00, 0x00, 0x20, 0x00, 0xD0, 0x66, 0x06,
+        0x00, 0xF0, 0x00, 0x08, 0xCD, 0xFC, 0x33, 0x13,
+        0x67, 0xE6, 0x07, 0xCC, 0x99, 0xAD, 0x03, 0x28,
+        0x1E, 0xFF};
+
+    fc_proto_mission_t out{};
+    ASSERT_TRUE(fc_proto_decode_mission(golden, &out));
+
+    /* Integer/enum fields are exact. */
+    EXPECT_EQ(out.mode,           0x81u);   /* FOLLOW_LINE(1) | arm 0x80 */
+    EXPECT_EQ(out.mission_state,  4u);      /* EXPLORE */
+    EXPECT_EQ(out.seq,            42u);
+    EXPECT_EQ(out.node_x,         5);
+    EXPECT_EQ(out.node_y,        -3);
+    EXPECT_EQ(out.move_direction, 2u);      /* Y_POS */
+    EXPECT_EQ(out.marker_id,      7);
+    EXPECT_EQ(out.line_confidence,   204u);
+    EXPECT_EQ(out.marker_confidence, 153u);
+    EXPECT_EQ(out.flags,  0xADu);           /* vert|inter|fwd|right|marker */
+    EXPECT_EQ(out.flags2, 0x03u);           /* vel_est_valid | emergency */
+    EXPECT_EQ(out.speed_scale, 40u);
+
+    /* Fixed-point fields within one Q14 / cm LSB of the packed value. */
+    EXPECT_NEAR(out.target_altitude,   2.5f,   0.01f);
+    EXPECT_NEAR(out.line_dx,           0.5f,   2.0f / 16384.0f);
+    EXPECT_NEAR(out.line_dy,          -0.75f,  2.0f / 16384.0f);
+    EXPECT_NEAR(out.line_angle_error,  0.1f,   2.0f / 16384.0f);
+    EXPECT_NEAR(out.marker_error_x,   -0.25f,  2.0f / 16384.0f);
+    EXPECT_NEAR(out.marker_error_y,    0.125f, 2.0f / 16384.0f);
+    EXPECT_NEAR(out.marker_yaw_error, -0.05f,  2.0f / 16384.0f);
+    EXPECT_NEAR(out.vx_est,            0.3f,   2.0f / 16384.0f);
+    EXPECT_NEAR(out.vy_est,           -0.4f,   2.0f / 16384.0f);
+
+    /* The flag bits decode to the individual booleans. */
+    EXPECT_TRUE (out.flags & FC_PROTO_MFLAG_VERTICAL_LINE);
+    EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_HORIZONTAL_LINE);
+    EXPECT_TRUE (out.flags & FC_PROTO_MFLAG_INTERSECTION);
+    EXPECT_TRUE (out.flags & FC_PROTO_MFLAG_FWD);
+    EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_LEFT);
+    EXPECT_TRUE (out.flags & FC_PROTO_MFLAG_RIGHT);
+    EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_BACK);
+    EXPECT_TRUE (out.flags & FC_PROTO_MFLAG_MARKER_DETECTED);
+    EXPECT_TRUE (out.flags2 & FC_PROTO_MFLAG2_VEL_EST_VALID);
+    EXPECT_TRUE (out.flags2 & FC_PROTO_MFLAG2_EMERGENCY);
+}

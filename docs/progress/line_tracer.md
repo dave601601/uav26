@@ -2,6 +2,21 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Interface extracted + serial packer + root README (2026-07-20)
+
+The Jetson<->MCU contract moved out of mission.py into
+mission_interface.py (enums, Node, perception/sensor dataclasses,
+McuCommand, direction helpers; mission.py re-exports so no caller
+changed). New pack_mcu_command() emits the exact 34-byte frame
+(pure-Python CRC16-CCITT matching protocol.c; Q14 truncation toward
+zero like the C cast; confidence round-half-up to u8) — the piece that
+was missing for a real Jetson->STM32 UART. A golden frame is pinned
+byte-for-byte in test_mission_interface.py AND test_protocol.cpp
+("change together" comments) so wire compatibility is regression-
+tested across languages. Root README.md added: interface quick
+reference, frequently-used symbols per side, and the STM32 wiring
+recipe. Suites: 318 pytest + 49 gtests.
+
 ## r86: recovery validated in flight (2026-07-20)
 
 r86 (defaults, 1.0 m/s): full mission to FINISHED, 4/4 exact records,
