@@ -2,6 +2,20 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Front camera wired: hints slow the approach (2026-07-20)
+
+The 45-deg front camera now feeds the mission: side_camera's
+mount-agnostic machinery (detector config, ground projection,
+CandidateTracker) with the front extrinsics, a pure select_front_hint
+in mission_adapter (nearest unrecorded candidate ahead on the current
+row), set_front_hint per image tick, detection gated to EXPLORE with
+the overlay published every frame. Live 400 s check: hint for id 15
+qualified 24 m down the row and held through the approach, producing
+sustained hint-caused scale=50 at mid-row nodes; confirms and records
+unaffected; 0 gz aborts. Suite 289 pytest + 48 gtests. The 45-deg
+view sees far down the row, so the persistent vote — not a near-range
+sighting — is what carries the hint, as intended.
+
 ## speed_scale deceleration scheduling landed (2026-07-20)
 
 Per spec section 7a: the mission frame gains a speed_scale percent

@@ -24,7 +24,9 @@ for the current axis is present, 0.0 otherwise.
 from __future__ import annotations
 
 from math import atan2, pi
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from .mission import MoveDirection, move_direction_vector
 
 
 def _line_angle_0_pi(x1: float, y1: float, x2: float, y2: float) -> float:
@@ -116,4 +118,38 @@ def nearest_marker(
         if d < best_d:
             best_d = d
             best = (mid, u, v)
+    return best
+
+
+def select_front_hint(
+    candidates: "Dict[int, object]",
+    dr_xy: Optional[Tuple[float, float]],
+    move_direction: MoveDirection,
+    row_tolerance_m: float = 1.5,
+) -> Optional[Tuple[int, object, float]]:
+    """Nearest front-camera candidate AHEAD on the current row, or None.
+
+    candidates maps marker id -> a voted candidate carrying .node (grid node)
+    and .xy (world meters). dr_xy is the drone world position; move_direction is
+    the travel axis. A candidate qualifies when it is ahead of the drone along
+    the travel direction (positive along-track distance) and within
+    row_tolerance_m laterally of the current row line. The nearest qualifier
+    (smallest along-track distance) wins and its along-track component is the
+    returned distance. Recorded-id filtering is the mission layer's job; the
+    selector only orders by distance.
+    """
+    if not candidates or dr_xy is None:
+        return None
+    ux, uy = move_direction_vector(move_direction)   # unit travel vector
+    x0, y0 = float(dr_xy[0]), float(dr_xy[1])
+    best: Optional[Tuple[int, object, float]] = None
+    for marker_id, cand in candidates.items():
+        cx, cy = cand.xy
+        rx, ry = cx - x0, cy - y0
+        along = rx * ux + ry * uy               # + = ahead along travel
+        lateral = abs(-rx * uy + ry * ux)       # perpendicular distance to row
+        if along <= 0.0 or lateral > row_tolerance_m:
+            continue
+        if best is None or along < best[2]:
+            best = (marker_id, cand.node, along)
     return best

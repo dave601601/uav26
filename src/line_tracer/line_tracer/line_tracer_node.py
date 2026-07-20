@@ -26,6 +26,10 @@ Published
       Published in every FSM state (annotated when detection is paused),
       so the window is live from node start; only exists when
       lookahead_enable.
+  /line_tracer/front_debug_image     sensor_msgs/Image    (BGR8 overlay)
+      Front camera (skeleton backend only): ArUco boxes + projected
+      world (x, y). Feeds the mission a speed-scheduling hint; never
+      records. Published every frame, annotated when detection is paused.
 
 Services
   /line_tracer/set_state            line_tracer_msgs/SetState
@@ -88,6 +92,7 @@ from .mission import (
     IntersectionDetection,
     LineDetection,
     MissionManager,
+    MissionState,
     MoveDirection,
     PerceptionData,
     SensorData,
@@ -331,6 +336,23 @@ class LineTracerNode(Node):
         # runtime when lookahead_enable is false — without the side
         # camera a skipped row is simply never observed.
         self.declare_parameter("sweep_row_step", 2)
+        # Front wide camera (IMX219 120 deg, 45 deg down, color). HINTS
+        # ONLY: it feeds the skeleton mission a per-tick marker hint used
+        # for speed scheduling, never a record. Mount mirrors the SDF
+        # sensor pose (yaw 0, pitch pi/4, 8 cm forward, 3 cm below); keep
+        # in sync with model.sdf. Only wired on the skeleton backend.
+        self.declare_parameter("front_camera_enable", True)
+        self.declare_parameter("front_mount_yaw", 0.0)
+        self.declare_parameter("front_mount_pitch", 0.7853981634)
+        self.declare_parameter("front_mount_tx", 0.08)
+        self.declare_parameter("front_mount_ty", 0.0)
+        self.declare_parameter("front_mount_tz", -0.03)
+        # Same 3-sighting vote and 9 m range rationale as the lookahead.
+        self.declare_parameter("front_vote_threshold", 3)
+        self.declare_parameter("front_max_range", 9.0)
+        # A hinted candidate counts as on the current row when its lateral
+        # offset from the row line is within half a cell.
+        self.declare_parameter("front_row_tolerance_m", 1.5)
 
         target_alt = float(self.get_parameter("target_altitude").value)
         self._gains = Gains(
@@ -447,6 +469,28 @@ class LineTracerNode(Node):
         # promotion / node change, not every frame; same idea for drops.
         self._logged_candidates: dict = {}
         self._logged_dropped: set = set()
+
+        # --- front camera state (hints only) ----------------------------
+        self._front_enable = bool(self.get_parameter("front_camera_enable").value)
+        self._front_intrinsics: Optional[CameraIntrinsics] = None
+        self._front_mount = MountExtrinsics(
+            yaw=float(self.get_parameter("front_mount_yaw").value),
+            pitch=float(self.get_parameter("front_mount_pitch").value),
+            tx=float(self.get_parameter("front_mount_tx").value),
+            ty=float(self.get_parameter("front_mount_ty").value),
+            tz=float(self.get_parameter("front_mount_tz").value),
+        )
+        # Dedicated tracker; default snap_max_err like the side camera's.
+        self._front_tracker = CandidateTracker()
+        self._front_vote_threshold = int(
+            self.get_parameter("front_vote_threshold").value
+        )
+        self._front_max_range = float(self.get_parameter("front_max_range").value)
+        self._front_row_tolerance_m = float(
+            self.get_parameter("front_row_tolerance_m").value
+        )
+        # Last pushed (id, node) so the [FRONT] hint line logs on change only.
+        self._front_hint_prev: Optional[tuple] = None
 
         # FC setpoint shaping constants (cached from params)
         self._hover_thrust_norm = float(self.get_parameter("hover_thrust_norm").value)
@@ -575,6 +619,23 @@ class LineTracerNode(Node):
             )
             self._pub_lookahead_debug = self.create_publisher(
                 Image, "/line_tracer/lookahead_debug_image", 10
+            )
+        # Front camera drives mission hints only, so it is wired on the
+        # skeleton backend alone. The overlay publishes every frame; the
+        # detector runs while EXPLORE can use the hint.
+        self._pub_front_debug = None
+        if self._mission_backend == "skeleton" and self._front_enable:
+            self._sub_front = self.create_subscription(
+                Image, "/front_camera/image", self._on_front, SENSOR_QOS
+            )
+            self._sub_front_info = self.create_subscription(
+                CameraInfo,
+                "/front_camera/camera_info",
+                self._on_front_info,
+                SENSOR_QOS,
+            )
+            self._pub_front_debug = self.create_publisher(
+                Image, "/line_tracer/front_debug_image", 10
             )
         # /odom_truth is the sim stand-in for the lidar+IMU Z estimator
         # called out in the team proposal. Real-flight builds set
@@ -799,6 +860,115 @@ class LineTracerNode(Node):
             m.lifetime.sec = 5
             ma.markers.append(m)
         self._pub_markers.publish(ma)
+
+    # ------------------------------------------------------------------
+    # Front camera (mission speed-scheduling hints only)
+    # ------------------------------------------------------------------
+
+    def _on_front_info(self, msg: CameraInfo) -> None:
+        if self._front_intrinsics is None:
+            self._front_intrinsics = CameraIntrinsics.from_camera_info(msg)
+            self.get_logger().info(
+                f"front camera_info: fx={self._front_intrinsics.fx:.2f} "
+                f"size={self._front_intrinsics.width}x{self._front_intrinsics.height}"
+            )
+
+    def _on_front(self, msg: Image) -> None:
+        """Front camera frame: detect ArUco (side-camera oblique tuning),
+        project centers to the ground, vote onto grid nodes, and hand the
+        mission the nearest ahead-on-row hint for speed scheduling. Never
+        records — the downward camera stays the authoritative record path.
+        Detection runs only in EXPLORE; the overlay publishes every frame."""
+        try:
+            bgr = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as e:                                # pragma: no cover
+            self.get_logger().warn(f"front conversion failed: {e}")
+            return
+
+        grid = self._fsm.context.grid
+        # Hints only matter in EXPLORE; TAKEOFF/LAND attitudes are outside
+        # the projection's comfort zone. When paused, clear the hint so a
+        # stale one cannot keep slowing the cruise, and annotate the overlay.
+        paused = (
+            "mission " + self._mission.state.name
+            if self._mission.state != MissionState.EXPLORE
+            else "no camera_info" if self._front_intrinsics is None
+            else "no altitude" if self._altitude_m is None
+            else "no DR" if self._odom_truth_pose_xy is None
+            else "no grid" if grid is None
+            else ""
+        )
+
+        detections: list = []
+        projections: dict = {}
+        if not paused:
+            detections = detect_aruco_side(bgr, self._side_cfg)
+            stamp = (
+                float(msg.header.stamp.sec)
+                + float(msg.header.stamp.nanosec) * 1e-9
+            )
+            roll, pitch = self._odom_truth_rp if self._odom_truth_rp else (0.0, 0.0)
+            yaw = self._odom_truth_yaw if self._odom_truth_yaw is not None else 0.0
+            dr_x, dr_y = self._odom_truth_pose_xy
+            for det in detections:
+                hit = project_pixel_to_ground(
+                    det.center_uv[0],
+                    det.center_uv[1],
+                    self._front_intrinsics,
+                    self._front_mount,
+                    (dr_x, dr_y, self._altitude_m),
+                    (roll, pitch, yaw),
+                    max_range=self._front_max_range,
+                )
+                if hit is None:
+                    continue
+                xw, yw, slant = hit
+                projections[det.id] = (xw, yw)
+                self._front_tracker.observe(det.id, xw, yw, slant, stamp, grid)
+
+            candidates = self._front_tracker.snapshot(
+                self._front_vote_threshold, grid
+            )
+            hint = mission_adapter.select_front_hint(
+                candidates,
+                (dr_x, dr_y),
+                self._mission.move_direction,
+                row_tolerance_m=self._front_row_tolerance_m,
+            )
+            self._apply_front_hint(hint)
+        else:
+            self._apply_front_hint(None)
+
+        if self._pub_front_debug is not None and bool(
+            self.get_parameter("publish_debug_image").value
+        ):
+            try:
+                debug_bgr = draw_lookahead_overlay(
+                    bgr, detections, projections,
+                    note=f"detection paused ({paused})" if paused else "front hint",
+                )
+                debug_msg = self._bridge.cv2_to_imgmsg(debug_bgr, encoding="bgr8")
+                debug_msg.header = msg.header
+                self._pub_front_debug.publish(debug_msg)
+            except Exception as e:                            # pragma: no cover
+                self.get_logger().warn(f"front debug publish failed: {e}")
+
+    def _apply_front_hint(self, hint) -> None:
+        """Push the selected front hint (id, node, distance) to the mission
+        and log id/node changes once. None clears the mission hint."""
+        if hint is None:
+            if self._front_hint_prev is not None:
+                self._front_hint_prev = None
+                self._mission.set_front_hint(None, None, None)
+            return
+        marker_id, node, distance_m = hint
+        key = (marker_id, node)
+        if key != self._front_hint_prev:
+            self._front_hint_prev = key
+            self.get_logger().info(
+                f"[FRONT] hint id={marker_id} node={node} d={distance_m:.1f}m"
+            )
+        self._mission.set_front_hint(marker_id, node, distance_m)
 
     def _on_odom_truth(self, msg: Odometry) -> None:
         """Sim-only altitude + vz override.
@@ -1312,6 +1482,7 @@ class LineTracerNode(Node):
         msg.vy_est = float(cmd.vy_est)
         msg.vel_est_valid = bool(cmd.vel_est_valid)
         msg.emergency = bool(cmd.emergency)
+        msg.speed_scale = int(cmd.speed_scale)
         self._pub_mcu.publish(msg)
 
     # ------------------------------------------------------------------
