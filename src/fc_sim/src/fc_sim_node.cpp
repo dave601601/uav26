@@ -339,6 +339,8 @@ private:
         m.flags2 = (uint8_t)(
               (msg.vel_est_valid ? FC_PROTO_MFLAG2_VEL_EST_VALID : 0)
             | (msg.emergency     ? FC_PROTO_MFLAG2_EMERGENCY     : 0));
+        // Pass verbatim; the decode clamps above 100. An unset 0 creeps (safe).
+        m.speed_scale = msg.speed_scale;
 
         // Wire parity: round-trip through the codec exactly as onSetpoint's
         // down frame does, so the sim exercises encode/decode, not just apply.

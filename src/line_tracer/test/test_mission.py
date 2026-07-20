@@ -10,6 +10,7 @@ from line_tracer.mission import (
     GridMap,
     IntersectionDetection,
     LineDetection,
+    McuCommand,
     MissionManager,
     MissionState,
     MoveDirection,
@@ -550,3 +551,119 @@ def test_send_command_hook_is_overridable():
     m.state = MissionState.EXPLORE
     out = m.step(0.0, _sensors(), _perception(line_visible=True))
     assert captured == [out]
+
+
+# ---------------------------------------------------------------------------
+# speed scheduling (MISSION_INTERFACE 7a)
+# ---------------------------------------------------------------------------
+
+def test_mcu_command_default_speed_scale_is_full():
+    assert McuCommand().speed_scale == 100
+
+
+def test_speed_scale_straight_leg_is_full():
+    """A mid-row X straight, no hint, not a first leg: full cruise."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(3, 2)
+    m.move_direction = MoveDirection.X_POS
+    cmd = m.step(0.0, _sensors(), _perception())
+    assert cmd.speed_scale == 100
+
+
+def test_speed_scale_transit_leg_is_slow():
+    """Y travel (moving between rows) is a transit leg -> scale_transit."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(5, 2)
+    m.move_direction = MoveDirection.Y_POS
+    cmd = m.step(0.0, _sensors(), _perception())
+    assert cmd.speed_scale == 40
+
+
+def test_speed_scale_final_leg_before_boundary_is_slow():
+    """The leg whose next node is the last in-bounds one -> scale_final_leg."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(9, 2)     # next (10,2) is the x-edge; (11,2) is OOB
+    m.move_direction = MoveDirection.X_POS
+    cmd = m.step(0.0, _sensors(), _perception())
+    assert cmd.speed_scale == 50
+
+
+def test_speed_scale_first_leg_after_settle_until_next_advance():
+    """A settle exit starts the next leg slow (scale_transit) even on an X
+    leg that is otherwise full speed, until the next node advance clears it."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(9, 0)
+    m.move_direction = MoveDirection.X_POS
+
+    # row-end turn X_POS -> Y_POS settles
+    m.step(0.0, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+    # settle exits onto the Y transit leg (transit AND first-leg -> slow)
+    cmd = m.step(0.5, _sensors(vx=0.0, vy=0.0), _perception())
+    assert cmd.speed_scale == 40
+
+    # step up a row; planner reverses to X_NEG (a turn) -> settles again
+    m.step(1.0, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+    # settle exits onto an X leg: slow ONLY because it is the first leg
+    cmd = m.step(1.5, _sensors(vx=0.0, vy=0.0), _perception())
+    assert m.move_direction == MoveDirection.X_NEG
+    assert cmd.speed_scale == 40
+
+    # next advance clears the first-leg flag; mid-row X straight is full speed
+    cmd = m.step(2.0, _sensors(vx=1.0, vy=0.0), _perception(intersection=True))
+    assert m.move_direction == MoveDirection.X_NEG
+    assert cmd.speed_scale == 100
+
+
+def test_speed_scale_front_hint_within_range_slows_outside_does_not():
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(3, 2)     # mid-row X straight -> baseline 100
+    m.move_direction = MoveDirection.X_POS
+
+    cmd = m.step(0.0, _sensors(), _perception())
+    assert cmd.speed_scale == 100
+
+    # a hint within range slows to scale_hint
+    m.set_front_hint(5, Node(6, 2), 3.0)
+    cmd = m.step(0.0, _sensors(), _perception())
+    assert cmd.speed_scale == 50
+
+    # a hint beyond range does not slow
+    m.set_front_hint(5, Node(6, 2), 6.0)
+    cmd = m.step(0.0, _sensors(), _perception())
+    assert cmd.speed_scale == 100
+
+    # a None id clears the hint back to full speed
+    m.set_front_hint(5, Node(6, 2), 3.0)
+    m.set_front_hint(None, None, None)
+    cmd = m.step(0.0, _sensors(), _perception())
+    assert cmd.speed_scale == 100
+
+
+def test_speed_scale_hint_for_recorded_marker_is_ignored():
+    """A hint for a marker already recorded is dropped, so it never slows."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(3, 2)
+    m.move_direction = MoveDirection.X_POS
+    m.grid_map.save_marker(5, Node(6, 2))
+
+    m.set_front_hint(5, Node(6, 2), 2.0)     # ignored: id already recorded
+    cmd = m.step(0.0, _sensors(), _perception())
+    assert cmd.speed_scale == 100
+
+
+def test_speed_scale_lowest_wins_when_rules_combine():
+    """Transit (40), final-leg (50) and hint (50) all apply at once; the
+    lowest wins."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(5, 6)     # Y_POS: next (5,7) last in-bounds row
+    m.move_direction = MoveDirection.Y_POS
+    m.set_front_hint(9, Node(5, 7), 2.0)
+    cmd = m.step(0.0, _sensors(), _perception())
+    assert cmd.speed_scale == 40

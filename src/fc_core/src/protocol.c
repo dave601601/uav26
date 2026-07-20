@@ -234,9 +234,10 @@ bool fc_proto_encode_mission(const fc_proto_mission_t* in,
     put_u8 (out_buf + 28, in->marker_confidence);
     put_u8 (out_buf + 29, in->flags);
     put_u8 (out_buf + 30, in->flags2);
+    put_u8 (out_buf + 31, in->speed_scale);
 
     uint16_t crc = fc_proto_crc16_ccitt(out_buf, FC_PROTO_MISSION_LEN - 2u);
-    put_u16_le(out_buf + 31, crc);
+    put_u16_le(out_buf + 32, crc);
     return true;
 }
 
@@ -248,7 +249,7 @@ bool fc_proto_decode_mission(const uint8_t in_buf[FC_PROTO_MISSION_LEN],
     if (get_u8(in_buf + 1) != FC_PROTO_VERSION)       return false;
 
     uint16_t crc_calc = fc_proto_crc16_ccitt(in_buf, FC_PROTO_MISSION_LEN - 2u);
-    uint16_t crc_read = get_u16_le(in_buf + 31);
+    uint16_t crc_read = get_u16_le(in_buf + 32);
     if (crc_calc != crc_read) return false;
 
     out->mode               = get_u8 (in_buf + 2);
@@ -271,6 +272,9 @@ bool fc_proto_decode_mission(const uint8_t in_buf[FC_PROTO_MISSION_LEN],
     out->marker_confidence  = get_u8 (in_buf + 28);
     out->flags              = get_u8 (in_buf + 29);
     out->flags2             = get_u8 (in_buf + 30);
+    /* speed_scale is a 0..100 percent; clamp any over-range value to 100. */
+    uint8_t ss              = get_u8 (in_buf + 31);
+    out->speed_scale        = ss > 100u ? 100u : ss;
     return true;
 }
 

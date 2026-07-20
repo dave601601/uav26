@@ -167,6 +167,7 @@ TEST(ProtocolMission, Roundtrip_QuantizationOnly) {
         in.marker_confidence  = (uint8_t)((255 - i) & 0xFF);
         in.flags              = (uint8_t)(i & 0xFF);
         in.flags2             = (uint8_t)(i & 0x01);
+        in.speed_scale        = (uint8_t)(i % 101);   /* 0..100, in range */
 
         uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
         ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
@@ -186,6 +187,7 @@ TEST(ProtocolMission, Roundtrip_QuantizationOnly) {
         EXPECT_EQ(out.marker_confidence, in.marker_confidence);
         EXPECT_EQ(out.flags,          in.flags);
         EXPECT_EQ(out.flags2,         in.flags2);
+        EXPECT_EQ(out.speed_scale,    in.speed_scale);
 
         /* target_altitude quantizes to 1 cm. */
         EXPECT_NEAR(out.target_altitude, in.target_altitude, 0.01f);
@@ -242,6 +244,45 @@ TEST(ProtocolMission, FlagsBitsPreserved) {
     EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_LEFT);
     EXPECT_TRUE(out.flags2 & FC_PROTO_MFLAG2_VEL_EST_VALID);
     EXPECT_TRUE(out.flags2 & FC_PROTO_MFLAG2_EMERGENCY);
+}
+
+TEST(ProtocolMission, SpeedScaleClampsAboveHundred) {
+    /* In-range values survive; anything above 100 decodes as 100. */
+    fc_proto_mission_t in{};
+    in.speed_scale = 200u;               /* over the 0..100 range */
+
+    uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+    EXPECT_EQ(buf[31], 200u);            /* encode is verbatim */
+
+    fc_proto_mission_t out{};
+    ASSERT_TRUE(fc_proto_decode_mission(buf, &out));
+    EXPECT_EQ(out.speed_scale, 100u);   /* decode clamps */
+
+    /* Boundary: exactly 100 passes through, 0 passes through. */
+    in.speed_scale = 100u;
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+    ASSERT_TRUE(fc_proto_decode_mission(buf, &out));
+    EXPECT_EQ(out.speed_scale, 100u);
+
+    in.speed_scale = 0u;
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+    ASSERT_TRUE(fc_proto_decode_mission(buf, &out));
+    EXPECT_EQ(out.speed_scale, 0u);
+}
+
+TEST(ProtocolMission, CrcCoversSpeedScaleByte) {
+    /* The CRC now spans the appended speed_scale byte (offset 31). */
+    fc_proto_mission_t in{};
+    in.speed_scale = 50u;
+
+    uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+
+    buf[31] ^= 0x01;   /* corrupt speed_scale only */
+
+    fc_proto_mission_t out{};
+    EXPECT_FALSE(fc_proto_decode_mission(buf, &out));
 }
 
 TEST(ProtocolMission, Decode_RejectsCorruptedCrc) {

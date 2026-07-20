@@ -25,6 +25,7 @@ fc_proto_mission_t make_cmd(fc_control_mode_t mode, bool arm) {
     c.mode = (uint8_t)mode | (arm ? FC_PROTO_MODE_ARM_BIT : 0u);
     c.target_altitude = 2.0f;
     c.move_direction = FC_DIR_X_POS;
+    c.speed_scale = 100u;   /* full cruise unless a test dials it down */
     return c;
 }
 
@@ -206,6 +207,82 @@ TEST_F(MissionCtrl, SearchLineSlowCruiseInMoveDirection) {
     EXPECT_NEAR(COMP.pitch_sp, 0.0f,   1e-6f);
     EXPECT_NEAR(COMP.roll_sp, -0.05f,  1e-5f);
     EXPECT_EQ(COMP.arm, 1u);
+}
+
+TEST_F(MissionCtrl, SpeedScaleHalvesAlongTrackNotLateral) {
+    /* FOLLOW_LINE with speed_scale=50: only the along-track (cruise) term
+       halves; the lateral (line_dx) and heading (angle) corrections keep
+       full authority. Velocity loop at rest for exact numbers. */
+    fc_proto_mission_t c = make_cmd(FC_CTRL_FOLLOW_LINE, true);
+    c.move_direction = FC_DIR_X_POS;
+    c.line_dx = 1.0f;
+    c.line_angle_error = 0.1f;
+    c.flags = FC_PROTO_MFLAG_VERTICAL_LINE;
+    fc_mission_meas_t m = make_meas(2.0f, 0.0f, true);
+
+    c.speed_scale = 100u;
+    fc_mission_tick(&c, &m, 0.02f);
+    float pitch_full = COMP.pitch_sp;    /* along-track -> pitch */
+    float roll_full  = COMP.roll_sp;     /* lateral -> roll */
+    float yaw_full   = COMP.yawrate_sp;  /* angle -> yawrate */
+
+    c.speed_scale = 50u;
+    fc_mission_tick(&c, &m, 0.02f);
+    EXPECT_NEAR(COMP.pitch_sp, 0.5f * pitch_full, 1e-5f);  /* halved */
+    EXPECT_NEAR(COMP.roll_sp,  roll_full,   1e-6f);        /* unchanged */
+    EXPECT_NEAR(COMP.yawrate_sp, yaw_full,  1e-6f);        /* unchanged */
+    /* Absolute: pitch=kp_vel*eff_cruise=0.1*0.25=0.025; roll=-kp_vel*kp_xy. */
+    EXPECT_NEAR(COMP.pitch_sp, 0.025f, 1e-5f);
+    EXPECT_NEAR(COMP.roll_sp, -0.02f,  1e-5f);
+}
+
+TEST_F(MissionCtrl, SpeedScaleZeroZeroesAlongTrackOnly) {
+    /* speed_scale=0 is creep-to-stop: zero along-track, but the lateral and
+       angle corrections stay live so the drone still holds the line. */
+    fc_proto_mission_t c = make_cmd(FC_CTRL_FOLLOW_LINE, true);
+    c.move_direction = FC_DIR_X_POS;
+    c.line_dx = 1.0f;
+    c.line_angle_error = 0.1f;
+    c.flags = FC_PROTO_MFLAG_VERTICAL_LINE;
+    c.speed_scale = 0u;
+    fc_mission_meas_t m = make_meas(2.0f, 0.0f, true);
+
+    fc_mission_tick(&c, &m, 0.02f);
+
+    EXPECT_NEAR(COMP.pitch_sp,   0.0f,  1e-6f);   /* along-track zeroed */
+    EXPECT_NEAR(COMP.roll_sp,   -0.02f, 1e-5f);   /* lateral still active */
+    EXPECT_NEAR(COMP.yawrate_sp,-0.3f,  1e-4f);   /* angle still active */
+}
+
+TEST_F(MissionCtrl, SpeedScaleScalesSearchLineCruise) {
+    /* SEARCH_LINE cruise scales with speed_scale (same law as FOLLOW_LINE
+       along-track). scale=50 -> eff_cruise=0.25. */
+    fc_proto_mission_t c = make_cmd(FC_CTRL_SEARCH_LINE, true);
+    c.move_direction = FC_DIR_Y_POS;
+    c.speed_scale = 50u;
+    fc_mission_meas_t m = make_meas(2.0f, 0.0f, true);
+
+    fc_mission_tick(&c, &m, 0.02f);
+
+    /* vy=0.25 -> roll=-kp_vel*0.25=-0.025 (half of the full-cruise -0.05). */
+    EXPECT_NEAR(COMP.pitch_sp,  0.0f,   1e-6f);
+    EXPECT_NEAR(COMP.roll_sp,  -0.025f, 1e-5f);
+}
+
+TEST_F(MissionCtrl, SpeedScaleDoesNotAffectAlignMarker) {
+    /* ALIGN uses the marker-error law, not cruise, so speed_scale=0 leaves it
+       identical to the full-scale AlignMarker result. */
+    fc_proto_mission_t c = make_cmd(FC_CTRL_ALIGN_MARKER, true);
+    c.marker_error_x = 0.8f;
+    c.marker_error_y = -0.4f;
+    c.flags = FC_PROTO_MFLAG_MARKER_DETECTED;
+    c.speed_scale = 0u;
+    fc_mission_meas_t m = make_meas(2.0f, 0.0f, true);
+
+    fc_mission_tick(&c, &m, 0.02f);
+
+    EXPECT_NEAR(COMP.pitch_sp, 0.016f, 1e-5f);
+    EXPECT_NEAR(COMP.roll_sp,  0.008f, 1e-5f);
 }
 
 TEST_F(MissionCtrl, LandOnMarkerTracksDescentRate) {

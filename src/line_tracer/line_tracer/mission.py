@@ -226,6 +226,10 @@ class McuCommand:
 
     emergency: bool = False
 
+    # Cruise scaling percent 0..100 (100 = full cruise); the MCU applies
+    # effective_cruise = cruise * speed_scale / 100. Values >100 clamp on decode.
+    speed_scale: int = 100
+
 
 # ============================================================
 # 3. Direction helpers
@@ -614,10 +618,30 @@ class MissionManager:
         settle_speed_mps: float = 0.25,
         settle_timeout_s: float = 4.0,
         settle_min_s: float = 1.5,
+        scale_transit: int = 40,
+        scale_final_leg: int = 50,
+        scale_hint: int = 50,
+        hint_slow_range_m: float = 4.0,
     ):
         self._log = logger
         self.state = MissionState.INIT
         self.target_altitude = 2.0
+
+        # Speed scheduling (MISSION_INTERFACE 7a): slow the legs that end in a
+        # stop or turn so braking authority is there when it is needed. The
+        # scale (percent of cruise) is recomputed each cruising tick; the MCU
+        # applies effective_cruise = cruise * scale / 100.
+        self.scale_transit = scale_transit
+        self.scale_final_leg = scale_final_leg
+        self.scale_hint = scale_hint
+        self.hint_slow_range_m = hint_slow_range_m
+        # True from a settle exit until the next node advance (the first leg
+        # after any settle runs slow).
+        self._first_leg_after_settle = False
+        # Latest front-camera marker hint (id, node, ground distance ahead).
+        self._front_hint_id: Optional[int] = None
+        self._front_hint_node: Optional[Node] = None
+        self._front_hint_distance: Optional[float] = None
 
         # Turn-settle: after a node advance that changes the travel axis (or
         # reverses it), hold on the node until the DR speed bleeds off so
@@ -651,6 +675,29 @@ class MissionManager:
 
         self._seq = 0
         self._last_dr: Tuple[Optional[float], Optional[float]] = (None, None)
+
+    # -------- front-camera hint (speed scheduling only) -------------------
+
+    def set_front_hint(
+        self,
+        marker_id: Optional[int],
+        node: Optional[Node],
+        distance_m: Optional[float],
+    ) -> None:
+        """Store the latest front-camera marker hint (id, grid node, ground
+        distance ahead) used only for speed scheduling. A None id clears the
+        hint; a hint for an already recorded marker is ignored."""
+
+        if marker_id is None:
+            self._front_hint_id = None
+            self._front_hint_node = None
+            self._front_hint_distance = None
+            return
+        if self.grid_map.contains_marker(marker_id):
+            return
+        self._front_hint_id = marker_id
+        self._front_hint_node = node
+        self._front_hint_distance = distance_m
 
     # -------- logging helpers ---------------------------------------------
 
@@ -722,6 +769,8 @@ class MissionManager:
         resume = self._settle_until_mode
         self._settle_until_mode = None
         self._settle_started_t = None
+        # The leg that starts here runs slow until the next node advance.
+        self._first_leg_after_settle = True
         self._log(f"[SETTLE] exit dir={self.move_direction.name} {self._context_str()}")
         return resume
 
@@ -797,6 +846,7 @@ class MissionManager:
             if perception.intersection.detected:
                 prev_node = self.current_node
                 self.current_node = move_to_next_node(prev_node, self.move_direction)
+                self._first_leg_after_settle = False  # advanced past the first leg
                 self.grid_map.add_edge(prev_node, self.current_node)
                 self.grid_map.mark_edge_visited(prev_node, self.current_node)
                 prev_direction = self.move_direction
@@ -867,6 +917,7 @@ class MissionManager:
             if perception.intersection.detected:
                 prev_direction = self.move_direction
                 self.current_node = move_to_next_node(self.current_node, self.move_direction)
+                self._first_leg_after_settle = False  # advanced past the first leg
                 self._log(
                     f"[FOLLOW] target=({target_node.x}, {target_node.y}) "
                     f"move_direction={self.move_direction.name}"
@@ -904,6 +955,40 @@ class MissionManager:
 
         return ControlMode.HOLD
 
+    # -------- speed scheduling --------------------------------------------
+
+    def _compute_speed_scale(self) -> int:
+        """Cruise speed scale (percent) for the current leg (MISSION_INTERFACE
+        7a). 100 outside the cruising states; otherwise the lowest applicable
+        slow-down so any leg that ends in a stop or turn is already slow."""
+
+        if self.state not in (MissionState.EXPLORE, MissionState.FOLLOW_RESCUE_PATH):
+            return 100
+
+        scale = 100
+        # Transit legs (Y travel between rows) and the first leg after a settle.
+        if self.move_direction in (MoveDirection.Y_POS, MoveDirection.Y_NEG):
+            scale = min(scale, self.scale_transit)
+        if self._first_leg_after_settle:
+            scale = min(scale, self.scale_transit)
+
+        # Final leg before a row end: the next node is the last in-bounds one
+        # in the travel direction (the node past it is out of bounds).
+        next_node = move_to_next_node(self.current_node, self.move_direction)
+        if self.grid_map.in_bounds(next_node) and not self.grid_map.in_bounds(
+            move_to_next_node(next_node, self.move_direction)
+        ):
+            scale = min(scale, self.scale_final_leg)
+
+        # Front-camera marker hint projected within range ahead on this row.
+        if (
+            self._front_hint_distance is not None
+            and self._front_hint_distance <= self.hint_slow_range_m
+        ):
+            scale = min(scale, self.scale_hint)
+
+        return scale
+
     # -------- command assembly / dispatch ---------------------------------
 
     def make_mcu_command(
@@ -912,6 +997,9 @@ class MissionManager:
         """Bundle the mission state and vision errors into an McuCommand."""
 
         self._seq = (self._seq + 1) & 0xFF
+        speed_scale = self._compute_speed_scale()
+        if speed_scale != 100:
+            self._log(f"[{self.state.name}] scale={speed_scale} {self._context_str()}")
         vel_valid = sensors.vx_est is not None and sensors.vy_est is not None
         marker_id = perception.aruco.marker_id
         return McuCommand(
@@ -943,6 +1031,7 @@ class MissionManager:
             vy_est=sensors.vy_est if vel_valid else 0.0,
             vel_est_valid=vel_valid,
             emergency=(mode == ControlMode.EMERGENCY_LAND),
+            speed_scale=speed_scale,
         )
 
     def step(

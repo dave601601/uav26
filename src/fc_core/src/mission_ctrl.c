@@ -99,15 +99,16 @@ static void clamp_vxy(float* vx, float* vy, float max_vxy) {
     }
 }
 
-/* FOLLOW_LINE body velocity: cruise along the travel axis, kp_xy * the
- * grid-line offset for that axis on the perpendicular axis, and
- * wz = kp_yaw * line_angle_error. +/-x travel drives body +y from line_dx
+/* FOLLOW_LINE body velocity: `along` (speed-scaled cruise) on the travel
+ * axis, kp_xy * the grid-line offset for that axis on the perpendicular axis,
+ * and wz = kp_yaw * line_angle_error. +/-x travel drives body +y from line_dx
  * (nearest vertical line); +/-y travel drives body +x from line_dy (nearest
- * horizontal line). The caller gates this on the matching presence bit. */
+ * horizontal line). speed_scale touches only `along`, not the lateral/angle
+ * corrections. The caller gates this on the matching presence bit. */
 static void line_velocity(const fc_proto_mission_t* c,
                           const fc_mission_gains_t* g,
+                          float along,
                           float* vx, float* vy, float* wz) {
-    float along = g->cruise;
     switch (c->move_direction) {
         case FC_DIR_X_POS: *vx = +along; *vy = g->kp_xy * c->line_dx; break;
         case FC_DIR_X_NEG: *vx = -along; *vy = g->kp_xy * c->line_dx; break;
@@ -189,6 +190,11 @@ void fc_mission_tick(const fc_proto_mission_t* cmd,
     uint8_t ctrl_mode = (uint8_t)(cmd->mode & FC_PROTO_MODE_MASK);
     uint8_t arm_req   = (cmd->mode & FC_PROTO_MODE_ARM_BIT) ? 1u : 0u;
 
+    /* Per-command cruise scaling. speed_scale is a 0..100 percent (the wire
+       decode clamps above 100); 0 creeps to a stop. Only the cruise term is
+       scaled -- lateral/angle/marker corrections keep full authority. */
+    float eff_cruise = g->cruise * ((float)cmd->speed_scale * 0.01f);
+
     /* STOP: motors off, disarm immediately, ahead of any law. */
     if (ctrl_mode == FC_CTRL_STOP) {
         write_comp(0.0f, 0.0f, 0.0f, 0.0f, 0u);
@@ -208,7 +214,7 @@ void fc_mission_tick(const fc_proto_mission_t* cmd,
             bool x_travel = (cmd->move_direction == FC_DIR_X_POS
                           || cmd->move_direction == FC_DIR_X_NEG);
             bool have = x_travel ? vertical_line : horizontal_line;
-            if (have) line_velocity(cmd, g, &vx, &vy, &wz);
+            if (have) line_velocity(cmd, g, eff_cruise, &vx, &vy, &wz);
             break;
         }
         case FC_CTRL_ALIGN_MARKER:
@@ -222,7 +228,7 @@ void fc_mission_tick(const fc_proto_mission_t* cmd,
             break;
         case FC_CTRL_SEARCH_LINE:
         case FC_CTRL_MOVE_TO_LANDMARK:
-            cruise_velocity(cmd->move_direction, g->cruise, &vx, &vy);
+            cruise_velocity(cmd->move_direction, eff_cruise, &vx, &vy);
             break;
         case FC_CTRL_LAND_ON_MARKER:
             /* Brake toward the marker while the land law descends. */

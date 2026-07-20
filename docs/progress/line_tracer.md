@@ -2,6 +2,19 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## speed_scale deceleration scheduling landed (2026-07-20)
+
+Per spec section 7a: the mission frame gains a speed_scale percent
+byte (34-byte frame; decode clamps >100), the MCU scales only the
+along-track cruise term with it (lateral/angle/marker terms and
+ALIGN/LAND/HOLD untouched), and MissionManager schedules it per leg —
+transits and the first post-settle leg 40, the final leg before a row
+end 50, a front-camera marker hint within 4 m 50, straights 100,
+lowest wins. The front-hint hook (set_front_hint; recorded ids
+dropped) is in place for the node integration. Suites: fc_core 48
+gtests, line_tracer 281 pytest, all green. Unflown yet — the 1.0 m/s
+retest follows the front-camera node integration.
+
 ## r83: FULL mission complete on the skeleton backend (2026-07-17)
 
 r83 (1500 s cap, seed 42, stock defaults cruise 0.5 / max_vxy 0.8):

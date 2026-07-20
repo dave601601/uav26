@@ -7,7 +7,7 @@
  *
  * Downlink (companion -> FC): 24 bytes little-endian. 200 Hz nominal.
  * Uplink   (FC -> companion): 40 bytes little-endian. 100 Hz nominal.
- * Mission  (companion -> FC): 33 bytes little-endian. 20-50 Hz nominal.
+ * Mission  (companion -> FC): 34 bytes little-endian. 20-50 Hz nominal.
  *
  * Fixed-point conventions:
  *   Q14 = float * 16384, range +/-2.0 -> +/-32768 (used for setpoints in rad / rad/s)
@@ -39,7 +39,8 @@
  *   28   marker_confidence    u8     0..255
  *   29   flags                u8     see FC_PROTO_MFLAG_* below
  *   30   flags2               u8     see FC_PROTO_MFLAG2_* below
- *   31   crc16                u16    CRC16-CCITT over bytes 0..30
+ *   31   speed_scale          u8     percent 0..100 (decode clamps >100 to 100)
+ *   32   crc16                u16    CRC16-CCITT over bytes 0..31
  *
  * Line information travels as the full [dx, dy, flag] triple: both
  * grid-line offsets (line_dx from the nearest vertical line, line_dy from
@@ -67,7 +68,7 @@ extern "C" {
 
 #define FC_PROTO_DOWN_LEN    24u
 #define FC_PROTO_UP_LEN      40u
-#define FC_PROTO_MISSION_LEN 33u
+#define FC_PROTO_MISSION_LEN 34u
 
 /* Bit 7 of the `mode` byte requests arm; bits 0..6 carry the MODE enum
  * (setpoint downlink) or the ControlMode enum (mission downlink). */
@@ -143,6 +144,7 @@ typedef struct {
     uint8_t  marker_confidence;
     uint8_t  flags;               /* FC_PROTO_MFLAG_* */
     uint8_t  flags2;              /* FC_PROTO_MFLAG2_* */
+    uint8_t  speed_scale;         /* percent 0..100, scales cruise; 100 = full */
 } fc_proto_mission_t;
 
 uint16_t fc_proto_crc16_ccitt(const uint8_t* data, size_t len);

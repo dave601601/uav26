@@ -53,3 +53,8 @@ float32 vy_est              # m/s, body +y
 bool vel_est_valid
 
 bool emergency
+
+# Cruise speed scale, percent 0..100 (wire decode clamps above 100). Scales the
+# MCU cruise in FOLLOW_LINE/SEARCH_LINE/MOVE_TO_LANDMARK; 100 = full cruise. The
+# mission always sets this; an unset 0 creeps to a stop, a safe sim default.
+uint8 speed_scale
