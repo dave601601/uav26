@@ -2,6 +2,21 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Lost-line recovery landed (2026-07-20)
+
+The r81 gap is closed: a cruising state that loses the followed
+line's presence bit for 2 s continuous enters recovery — the mission
+synthesizes a virtual line from DR (nominal perpendicular of the
+BELIEVED row minus the DR coordinate, wire-clamped) with speed_scale
+0, so the MCU's existing lateral law sidesteps the drone back onto
+the believed line; 3 consecutive real-line frames resume cruise, 20 s
+without reacquisition goes FAILSAFE, DR-None stays in the old HOLD
+degradation with a loud log. Pulses are ignored while recovering, and
+settles/confirms break absence continuity so crossing flicker cannot
+false-trigger. No protocol or MCU change — speed_scale 0 (creep) plus
+the line fields already expressed everything needed. 10 new tests;
+suite 305 pytest + 48 gtests.
+
 ## r85: FULL mission at 1.0 m/s (2026-07-20)
 
 r85 (1200 s cap, seed 42, mission_cruise:=1.0 mission_max_vxy:=1.3):

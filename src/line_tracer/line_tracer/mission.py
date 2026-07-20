@@ -623,6 +623,9 @@ class MissionManager:
         scale_final_leg: int = 50,
         scale_hint: int = 50,
         hint_slow_range_m: float = 4.0,
+        lost_line_timeout_s: float = 2.0,
+        recovery_reacquire_ticks: int = 3,
+        recovery_timeout_s: float = 20.0,
     ):
         self._log = logger
         self.state = MissionState.INIT
@@ -654,6 +657,22 @@ class MissionManager:
         # completes (the state's normal cruise mode).
         self._settle_until_mode: Optional[ControlMode] = None
         self._settle_started_t: Optional[float] = None
+
+        # Lost-line recovery: when a cruising leg loses the followed line's
+        # presence bit for lost_line_timeout_s, synthesize a virtual line from
+        # DR toward the believed row and creep (speed_scale 0) until the real
+        # line returns for recovery_reacquire_ticks consecutive frames.
+        # recovery_timeout_s without reacquisition -> FAILSAFE.
+        self.lost_line_timeout_s = lost_line_timeout_s
+        self.recovery_reacquire_ticks = recovery_reacquire_ticks
+        self.recovery_timeout_s = recovery_timeout_s
+        # When the needed line first went absent (None = present or reset).
+        self._lost_line_since: Optional[float] = None
+        self._recovery_active = False
+        self._recovery_started_t: Optional[float] = None
+        self._recovery_reacquire_count = 0
+        # One [RECOVER] unavailable log per continuous-absence episode.
+        self._recovery_dr_none_logged = False
 
         self.grid_map = grid_map if grid_map is not None else GridMap(
             node_count_x=11, node_count_y=8, cell_size_m=3.0, logger=logger
@@ -800,6 +819,9 @@ class MissionManager:
 
         self._settle_until_mode = resume_mode
         self._settle_started_t = now
+        # A settle breaks lost-line continuity: the pulse that triggered it
+        # means the line was just seen.
+        self._reset_recovery()
         self._log(f"[SETTLE] enter dir={self.move_direction.name} {self._context_str()}")
 
     def _settle_complete(self, now: float, sensors: SensorData) -> bool:
@@ -830,6 +852,76 @@ class MissionManager:
         self._first_leg_after_settle = True
         self._log(f"[SETTLE] exit dir={self.move_direction.name} {self._context_str()}")
         return resume
+
+    # -------- lost-line recovery ------------------------------------------
+
+    def _needed_line_present(self, perception: PerceptionData) -> bool:
+        """Presence bit for the line the current leg follows: the vertical
+        line for +/-x travel, the horizontal line for +/-y travel."""
+
+        if self.move_direction in (MoveDirection.X_POS, MoveDirection.X_NEG):
+            return perception.line.has_vertical
+        return perception.line.has_horizontal
+
+    def _reset_recovery(self) -> None:
+        """Clear all lost-line tracking and any active recovery."""
+
+        self._lost_line_since = None
+        self._recovery_active = False
+        self._recovery_started_t = None
+        self._recovery_reacquire_count = 0
+        self._recovery_dr_none_logged = False
+
+    def _recovery_mode(
+        self, now: float, perception: PerceptionData
+    ) -> Optional[ControlMode]:
+        """Drive lost-line recovery for the current cruising leg. Returns
+        FOLLOW_LINE while recovering (make_mcu_command then synthesizes the
+        line from DR and forces speed_scale 0), EMERGENCY_LAND on the recovery
+        timeout, or None when normal processing should continue."""
+
+        line_present = self._needed_line_present(perception)
+
+        if self._recovery_active:
+            # Reacquire needs recovery_reacquire_ticks CONSECUTIVE real frames;
+            # a single absent frame resets the count.
+            if line_present:
+                self._recovery_reacquire_count += 1
+                if self._recovery_reacquire_count >= self.recovery_reacquire_ticks:
+                    self._log(f"[RECOVER] exit {self._context_str()}")
+                    self._reset_recovery()
+                    return None
+            else:
+                self._recovery_reacquire_count = 0
+            if now - self._recovery_started_t >= self.recovery_timeout_s:
+                self._log(f"[RECOVER] timeout -> FAILSAFE {self._context_str()}")
+                self._reset_recovery()
+                self.change_state(MissionState.FAILSAFE)
+                return ControlMode.EMERGENCY_LAND
+            return ControlMode.FOLLOW_LINE
+
+        # Not recovering: track how long the needed line has been absent.
+        if line_present:
+            self._lost_line_since = None
+            self._recovery_dr_none_logged = False
+            return None
+        if self._lost_line_since is None:
+            self._lost_line_since = now
+            return None
+        if now - self._lost_line_since < self.lost_line_timeout_s:
+            return None
+
+        # Absent past the timeout: enter recovery unless DR is unavailable.
+        if self._last_dr[0] is None or self._last_dr[1] is None:
+            if not self._recovery_dr_none_logged:
+                self._log(f"[RECOVER] unavailable (dr=none) {self._context_str()}")
+                self._recovery_dr_none_logged = True
+            return None
+        self._recovery_active = True
+        self._recovery_started_t = now
+        self._recovery_reacquire_count = 0
+        self._log(f"[RECOVER] enter {self._context_str()}")
+        return ControlMode.FOLLOW_LINE
 
     # -------- main tick ---------------------------------------------------
 
@@ -887,12 +979,19 @@ class MissionManager:
             if settle_mode is not None:
                 return settle_mode
 
+            # 0b. Lost-line recovery: creep toward the believed row when the
+            #     followed line's presence bit has been absent too long.
+            recovery_mode = self._recovery_mode(now, perception)
+            if recovery_mode is not None:
+                return recovery_mode
+
             # 1. A new, unseen marker starts the 3 s confirmation.
             if (
                 perception.aruco.detected
                 and perception.aruco.marker_id is not None
                 and not self.grid_map.contains_marker(perception.aruco.marker_id)
             ):
+                self._reset_recovery()  # leaving the cruise leg for the confirm
                 self.marker_confirm_start_time = now
                 self.detected_ids_during_hover = []
                 self.marker_node_votes = {}
@@ -983,6 +1082,11 @@ class MissionManager:
 
             target_node = self.rescue_path[self.path_index]
             self.move_direction = direction_to_adjacent_node(self.current_node, target_node)
+
+            # Lost-line recovery uses the current leg's travel axis, set above.
+            recovery_mode = self._recovery_mode(now, perception)
+            if recovery_mode is not None:
+                return recovery_mode
 
             if perception.intersection.detected:
                 # Defensive: never advance off-grid. move_direction already
@@ -1079,6 +1183,31 @@ class MissionManager:
 
         self._seq = (self._seq + 1) & 0xFF
         speed_scale = self._compute_speed_scale()
+
+        # Lost-line recovery overrides the followed-line fields with a virtual
+        # line synthesized from DR toward the believed row, and creeps at
+        # speed_scale 0 (lateral correction only) until the real line returns.
+        vertical_line = perception.line.has_vertical
+        horizontal_line = perception.line.has_horizontal
+        line_dx = perception.line.dx
+        line_dy = perception.line.dy
+        recovering = (
+            self._recovery_active
+            and self.state in (MissionState.EXPLORE, MissionState.FOLLOW_RESCUE_PATH)
+            and self._last_dr[0] is not None
+            and self._last_dr[1] is not None
+        )
+        if recovering:
+            speed_scale = 0
+            nom_x, nom_y = self.grid_map.node_world(self.current_node)
+            dr_x, dr_y = self._last_dr
+            if self.move_direction in (MoveDirection.X_POS, MoveDirection.X_NEG):
+                line_dx = max(-2.0, min(2.0, nom_y - dr_y))  # clamp to the wire range
+                vertical_line = True
+            else:
+                line_dy = max(-2.0, min(2.0, nom_x - dr_x))
+                horizontal_line = True
+
         if speed_scale != 100:
             self._log(f"[{self.state.name}] scale={speed_scale} {self._context_str()}")
         vel_valid = sensors.vx_est is not None and sensors.vy_est is not None
@@ -1091,10 +1220,10 @@ class MissionManager:
             node_y=self.current_node.y,
             move_direction=int(self.move_direction),
             target_altitude=self.target_altitude,
-            vertical_line=perception.line.has_vertical,
-            horizontal_line=perception.line.has_horizontal,
-            line_dx=perception.line.dx,
-            line_dy=perception.line.dy,
+            vertical_line=vertical_line,
+            horizontal_line=horizontal_line,
+            line_dx=line_dx,
+            line_dy=line_dy,
             line_angle_error=perception.line.angle_error,
             line_confidence=perception.line.confidence,
             intersection_detected=perception.intersection.detected,

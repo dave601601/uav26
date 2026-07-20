@@ -78,6 +78,17 @@ X_POS=0 X_NEG=1 Y_POS=2 Y_NEG=3   (body FLU: +x forward, +y left)
 - Double-count guard: MissionManager only accepts an intersection event
   if the previous one was released (perception sends pulses, section 5)
   — no time-based cooldown needed at this layer.
+- Lost-line recovery (third DR use, exceptional like the snaps): when a
+  cruising state loses the followed line's presence bit for
+  lost_line_timeout_s (default 2.0), the mission synthesizes a virtual
+  line from DR — line_dx = nominal_perp - dr_perp for the current leg's
+  nominal grid line, presence bit set, speed_scale 0 (creep: lateral
+  correction only) — until the real line is seen for
+  recovery_reacquire_ticks (default 3) consecutive frames, then resumes.
+  This also re-aligns belief and reality after any undetected lateral
+  drift, since it pulls toward the BELIEVED row's line.
+  recovery_timeout_s (default 20) without reacquisition -> FAILSAFE.
+  DR unavailable -> stay in the HOLD fallback and log loudly.
 
 ## 4. Exploration (serpentine, side camera deferred)
 

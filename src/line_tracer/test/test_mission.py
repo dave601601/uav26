@@ -790,3 +790,153 @@ def test_speed_scale_lowest_wins_when_rules_combine():
     m.set_front_hint(9, Node(5, 7), 2.0)
     cmd = m.step(0.0, _sensors(), _perception())
     assert cmd.speed_scale == 40
+
+
+# ---------------------------------------------------------------------------
+# lost-line recovery (MISSION_INTERFACE 3)
+# ---------------------------------------------------------------------------
+
+def _drive_into_recovery(m, node, direction, dr_x, dr_y):
+    """Put the manager on a cruising leg with the needed line absent and
+    step past lost_line_timeout_s so recovery engages. Returns the command
+    from the tick recovery entered."""
+    m.state = MissionState.EXPLORE
+    m.current_node = node
+    m.move_direction = direction
+    s = _sensors(dr_x=dr_x, dr_y=dr_y)
+    m.step(0.0, s, _perception())          # first absent tick starts the clock
+    return m.step(2.0, s, _perception())   # timeout reached -> enter recovery
+
+
+def test_recovery_enters_only_after_timeout():
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(3, 2)
+    m.move_direction = MoveDirection.X_POS
+    s = _sensors(dr_x=9.0, dr_y=6.0)
+
+    m.step(0.0, s, _perception())          # needed vertical line absent
+    assert not m._recovery_active
+    cmd = m.step(1.9, s, _perception())    # still under the 2.0 s timeout
+    assert not m._recovery_active
+    assert cmd.speed_scale != 0
+    cmd = m.step(2.0, s, _perception())    # timeout reached
+    assert m._recovery_active
+    assert cmd.speed_scale == 0
+
+
+def test_recovery_line_dx_pulls_toward_nominal_from_both_sides():
+    # nominal row for node (3, 2) is world y = 6.0
+    m = MissionManager(logger=_null)
+    cmd = _drive_into_recovery(m, Node(3, 2), MoveDirection.X_POS, dr_x=9.0, dr_y=5.0)
+    assert m._recovery_active
+    assert cmd.vertical_line is True
+    assert cmd.line_dx == pytest.approx(1.0)     # below the row -> pull +y
+
+    m2 = MissionManager(logger=_null)
+    cmd2 = _drive_into_recovery(m2, Node(3, 2), MoveDirection.X_POS, dr_x=9.0, dr_y=7.0)
+    assert cmd2.line_dx == pytest.approx(-1.0)   # above the row -> pull -y
+
+
+def test_recovery_clamps_synthesized_offset_to_wire_range():
+    m = MissionManager(logger=_null)
+    # nominal y = 6.0, dr_y = 2.0 -> raw 4.0 clamps to +2.0
+    cmd = _drive_into_recovery(m, Node(3, 2), MoveDirection.X_POS, dr_x=9.0, dr_y=2.0)
+    assert cmd.line_dx == pytest.approx(2.0)
+
+
+def test_recovery_y_travel_uses_line_dy():
+    m = MissionManager(logger=_null)
+    # Y_POS -> needed horizontal line; nominal column for node (3, 2) is x = 9.0
+    cmd = _drive_into_recovery(m, Node(3, 2), MoveDirection.Y_POS, dr_x=8.0, dr_y=6.0)
+    assert m._recovery_active
+    assert cmd.horizontal_line is True
+    assert cmd.line_dy == pytest.approx(1.0)     # left of the column -> pull +x
+    assert cmd.vertical_line is False
+    assert cmd.line_dx == 0.0
+
+
+def test_recovery_forces_speed_scale_zero_and_follow_line():
+    m = MissionManager(logger=_null)
+    cmd = _drive_into_recovery(m, Node(3, 2), MoveDirection.X_POS, dr_x=9.0, dr_y=6.0)
+    assert cmd.speed_scale == 0
+    assert cmd.mode == int(ControlMode.FOLLOW_LINE)
+
+
+def test_recovery_reacquire_needs_consecutive_ticks_flicker_resets():
+    m = MissionManager(logger=_null)
+    _drive_into_recovery(m, Node(3, 2), MoveDirection.X_POS, dr_x=9.0, dr_y=6.0)
+    assert m._recovery_active
+    s = _sensors(dr_x=9.0, dr_y=6.0)
+    present = _perception(has_vertical=True)
+    absent = _perception()
+
+    m.step(2.1, s, present)                  # count 1
+    m.step(2.2, s, present)                  # count 2 (not yet 3)
+    assert m._recovery_active
+    m.step(2.3, s, absent)                   # a flicker resets the count
+    assert m._recovery_active
+    assert m._recovery_reacquire_count == 0
+    m.step(2.4, s, present)                  # count 1 again
+    m.step(2.5, s, present)                  # count 2
+    m.step(2.6, s, present)                  # count 3 -> exit
+    assert not m._recovery_active
+
+
+def test_recovery_exit_resumes_cruise_scale():
+    m = MissionManager(logger=_null)
+    _drive_into_recovery(m, Node(3, 2), MoveDirection.X_POS, dr_x=9.0, dr_y=6.0)
+    s = _sensors(dr_x=9.0, dr_y=6.0)
+    present = _perception(has_vertical=True)
+    m.step(2.1, s, present)                  # count 1
+    m.step(2.2, s, present)                  # count 2
+    cmd = m.step(2.3, s, present)            # count 3 -> exit, normal cruise
+    assert not m._recovery_active
+    assert cmd.speed_scale == 100            # mid-row X straight, full cruise
+    assert cmd.vertical_line is True         # the real line, passed through
+    assert cmd.mode == int(ControlMode.FOLLOW_LINE)
+
+
+def test_recovery_timeout_goes_failsafe():
+    m = MissionManager(logger=_null)
+    _drive_into_recovery(m, Node(3, 2), MoveDirection.X_POS, dr_x=9.0, dr_y=6.0)
+    assert m._recovery_active                # entered at now = 2.0
+    s = _sensors(dr_x=9.0, dr_y=6.0)
+    cmd = m.step(21.9, s, _perception())     # 19.9 s in recovery, still short of 20
+    assert m.state == MissionState.EXPLORE
+    assert m._recovery_active
+    cmd = m.step(22.0, s, _perception())     # 20.0 s without reacquisition
+    assert m.state == MissionState.FAILSAFE
+    assert cmd.mode == int(ControlMode.EMERGENCY_LAND)
+
+
+def test_recovery_does_not_enter_without_dr():
+    logs = []
+    m = MissionManager(logger=logs.append)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(3, 2)
+    m.move_direction = MoveDirection.X_POS
+    s = _sensors()                           # DR None
+
+    m.step(0.0, s, _perception())
+    cmd = m.step(2.0, s, _perception())      # timeout, but DR unavailable
+    assert not m._recovery_active
+    assert cmd.speed_scale != 0              # stays with the HOLD degradation
+    assert cmd.mode == int(ControlMode.FOLLOW_LINE)
+    m.step(3.0, s, _perception())            # still absent, no second log
+    unavailable = [line for line in logs if "[RECOVER] unavailable" in line]
+    assert len(unavailable) == 1
+    assert "dr=none" in unavailable[0]
+
+
+def test_recovery_ignores_intersection_pulses():
+    m = MissionManager(logger=_null)
+    _drive_into_recovery(m, Node(3, 2), MoveDirection.X_POS, dr_x=9.0, dr_y=6.0)
+    assert m._recovery_active
+    node_before = m.current_node
+    s = _sensors(dr_x=9.0, dr_y=6.0)
+    # a pulse while off the line is untrustworthy -> ignored, node stays put
+    cmd = m.step(2.1, s, _perception(intersection=True))
+    assert m.current_node == node_before
+    assert m._recovery_active
+    assert cmd.speed_scale == 0
