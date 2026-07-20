@@ -5,7 +5,8 @@
   <version>0.1.0</version>
   <description>
     Message types for the UAV26 companion-to-FC link. Setpoint mirrors the
-    24-byte USART2 downlink frame; Telemetry mirrors the 40-byte uplink.
+    24-byte USART2 downlink frame; Telemetry mirrors the 40-byte uplink;
+    McuCommand mirrors the 33-byte mission downlink frame.
   </description>
   <maintainer email="noreply@todo.todo">Dongha Gwak</maintainer>
   <license>Apache-2.0</license>

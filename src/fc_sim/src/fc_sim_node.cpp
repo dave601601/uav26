@@ -17,6 +17,7 @@
 #include <actuator_msgs/msg/actuators.hpp>
 #include <fc_sim_msgs/msg/setpoint.hpp>
 #include <fc_sim_msgs/msg/telemetry.hpp>
+#include <fc_sim_msgs/msg/mcu_command.hpp>
 
 #include <cmath>
 #include <chrono>
@@ -25,6 +26,7 @@
 extern "C" {
 #include "fc_core/controller.h"
 #include "fc_core/protocol.h"
+#include "fc_core/mission_ctrl.h"
 #include "fc_core/linalg.h"
 }
 
@@ -36,6 +38,10 @@ namespace {
 // uav26_quad SDF. ω_i = sqrt(T_i / k_f). 8.0e-06 with ω_max 1050 rad/s
 // models the real 2212 920KV / 4S power train (~900 gf max per motor).
 constexpr double kDefaultMotorConstant = 8.0e-06;
+
+// A mission command older than this is treated as stale; the mission outer
+// loop then stops overwriting COMP and the legacy path / stale fallback holds.
+constexpr uint32_t kMissionStaleMs = 300u;
 
 // Conversion from sensor_msgs/Imu (FLU body, ENU world) to the frame
 // the firmware's mixer + controller actually operate in.
@@ -117,6 +123,10 @@ public:
             "/fc/setpoint", rclcpp::QoS(10),
             [this](const fc_sim_msgs::msg::Setpoint::SharedPtr m) { onSetpoint(*m); });
 
+        sub_mcu_ = create_subscription<fc_sim_msgs::msg::McuCommand>(
+            "/fc/mcu_command", rclcpp::QoS(10),
+            [this](const fc_sim_msgs::msg::McuCommand::SharedPtr m) { onMcuCommand(*m); });
+
         sub_clock_ = create_subscription<rosgraph_msgs::msg::Clock>(
             "/clock", rclcpp::QoS(10),
             [this](const rosgraph_msgs::msg::Clock::SharedPtr m) { onClock(*m); });
@@ -176,11 +186,14 @@ public:
                 (float)this->declare_parameter<double>("atti_kd_roll",  0.20),
                 (float)this->declare_parameter<double>("atti_kd_pitch", 0.20),
                 0.0f);
-            // Squash the firmware's SBUS-centering deadband so the
-            // companion's precise setpoints reach the rate loop. 0.001
-            // = 1 mrad/s of rate deadband.
-            fc_rate_deadband_factor = (float)this->declare_parameter<double>("rate_deadband", 0.001);
-            fc_atti_deadband_factor = (float)this->declare_parameter<double>("atti_deadband", 0.001);
+            // Remove the firmware's SBUS-centering deadband entirely: it
+            // zeroes SETPOINTS below the bound (measurement noise passes
+            // regardless), and there are no sticks in sim. Even 0.001
+            // (3 mrad/s of rate deadband) left a +/-7.5 mrad attitude
+            // dead zone that turned mission FOLLOW_LINE trim commands
+            // into a +/-0.4 m lateral limit cycle.
+            fc_rate_deadband_factor = (float)this->declare_parameter<double>("rate_deadband", 0.0);
+            fc_atti_deadband_factor = (float)this->declare_parameter<double>("atti_deadband", 0.0);
             RCLCPP_INFO(get_logger(),
                 "sim retune: pid_rate.kp=(%.2f,%.2f,%.2f) ki=0; "
                 "pid_euler.kp=(%.2f,%.2f,0) kd=(%.2f,%.2f,0)",
@@ -188,6 +201,18 @@ public:
                 pid_euler.kp.x, pid_euler.kp.y,
                 pid_euler.kd.x, pid_euler.kd.y);
         }
+
+        // Mission outer-loop gain overrides, so cruise-speed experiments
+        // run without rebuilding. Defaults match fc_mission_gains
+        // (cruise 1.0, max_vxy 1.3). max_vxy clamps the total xy velocity,
+        // so raising cruise past it is a no-op unless max_vxy rises too.
+        fc_mission_gains.cruise = (float)this->declare_parameter<double>(
+            "mission_cruise", 1.0);
+        fc_mission_gains.max_vxy = (float)this->declare_parameter<double>(
+            "mission_max_vxy", 1.3);
+        RCLCPP_INFO(get_logger(),
+            "mission gains: cruise=%.2f max_vxy=%.2f",
+            fc_mission_gains.cruise, fc_mission_gains.max_vxy);
 
         RCLCPP_INFO(get_logger(),
             "fc_sim_node up. motor_constant=%.3e max_omega=%.1f rad/s telem=%.0f Hz",
@@ -218,10 +243,22 @@ private:
         // wired in, world-frame z is the altitude reading the firmware's
         // ESKFz would otherwise get from the Micolink lidar.
         alt_lidar_ = (float)msg.pose.pose.position.z;
+        const float wx = (float)msg.pose.pose.position.x;   // ENU east
+        const float wy = (float)msg.pose.pose.position.y;   // ENU north
         ned_pos_ = vec(
             (float)msg.pose.pose.position.y,     // ENU east  -> NED north (approx)
             (float)msg.pose.pose.position.x,     // ENU north -> NED east
             (float)-msg.pose.pose.position.z);   // ENU up    -> NED down
+        // ENU heading of body +x from the odom quaternion; the mission outer
+        // loop rotates world velocity into body FLU with this yaw.
+        {
+            const double qw = msg.pose.pose.orientation.w;
+            const double qx = msg.pose.pose.orientation.x;
+            const double qy = msg.pose.pose.orientation.y;
+            const double qz = msg.pose.pose.orientation.z;
+            yaw_enu_ = (float)std::atan2(2.0 * (qw * qz + qx * qy),
+                                         1.0 - 2.0 * (qy * qy + qz * qz));
+        }
         // World-frame vz for the auto-hover prime's damping term.
         // dt MUST come from the odometry message's own stamp: gating on
         // fc_now_ms (updated by a separate /clock subscription) races
@@ -235,9 +272,19 @@ private:
             float dt = (float)(stamp_ms - prime_prev_ms_) * 1e-3f;
             float vz = (alt_lidar_ - prime_prev_alt_) / dt;
             if (std::fabs(vz) < 30.0f) prime_vz_ = vz;
+            // World-frame xy velocity for the mission velocity loop, same
+            // stamp-gated finite difference as vz.
+            float vx = (wx - prev_wx_) / dt;
+            float vy = (wy - prev_wy_) / dt;
+            if (std::fabs(vx) < 30.0f && std::fabs(vy) < 30.0f) {
+                world_vx_ = vx;
+                world_vy_ = vy;
+            }
         }
         prime_prev_ms_ = stamp_ms;
         prime_prev_alt_ = alt_lidar_;
+        prev_wx_ = wx;
+        prev_wy_ = wy;
         have_odom_ = true;
     }
 
@@ -256,6 +303,56 @@ private:
         got_external_setpoint_ = true;
     }
 
+    void onMcuCommand(const fc_sim_msgs::msg::McuCommand& msg) {
+        // Fill the mission wire struct from the ROS message, mirroring
+        // onSetpoint: arm folds into the mode byte's bit 0x80, confidences
+        // map 0..1 -> 0..255, and the booleans pack into the flag bytes.
+        fc_proto_mission_t m{};
+        m.mode = (uint8_t)((msg.mode & FC_PROTO_MODE_MASK)
+               | (msg.arm ? FC_PROTO_MODE_ARM_BIT : 0));
+        m.mission_state    = msg.mission_state;
+        m.seq              = msg.seq;
+        m.node_x           = msg.node_x;
+        m.node_y           = msg.node_y;
+        m.move_direction   = msg.move_direction;
+        m.target_altitude  = msg.target_altitude;
+        m.line_dx          = msg.line_dx;
+        m.line_dy          = msg.line_dy;
+        m.line_angle_error = msg.line_angle_error;
+        m.marker_error_x   = msg.marker_error_x;
+        m.marker_error_y   = msg.marker_error_y;
+        m.marker_yaw_error = msg.marker_yaw_error;
+        m.vx_est           = msg.vx_est;
+        m.vy_est           = msg.vy_est;
+        m.marker_id        = msg.marker_id;
+        m.line_confidence   = (uint8_t)std::clamp(msg.line_confidence   * 255.0f, 0.0f, 255.0f);
+        m.marker_confidence = (uint8_t)std::clamp(msg.marker_confidence * 255.0f, 0.0f, 255.0f);
+        m.flags = (uint8_t)(
+              (msg.vertical_line         ? FC_PROTO_MFLAG_VERTICAL_LINE   : 0)
+            | (msg.horizontal_line       ? FC_PROTO_MFLAG_HORIZONTAL_LINE : 0)
+            | (msg.intersection_detected ? FC_PROTO_MFLAG_INTERSECTION    : 0)
+            | (msg.intersection_forward  ? FC_PROTO_MFLAG_FWD             : 0)
+            | (msg.intersection_left     ? FC_PROTO_MFLAG_LEFT            : 0)
+            | (msg.intersection_right    ? FC_PROTO_MFLAG_RIGHT           : 0)
+            | (msg.intersection_backward ? FC_PROTO_MFLAG_BACK            : 0)
+            | (msg.marker_detected       ? FC_PROTO_MFLAG_MARKER_DETECTED : 0));
+        m.flags2 = (uint8_t)(
+              (msg.vel_est_valid ? FC_PROTO_MFLAG2_VEL_EST_VALID : 0)
+            | (msg.emergency     ? FC_PROTO_MFLAG2_EMERGENCY     : 0));
+        // Pass verbatim; the decode clamps above 100. An unset 0 creeps (safe).
+        m.speed_scale = msg.speed_scale;
+
+        // Wire parity: round-trip through the codec exactly as onSetpoint's
+        // down frame does, so the sim exercises encode/decode, not just apply.
+        uint8_t buf[FC_PROTO_MISSION_LEN];
+        fc_proto_mission_t decoded{};
+        if (fc_proto_encode_mission(&m, buf)
+                && fc_proto_decode_mission(buf, &decoded)) {
+            fc_proto_apply_mission(&decoded, fc_now_ms);
+            got_mission_command_ = true;
+        }
+    }
+
     void onClock(const rosgraph_msgs::msg::Clock& msg) {
         // Convert sim time to monotonic ms used by the controller's
         // stale-link logic.
@@ -263,8 +360,8 @@ private:
                                     + msg.clock.nanosec / 1000000u);
         fc_now_ms = now_ms;
 
-        // Auto-hover-init keeps COMP fresh until a real setpoint
-        // arrives (after which onSetpoint takes over COMP.last_ms).
+        // Auto-hover-init keeps COMP fresh until a real setpoint OR a
+        // mission command arrives (after which that path owns COMP.last_ms).
         // The prime is a real altitude hold, not a fixed thrust: a
         // constant near-hover thrust only cancels gravity, it does NOT
         // brake the spawn fall — every pre-2026-07 run slammed the
@@ -272,7 +369,7 @@ private:
         // tumble settled (r44-r50). PD on altitude parks the drone at
         // prime_alt_target until the companion takes over, so the
         // pre-engagement phase never touches the ground at all.
-        if (auto_hover_init_ && !got_external_setpoint_) {
+        if (auto_hover_init_ && !got_external_setpoint_ && !got_mission_command_) {
             COMP.last_ms = now_ms;
             if (have_odom_) {
                 // Rate-limited descent to the park altitude: command a
@@ -347,10 +444,30 @@ private:
             return;
         }
 
-        // Disarm: a fresh companion setpoint with arm=false means
-        // touchdown is complete — motors off. Control()'s mux only
+        // Mission outer loop precedence: when a fresh McuCommand exists, run
+        // the MCU mission law and overwrite COMP for this tick. It runs after
+        // any onSetpoint apply (a separate callback that already wrote COMP),
+        // so if a Setpoint and a mission command are both fresh the mission
+        // wins. With no fresh mission command this is a no-op and the legacy
+        // Setpoint path stays byte-identical.
+        if (MISSION.valid && (fc_now_ms - MISSION.last_ms) < kMissionStaleMs) {
+            float dt = (ctrl_prev_ms_ != 0 && fc_now_ms > ctrl_prev_ms_)
+                     ? (float)(fc_now_ms - ctrl_prev_ms_) * 1e-3f : 0.0f;
+            fc_mission_meas_t meas{};
+            meas.altitude = alt_lidar_;
+            meas.vz = prime_vz_;
+            const float c = std::cos(yaw_enu_), s = std::sin(yaw_enu_);
+            meas.vx_body =  c * world_vx_ + s * world_vy_;   // world ENU -> body FLU
+            meas.vy_body = -s * world_vx_ + c * world_vy_;
+            meas.vel_valid = true;
+            fc_mission_tick(&MISSION.cmd, &meas, dt);
+        }
+        ctrl_prev_ms_ = fc_now_ms;
+
+        // Disarm: a fresh companion command (setpoint or mission) with
+        // arm=false means touchdown/stop — motors off. Control()'s mux only
         // consults armingflag on the stale-link path, so gate here.
-        if (got_external_setpoint_ && !COMP.arm) {
+        if ((got_external_setpoint_ || got_mission_command_) && !COMP.arm) {
             actuator_msgs::msg::Actuators out;
             out.header.stamp = get_clock()->now();
             out.velocity.assign(4, 0.0);
@@ -413,6 +530,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
     rclcpp::Subscription<fc_sim_msgs::msg::Setpoint>::SharedPtr sub_setpoint_;
+    rclcpp::Subscription<fc_sim_msgs::msg::McuCommand>::SharedPtr sub_mcu_;
     rclcpp::Subscription<rosgraph_msgs::msg::Clock>::SharedPtr sub_clock_;
 
     rclcpp::Publisher<actuator_msgs::msg::Actuators>::SharedPtr pub_actuators_;
@@ -432,6 +550,14 @@ private:
     bool have_imu_  = false;
     bool have_odom_ = false;
     bool got_external_setpoint_ = false;
+    bool got_mission_command_ = false;
+    // World-frame xy velocity (ENU) and heading for the mission velocity loop.
+    float world_vx_ = 0.0f;
+    float world_vy_ = 0.0f;
+    float yaw_enu_ = 0.0f;
+    float prev_wx_ = 0.0f;
+    float prev_wy_ = 0.0f;
+    uint32_t ctrl_prev_ms_ = 0;
     bool auto_hover_init_ = false;
     double auto_hover_thrust_ = 0.335;
     double prime_alt_target_ = 1.2;

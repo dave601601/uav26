@@ -17,6 +17,30 @@ Planning docs (checklists, not logs):
 
 ## Open
 
+### Skeleton mission architecture: verified end-to-end (2026-07-17)
+
+`feat/mission-skeleton-interface` (pushed through the r80 log; later
+commits local): the mission layer now follows the team skeleton —
+MissionManager.step -> McuCommand -> fc_core outer loop (STM32-shared),
+node-based navigation with DR snaps, [dx, dy, flag] line contract.
+Contract in [MISSION_INTERFACE](MISSION_INTERFACE.md). r83 flew the
+FULL mission to FINISHED: 4/4 exact records, ID-order rescue, landing.
+343 tests green. Cruise default 1.0 m/s: speed_scale deceleration
+scheduling (transits/final legs/marker approaches slow, straights
+full) plus front-camera hints (IMX219 45 deg down, hints-only) made
+1.0 fly clean end-to-end — search -31 % vs 0.5. Markers now record at
+their own projected node (confirm-overshoot-proof). Remaining:
+lost-line recovery and the FAILSAFE stubs. Legacy FSM stays selectable
+(mission_backend:=legacy). Full history:
+[line_tracer](progress/line_tracer.md) r77-r83 entries.
+
+### Comment refactor branch (2026-07-14, merged into the above)
+
+`refactor/human-friendly-comments` (pushed): comments-only pass over
+fc_core and line_tracer vision, KNOWN BUG markers at three
+firmware-parity traps. Not yet refactored: line_tracer_node,
+state_machine, planner, dead_reckoning, grid (same recipe applies).
+
 ### Where to resume (2026-07-09 end — visit policy verified, search -39 %)
 
 M-D is met. The candidate visit policy replaced the unconditional
@@ -119,6 +143,7 @@ recreation, and the zombie-sweep contract.
 
 - [ ] Mixer `Allocation()` swaps `a`=1/(4·dx) and `b`=1/(4·dy) between roll and pitch terms — ~9 % asymmetry.
 - [ ] `quat_to_euler` returns `eul.y = -asinf(sinp)` (sign-flipped); sim shim compensates explicitly.
+- [ ] `GetAngle2Vec()` (linalg.c) assigns all three results to `res.x`, returning uninitialized y/z. Dead code (no callers in this repo); fix before first use.
 
 ## Conventions
 

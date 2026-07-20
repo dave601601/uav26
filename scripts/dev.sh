@@ -9,13 +9,17 @@
 #   scripts/dev.sh view [down|side]       rqt_image_view on one overlay
 #                                         (default down). Run alongside
 #                                         gui or mission.
-#   scripts/dev.sh mission [run] [dur] [launch_args]
+#   scripts/dev.sh mission [run] [dur] [tracer_args] [sim_args]
 #                                         Headless mission via
 #                                         run_mission.sh (default 900 s),
 #                                         then prints the FSM summary.
-#                                         launch_args go to the tracer
+#                                         tracer_args go to the tracer
 #                                         launch — use params_file:=... to
 #                                         A/B a variant parameter set.
+#                                         sim_args go to the sim launch —
+#                                         e.g. mission_cruise:=0.5
+#                                         mission_max_vxy:=0.8 for a
+#                                         cruise-speed experiment.
 #   scripts/dev.sh build                  (Re)build if install/ is gone
 #                                         (container recreation drops it).
 #
@@ -137,10 +141,11 @@ case "${1:-gui}" in
     RUN=${2:-r$(date +%H%M%S)}
     DUR=${3:-900}
     EXTRA=${4:-}
+    SIM_EXTRA=${5:-}
     ensure_container
     ensure_build
-    echo "[dev] headless mission $RUN (${DUR}s, seed 42) ${EXTRA:+[$EXTRA]}"
-    $EXEC bash -s "$RUN" "$DUR" "$EXTRA" < scripts/run_mission.sh
+    echo "[dev] headless mission $RUN (${DUR}s, seed 42) ${EXTRA:+[$EXTRA]} ${SIM_EXTRA:+[sim: $SIM_EXTRA]}"
+    $EXEC bash -s "$RUN" "$DUR" "$EXTRA" "$SIM_EXTRA" < scripts/run_mission.sh
     LOG="build/sweep_logs/mission/${RUN}_tracer.log"
     echo "[dev] ---- FSM events ----"
     grep -E ">> (FSM|RECORD)" "$LOG" | sed 's/.*line_tracer_node\]: //' || true
@@ -150,7 +155,7 @@ case "${1:-gui}" in
     ;;
 
   *)
-    echo "usage: $0 {gui [seed] | view [down|side] | mission [run] [dur] [launch_args] | build}"
+    echo "usage: $0 {gui [seed] | view [down|side] | mission [run] [dur] [tracer_args] [sim_args] | build}"
     exit 1
     ;;
 esac

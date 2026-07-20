@@ -13,6 +13,7 @@
 extern "C" {
 #include "fc_core/protocol.h"
 #include "fc_core/controller.h"
+#include "fc_core/mission_ctrl.h"
 }
 
 namespace {
@@ -137,4 +138,241 @@ TEST(Protocol, ApplyDown_PopulatesGlobalComp) {
     EXPECT_NEAR(COMP.pitch_sp,  -0.05f, 1e-6f);
     EXPECT_NEAR(COMP.thrust_norm, 0.5f, 1e-6f);
     EXPECT_EQ(COMP.last_ms, 12345u);
+}
+
+/* ---------------- Mission downlink (0xA6) ---------------- */
+
+TEST(ProtocolMission, Roundtrip_QuantizationOnly) {
+    std::srand(9876);
+
+    for (int i = 0; i < 200; i++) {
+        fc_proto_mission_t in{};
+        in.mode           = (uint8_t)((i % 8) | (i & 1 ? FC_PROTO_MODE_ARM_BIT : 0));
+        in.mission_state  = (uint8_t)(i % 12);
+        in.seq            = (uint8_t)i;
+        in.node_x         = (int8_t)(i - 100);
+        in.node_y         = (int8_t)(50 - i);
+        in.move_direction = (uint8_t)(i % 4);
+        in.target_altitude    = frand(0.0f, 10.0f);
+        in.line_dx            = frand(-1.9f, 1.9f);
+        in.line_dy            = frand(-1.9f, 1.9f);
+        in.line_angle_error   = frand(-1.5f, 1.5f);
+        in.marker_error_x     = frand(-1.0f, 1.0f);
+        in.marker_error_y     = frand(-1.0f, 1.0f);
+        in.marker_yaw_error   = frand(-0.5f, 0.5f);
+        in.vx_est             = frand(-1.9f, 1.9f);
+        in.vy_est             = frand(-1.9f, 1.9f);
+        in.marker_id          = (int8_t)((i % 5) - 1);
+        in.line_confidence    = (uint8_t)(i & 0xFF);
+        in.marker_confidence  = (uint8_t)((255 - i) & 0xFF);
+        in.flags              = (uint8_t)(i & 0xFF);
+        in.flags2             = (uint8_t)(i & 0x01);
+        in.speed_scale        = (uint8_t)(i % 101);   /* 0..100, in range */
+
+        uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
+        ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+        EXPECT_EQ(buf[0], FC_PROTO_MISSION_MAGIC);
+
+        fc_proto_mission_t out{};
+        ASSERT_TRUE(fc_proto_decode_mission(buf, &out));
+
+        EXPECT_EQ(out.mode,           in.mode);
+        EXPECT_EQ(out.mission_state,  in.mission_state);
+        EXPECT_EQ(out.seq,            in.seq);
+        EXPECT_EQ(out.node_x,         in.node_x);
+        EXPECT_EQ(out.node_y,         in.node_y);
+        EXPECT_EQ(out.move_direction, in.move_direction);
+        EXPECT_EQ(out.marker_id,      in.marker_id);
+        EXPECT_EQ(out.line_confidence,   in.line_confidence);
+        EXPECT_EQ(out.marker_confidence, in.marker_confidence);
+        EXPECT_EQ(out.flags,          in.flags);
+        EXPECT_EQ(out.flags2,         in.flags2);
+        EXPECT_EQ(out.speed_scale,    in.speed_scale);
+
+        /* target_altitude quantizes to 1 cm. */
+        EXPECT_NEAR(out.target_altitude, in.target_altitude, 0.01f);
+        /* Q14 LSB = 1/16384; allow 2 LSB. */
+        EXPECT_NEAR(out.line_dx,            in.line_dx,            2.0f / 16384.0f);
+        EXPECT_NEAR(out.line_dy,            in.line_dy,            2.0f / 16384.0f);
+        EXPECT_NEAR(out.line_angle_error,   in.line_angle_error,   2.0f / 16384.0f);
+        EXPECT_NEAR(out.marker_error_x,     in.marker_error_x,     2.0f / 16384.0f);
+        EXPECT_NEAR(out.marker_error_y,     in.marker_error_y,     2.0f / 16384.0f);
+        EXPECT_NEAR(out.marker_yaw_error,   in.marker_yaw_error,   2.0f / 16384.0f);
+        EXPECT_NEAR(out.vx_est,             in.vx_est,             2.0f / 16384.0f);
+        EXPECT_NEAR(out.vy_est,             in.vy_est,             2.0f / 16384.0f);
+    }
+}
+
+TEST(ProtocolMission, Q14SaturatesAtPlusMinusTwo) {
+    fc_proto_mission_t in{};
+    in.line_dx            = 2.0f;    /* at the +/-2.0 Q14 rail */
+    in.line_dy            = -2.0f;
+    in.marker_error_x     = -2.0f;
+    in.vx_est             = 5.0f;    /* well past the rail */
+    in.vy_est             = -5.0f;
+
+    uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+    fc_proto_mission_t out{};
+    ASSERT_TRUE(fc_proto_decode_mission(buf, &out));
+
+    /* +2.0 saturates to 32767/16384 ~= 1.99994; -2.0 is exact. */
+    EXPECT_NEAR(out.line_dx,             1.99994f, 1.0f / 16384.0f);
+    EXPECT_NEAR(out.line_dy,            -2.0f,     1.0f / 16384.0f);
+    EXPECT_NEAR(out.marker_error_x,     -2.0f,     1.0f / 16384.0f);
+    /* Beyond the rail clamps to the same rail values. */
+    EXPECT_NEAR(out.vx_est,  1.99994f, 1.0f / 16384.0f);
+    EXPECT_NEAR(out.vy_est, -2.0f,     1.0f / 16384.0f);
+}
+
+TEST(ProtocolMission, FlagsBitsPreserved) {
+    fc_proto_mission_t in{};
+    in.flags = FC_PROTO_MFLAG_VERTICAL_LINE | FC_PROTO_MFLAG_RIGHT
+             | FC_PROTO_MFLAG_MARKER_DETECTED;
+    in.flags2 = FC_PROTO_MFLAG2_VEL_EST_VALID | FC_PROTO_MFLAG2_EMERGENCY;
+
+    uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+    fc_proto_mission_t out{};
+    ASSERT_TRUE(fc_proto_decode_mission(buf, &out));
+
+    EXPECT_TRUE(out.flags & FC_PROTO_MFLAG_VERTICAL_LINE);
+    EXPECT_TRUE(out.flags & FC_PROTO_MFLAG_RIGHT);
+    EXPECT_TRUE(out.flags & FC_PROTO_MFLAG_MARKER_DETECTED);
+    EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_HORIZONTAL_LINE);
+    EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_INTERSECTION);
+    EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_LEFT);
+    EXPECT_TRUE(out.flags2 & FC_PROTO_MFLAG2_VEL_EST_VALID);
+    EXPECT_TRUE(out.flags2 & FC_PROTO_MFLAG2_EMERGENCY);
+}
+
+TEST(ProtocolMission, SpeedScaleClampsAboveHundred) {
+    /* In-range values survive; anything above 100 decodes as 100. */
+    fc_proto_mission_t in{};
+    in.speed_scale = 200u;               /* over the 0..100 range */
+
+    uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+    EXPECT_EQ(buf[31], 200u);            /* encode is verbatim */
+
+    fc_proto_mission_t out{};
+    ASSERT_TRUE(fc_proto_decode_mission(buf, &out));
+    EXPECT_EQ(out.speed_scale, 100u);   /* decode clamps */
+
+    /* Boundary: exactly 100 passes through, 0 passes through. */
+    in.speed_scale = 100u;
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+    ASSERT_TRUE(fc_proto_decode_mission(buf, &out));
+    EXPECT_EQ(out.speed_scale, 100u);
+
+    in.speed_scale = 0u;
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+    ASSERT_TRUE(fc_proto_decode_mission(buf, &out));
+    EXPECT_EQ(out.speed_scale, 0u);
+}
+
+TEST(ProtocolMission, CrcCoversSpeedScaleByte) {
+    /* The CRC now spans the appended speed_scale byte (offset 31). */
+    fc_proto_mission_t in{};
+    in.speed_scale = 50u;
+
+    uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+
+    buf[31] ^= 0x01;   /* corrupt speed_scale only */
+
+    fc_proto_mission_t out{};
+    EXPECT_FALSE(fc_proto_decode_mission(buf, &out));
+}
+
+TEST(ProtocolMission, Decode_RejectsCorruptedCrc) {
+    fc_proto_mission_t in{};
+    in.mode = (uint8_t)FC_PROTO_MODE_ARM_BIT | 1u;
+    in.line_dx = 0.3f;
+
+    uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+
+    buf[11] ^= 0x01;  /* flip a bit in line_dx */
+
+    fc_proto_mission_t out{};
+    EXPECT_FALSE(fc_proto_decode_mission(buf, &out));
+}
+
+TEST(ProtocolMission, Decode_RejectsWrongMagic) {
+    fc_proto_mission_t in{};
+    uint8_t buf[FC_PROTO_MISSION_LEN] = {0};
+    ASSERT_TRUE(fc_proto_encode_mission(&in, buf));
+    buf[0] = 0xA5;  /* the setpoint-downlink magic, not the mission magic */
+    fc_proto_mission_t out{};
+    EXPECT_FALSE(fc_proto_decode_mission(buf, &out));
+}
+
+TEST(ProtocolMission, ApplyMission_PopulatesGlobalState) {
+    fc_proto_mission_t msg{};
+    msg.mode = (uint8_t)FC_CTRL_FOLLOW_LINE | FC_PROTO_MODE_ARM_BIT;
+    msg.seq = 7u;
+    msg.target_altitude = 2.0f;
+
+    MISSION.valid = false;
+    fc_proto_apply_mission(&msg, 55555u);
+
+    EXPECT_TRUE(MISSION.valid);
+    EXPECT_EQ(MISSION.last_ms, 55555u);
+    EXPECT_EQ(MISSION.cmd.seq, 7u);
+    EXPECT_NEAR(MISSION.cmd.target_altitude, 2.0f, 1e-6f);
+}
+
+TEST(ProtocolMission, GoldenVectorFromJetson) {
+    /* Cross-language golden vector: these 34 bytes are produced by the
+     * Jetson packer pack_mcu_command() and asserted byte-for-byte in
+     * src/line_tracer/test/test_mission_interface.py (GOLDEN_FRAME) —
+     * change together or the Jetson->STM32 wire check is meaningless.
+     * Decoding here must succeed (CRC + magic) and recover every field. */
+    const uint8_t golden[FC_PROTO_MISSION_LEN] = {
+        0xA6, 0x01, 0x81, 0x04, 0x2A, 0x05, 0xFD, 0x02,
+        0xFA, 0x00, 0x00, 0x20, 0x00, 0xD0, 0x66, 0x06,
+        0x00, 0xF0, 0x00, 0x08, 0xCD, 0xFC, 0x33, 0x13,
+        0x67, 0xE6, 0x07, 0xCC, 0x99, 0xAD, 0x03, 0x28,
+        0x1E, 0xFF};
+
+    fc_proto_mission_t out{};
+    ASSERT_TRUE(fc_proto_decode_mission(golden, &out));
+
+    /* Integer/enum fields are exact. */
+    EXPECT_EQ(out.mode,           0x81u);   /* FOLLOW_LINE(1) | arm 0x80 */
+    EXPECT_EQ(out.mission_state,  4u);      /* EXPLORE */
+    EXPECT_EQ(out.seq,            42u);
+    EXPECT_EQ(out.node_x,         5);
+    EXPECT_EQ(out.node_y,        -3);
+    EXPECT_EQ(out.move_direction, 2u);      /* Y_POS */
+    EXPECT_EQ(out.marker_id,      7);
+    EXPECT_EQ(out.line_confidence,   204u);
+    EXPECT_EQ(out.marker_confidence, 153u);
+    EXPECT_EQ(out.flags,  0xADu);           /* vert|inter|fwd|right|marker */
+    EXPECT_EQ(out.flags2, 0x03u);           /* vel_est_valid | emergency */
+    EXPECT_EQ(out.speed_scale, 40u);
+
+    /* Fixed-point fields within one Q14 / cm LSB of the packed value. */
+    EXPECT_NEAR(out.target_altitude,   2.5f,   0.01f);
+    EXPECT_NEAR(out.line_dx,           0.5f,   2.0f / 16384.0f);
+    EXPECT_NEAR(out.line_dy,          -0.75f,  2.0f / 16384.0f);
+    EXPECT_NEAR(out.line_angle_error,  0.1f,   2.0f / 16384.0f);
+    EXPECT_NEAR(out.marker_error_x,   -0.25f,  2.0f / 16384.0f);
+    EXPECT_NEAR(out.marker_error_y,    0.125f, 2.0f / 16384.0f);
+    EXPECT_NEAR(out.marker_yaw_error, -0.05f,  2.0f / 16384.0f);
+    EXPECT_NEAR(out.vx_est,            0.3f,   2.0f / 16384.0f);
+    EXPECT_NEAR(out.vy_est,           -0.4f,   2.0f / 16384.0f);
+
+    /* The flag bits decode to the individual booleans. */
+    EXPECT_TRUE (out.flags & FC_PROTO_MFLAG_VERTICAL_LINE);
+    EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_HORIZONTAL_LINE);
+    EXPECT_TRUE (out.flags & FC_PROTO_MFLAG_INTERSECTION);
+    EXPECT_TRUE (out.flags & FC_PROTO_MFLAG_FWD);
+    EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_LEFT);
+    EXPECT_TRUE (out.flags & FC_PROTO_MFLAG_RIGHT);
+    EXPECT_FALSE(out.flags & FC_PROTO_MFLAG_BACK);
+    EXPECT_TRUE (out.flags & FC_PROTO_MFLAG_MARKER_DETECTED);
+    EXPECT_TRUE (out.flags2 & FC_PROTO_MFLAG2_VEL_EST_VALID);
+    EXPECT_TRUE (out.flags2 & FC_PROTO_MFLAG2_EMERGENCY);
 }

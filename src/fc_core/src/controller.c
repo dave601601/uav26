@@ -7,7 +7,11 @@
  * position and the companion link is fresh, the per-tick setpoints come
  * from the COMP struct (populated by the protocol codec) instead of
  * SBUS sticks. SBUS still gates motors via armingflag (ch6/SWL); the
- * safety pilot can always preempt by flipping SWR off high.
+ * safety pilot can always preempt by flipping SWR off high. If
+ * autonomous is selected but the companion link is stale (older than
+ * COMP_STALE_MS), the mux falls back to level attitude and
+ * slightly-below-hover thrust until the link returns or the pilot
+ * switches out of autonomous.
  *
  * In sim, fc_sim_node hands the controller a synthesized sbus_t with
  * armingflag=1 and RS=0, so the same arbitration produces companion
@@ -42,16 +46,14 @@ PIDvec pidvecInit(vec3d kp, vec3d ki, vec3d kd, vec3d integral_sat){
     return pid;
 }
 
-/* Exposed (non-static) so a sim-side node can retune for Gazebo dynamics
- * after ControllerInit() — the hand-tuned firmware values match the real
- * airframe, not the gz-sim motor model. */
+/* Non-static so the sim node can retune after ControllerInit(): the
+ * firmware gains match the real airframe, not the gz-sim motor model. */
 PIDvec pid_rate;
 PIDvec pid_euler;
 PIDvec pid_vel;
 
-/* Companion-setpoint state used by the source mux below. The owner
- * (sim node or STM32 USART2 ISR) updates fc_now_ms each control tick
- * and writes COMP whenever a fresh frame decodes. */
+/* Companion-setpoint state for the source mux below. The owner (sim node
+ * or STM32 USART2 ISR) ticks fc_now_ms and writes COMP per good frame. */
 compsp_t COMP = {0};
 uint32_t fc_now_ms = 0;
 
@@ -80,26 +82,15 @@ void ControllerInit(void){
                 vec(0.5f, 0.5f, 0.3f * 9.81f));
 }
 
-/* maxratecmd was 1.0 rad/s — calibrated for SBUS stick travel on the
- * hand-held drone the firmware originally targeted. In sim the
- * line_tracer companion needs more authority to fight the residual
- * yaw torque DartSim introduces during the takeoff transient
- * (kp_yaw=3 with max_wz=2.5 was clipped by this limit, leaving
- * ~0.2 rad/s steady-state yaw drift that curled the cruise track
- * off-axis — r30..r34). 3.0 rad/s lets the companion's ±2.5
- * yawrate_sp pass through unchanged. Re-tune on real hardware once
- * mixer/motor asymmetries are characterized. */
+/* Raised from the firmware's 1.0 rad/s, which clipped the companion's
+ * +/-2.5 rad/s yaw setpoints and left steady-state yaw drift; re-tune
+ * on real hardware once mixer/motor asymmetries are characterized. */
 static float maxratecmd = 3.0f;                       /* rad/s */
 static float maxatticmd = 30.0f * PI / 180.0f;        /* rad   */
 
-/* Deadband thresholds, multiplied by maxratecmd / maxatticmd. The
- * absolute deadband used to be 0.04 rad/s (= 0.04 * maxratecmd_old=1.0).
- * After bumping maxratecmd to 3.0 the factor is scaled 1/3 to keep the
- * same absolute deadband — without this the rate deadband would widen
- * to 0.12 rad/s and small rate commands would get zeroed (test_atti_pid
- * failed because pqr_cmd at the steady state was below the deadband
- * floor). fc_sim_node overrides both to 0.001 for sim where setpoints
- * are precise. */
+/* Fractions of maxratecmd / maxatticmd. The rate factor was scaled 1/3
+ * when maxratecmd rose 1.0 -> 3.0 rad/s, keeping the absolute deadband
+ * at 0.04 rad/s; fc_sim_node overrides both to 0.001 for sim. */
 float fc_rate_deadband_factor = 0.0133f;
 float fc_atti_deadband_factor = 0.04f;
 static float maxvelXYcmd = 2.0f;
@@ -120,27 +111,19 @@ static float dy = 335.235f / 1000.0f / 2.0f;
 static float mass_org = 1.182f;
 static float mass = 0.0f;
 
-/* Per-motor max thrust in grams-force. thrust_norm=1.0 commands
- * 4 * this * 9.81/1000 newtons of total lift. 900 g matches the real
- * power train: 2212 920KV motors on a 4S pack with 9450/1045-class
- * props (bench range 800-1000 g/motor; the previous 600 g constant
- * assumed the same motor on 3S). F2PWM's thrust-to-DSHOT curve is
- * still calibrated for the 600 g train and needs a thrust-stand
- * recalibration before hardware flight — see docs/progress/fc_core.md. */
+/* Per-motor max thrust, grams-force; 900 g matches the 4S power train
+ * (bench 800-1000 g/motor). WARNING: F2PWM's curve is still calibrated
+ * for the old 600 g train; thrust-stand recalibration before flight. */
 static float max_thrust_g_per_motor = 900.0f;
 
 static enum MODE mode = attithrmode;
 
-/* Companion link stale threshold (ms). Below this, COMP is trusted.
- * Above, the mux falls back to a level descent. 200 ms tolerates a
- * companion publishing at 20-30 Hz with normal jitter; below ~50 the
- * boundary races with periodic publishers and produces phantom
- * fall-back-to-descent ticks even when the link is healthy. */
+/* Companion stale threshold, ms. 200 tolerates a 20-30 Hz publisher with
+ * jitter; below ~50 the check races and yields phantom fallback ticks. */
 #define COMP_STALE_MS 200u
 
-/* Descent thrust reference used when companion goes stale in
- * autonomous mode. Slightly below hover so the drone settles gently.
- * Hover for the 1.182 kg frame on the 900 g/motor 4S train is ~0.33. */
+/* Stale-link descent thrust, slightly below hover (~0.33 for this frame
+ * on the 900 g/motor 4S train) so the drone settles gently. */
 #define COMP_STALE_THRUST_NORM 0.27f
 
 thrvec Control(vec3d NED, vec3d vel, vec3d Euler, vec3d pqr, sbus_t sbus){
@@ -159,17 +142,15 @@ thrvec Control(vec3d NED, vec3d vel, vec3d Euler, vec3d pqr, sbus_t sbus){
     float thr_in   = sbus.thrnorm;
 
     if (comp_fresh) {
-        /* Use companion setpoints. COMP units are radians and rad/s;
-         * map back to the [-1,1]/[0,1] sbus convention so the rest of
-         * Control() can stay identical to the firmware copy. */
+        /* Companion setpoints (rad, rad/s) mapped back to the [-1,1]/[0,1]
+         * SBUS convention so the rest of Control() matches the firmware. */
         roll_in  = clampfloat(COMP.roll_sp    / maxatticmd, -1.0f, 1.0f);
         pitch_in = clampfloat(COMP.pitch_sp   / maxatticmd, -1.0f, 1.0f);
         yaw_in   = clampfloat(COMP.yawrate_sp / maxratecmd, -1.0f, 1.0f);
         thr_in   = clampfloat(COMP.thrust_norm, 0.0f, 1.0f);
     } else if (autonomous_armed) {
-        /* Autonomous switch held high but no fresh companion frame:
-         * level-attitude + slightly-below-hover thrust until the link
-         * comes back or the pilot switches out of autonomous. */
+        /* Autonomous but companion stale: level attitude and below-hover
+         * thrust until the link returns or the pilot leaves autonomous. */
         roll_in = 0.0f; pitch_in = 0.0f; yaw_in = 0.0f;
         thr_in  = COMP_STALE_THRUST_NORM * (sbus.armingflag ? 1.0f : 0.0f);
     }
@@ -220,6 +201,8 @@ vec3d VELControl(vec3d veldes, vec3d vel, float dt){
     return vec(0.0f, 0.0f, 0.0f);
 }
 
+/* KNOWN BUG (firmware parity): a and b are swapped between the roll and
+ * pitch terms (~9% asymmetry); fix only with a paired firmware re-test. */
 thrvec Allocation(vec3d LMN, vec3d dim, float Fz){
     thrvec T;
     float dxL = dim.x, dyL = dim.y;

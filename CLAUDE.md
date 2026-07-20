@@ -13,6 +13,11 @@ in the repo. Does NOT apply to chat replies (those can be Korean).
   a metric column), and even there, sparingly.
 - **State directly.** Lead with the fact, not "Note that …" or "It
   should be noted that …". Trim filler.
+- **Short inline comments.** Comments between code lines are at most
+  2 lines (3 in exceptional cases). Long prose lives only at the top
+  of a file: the C file-header comment or the Python module docstring.
+  No internal jargon in comments (run numbers, milestone labels,
+  work-log references) — spell out the surviving constraint instead.
 
 ---
 

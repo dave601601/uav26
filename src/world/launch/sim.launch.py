@@ -13,6 +13,8 @@ Launch arguments:
   headless       : 'true' 면 -s (서버 only)
   use_sim_time   : ROS 노드들이 /clock 사용 (기본 true)
   marker_seed    : marker_randomize.py 의 --seed (-1 = 시계 기반)
+  mission_cruise : 미션 순항 속도 override, m/s (기본 1.0)
+  mission_max_vxy: 미션 xy 속도 클램프 override, m/s (기본 1.3)
 """
 from __future__ import annotations
 
@@ -177,6 +179,13 @@ def generate_launch_description() -> LaunchDescription:
     atti_kd_roll_arg  = DeclareLaunchArgument("atti_kd_roll",  default_value="0.20")
     atti_kd_pitch_arg = DeclareLaunchArgument("atti_kd_pitch", default_value="0.20")
 
+    # Mission outer-loop gains, overridable so cruise-speed experiments run
+    # without rebuilding fc_sim. max_vxy clamps total xy velocity, so raising
+    # cruise past it is a no-op unless max_vxy rises too. Defaults match
+    # fc_mission_gains (cruise 1.0, max_vxy 1.3).
+    mission_cruise_arg   = DeclareLaunchArgument("mission_cruise",   default_value="1.0")
+    mission_max_vxy_arg  = DeclareLaunchArgument("mission_max_vxy",  default_value="1.3")
+
     # The simulated FC: fc_core control loop ticked from /clock, publishing
     # actuator_msgs/Actuators back through the bridge into Gazebo.
     fc_sim_node = Node(
@@ -193,6 +202,8 @@ def generate_launch_description() -> LaunchDescription:
             "atti_kp_pitch":   LaunchConfiguration("atti_kp_pitch"),
             "atti_kd_roll":    LaunchConfiguration("atti_kd_roll"),
             "atti_kd_pitch":   LaunchConfiguration("atti_kd_pitch"),
+            "mission_cruise":  LaunchConfiguration("mission_cruise"),
+            "mission_max_vxy": LaunchConfiguration("mission_max_vxy"),
         }],
     )
 
@@ -206,6 +217,7 @@ def generate_launch_description() -> LaunchDescription:
             rate_kp_p_arg, rate_kp_q_arg, rate_kp_r_arg,
             atti_kp_roll_arg, atti_kp_pitch_arg,
             atti_kd_roll_arg, atti_kd_pitch_arg,
+            mission_cruise_arg, mission_max_vxy_arg,
             set_resource_path,
             set_resource_path_parent,
             marker_randomize,

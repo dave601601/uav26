@@ -1,5 +1,8 @@
 /line_tracer_node:
   ros__parameters:
+    # 'skeleton' = MissionManager + McuCommand (MCU outer loop owns control);
+    # 'legacy' = the original FSM + Setpoint path. A/B switchable.
+    mission_backend: "skeleton"
     # ---- DR / control ----
     target_altitude: 2.0      # [m] cruise altitude during LINE_FOLLOW etc.
     kp_xy: 0.8                # P gain on body-x / body-y position offsets

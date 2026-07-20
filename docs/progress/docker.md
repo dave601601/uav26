@@ -2,6 +2,27 @@
 
 Build environment for the workspace.
 
+## WSL DNS proxy failure blocks git push from the host (2026-07-14)
+
+Symptom: `git push` fails with "Could not resolve host: github.com"
+even though the network is up. Diagnosis that separates the failure
+modes:
+
+- `/etc/resolv.conf` points at WSL's NAT DNS proxy (10.255.255.254),
+  which stops answering (`getent hosts github.com` times out).
+- Raw TCP to an external IP still works, and querying 1.1.1.1 directly
+  answers — only the WSL proxy hop is dead, not the network.
+- Containers are unaffected: Docker Desktop injects its own resolver
+  (192.168.65.7, routed via the Windows host), so in-container DNS keeps
+  working while the host distro's is down. Pushing from the container is
+  still not an option — compose mounts only `src/`, `build/`, `ros/`,
+  so the container sees neither `.git` nor `.env`.
+
+Fix (needs sudo, lasts until WSL restarts):
+`sudo sh -c 'printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf'`.
+Permanent: set `generateResolvConf=false` under `[network]` in
+`/etc/wsl.conf`, then keep a static resolv.conf.
+
 ## dev.sh sweep was killing itself, not the strays (2026-07-09)
 
 `sweep()` ran its patterns through `$EXEC bash -c "<text>"`. `pkill -f`

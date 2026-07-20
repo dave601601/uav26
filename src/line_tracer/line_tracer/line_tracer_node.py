@@ -26,6 +26,10 @@ Published
       Published in every FSM state (annotated when detection is paused),
       so the window is live from node start; only exists when
       lookahead_enable.
+  /line_tracer/front_debug_image     sensor_msgs/Image    (BGR8 overlay)
+      Front camera (skeleton backend only): ArUco boxes + projected
+      world (x, y). Feeds the mission a speed-scheduling hint; never
+      records. Published every frame, annotated when detection is paused.
 
 Services
   /line_tracer/set_state            line_tracer_msgs/SetState
@@ -49,6 +53,10 @@ try:
     from fc_sim_msgs.msg import Setpoint
 except ImportError:                       # pragma: no cover
     Setpoint = None                       # type: ignore[assignment]
+try:
+    from fc_sim_msgs.msg import McuCommand
+except ImportError:                       # pragma: no cover
+    McuCommand = None                     # type: ignore[assignment]
 from rclpy.node import Node
 from rclpy.qos import (
     QoSDurabilityPolicy,
@@ -77,9 +85,23 @@ from .dead_reckoning import (
 )
 from .geom import CameraIntrinsics
 from .grid import Grid
+from . import mission_adapter
+from .mission import (
+    ArucoDetection as MissionAruco,
+    ControlMode,
+    IntersectionDetection,
+    LineDetection,
+    MissionManager,
+    MissionState,
+    MoveDirection,
+    PerceptionData,
+    SensorData,
+)
 from .perception import (
+    IntersectionDetector,
     PerceptionConfig,
     PerceptionResult,
+    classify_lines,
     draw_debug_overlay,
     process_image,
     resolve_aruco_dict,
@@ -148,6 +170,10 @@ class LineTracerNode(Node):
         super().__init__("line_tracer_node")
 
         # --- parameters (declared with defaults, overridable via params.yaml) -
+        # Mission backend: 'skeleton' runs MissionManager and publishes the
+        # high-level McuCommand for the MCU outer loop; 'legacy' keeps today's
+        # FSM + Setpoint path unchanged.
+        self.declare_parameter("mission_backend", "skeleton")
         self.declare_parameter("target_altitude", 2.0)
         self.declare_parameter("kp_xy", 0.8)
         # kp_yaw=1.0 left an ~0.07 rad steady-state error against the
@@ -310,6 +336,23 @@ class LineTracerNode(Node):
         # runtime when lookahead_enable is false — without the side
         # camera a skipped row is simply never observed.
         self.declare_parameter("sweep_row_step", 2)
+        # Front wide camera (IMX219 120 deg, 45 deg down, color). HINTS
+        # ONLY: it feeds the skeleton mission a per-tick marker hint used
+        # for speed scheduling, never a record. Mount mirrors the SDF
+        # sensor pose (yaw 0, pitch pi/4, 8 cm forward, 3 cm below); keep
+        # in sync with model.sdf. Only wired on the skeleton backend.
+        self.declare_parameter("front_camera_enable", True)
+        self.declare_parameter("front_mount_yaw", 0.0)
+        self.declare_parameter("front_mount_pitch", 0.7853981634)
+        self.declare_parameter("front_mount_tx", 0.08)
+        self.declare_parameter("front_mount_ty", 0.0)
+        self.declare_parameter("front_mount_tz", -0.03)
+        # Same 3-sighting vote and 9 m range rationale as the lookahead.
+        self.declare_parameter("front_vote_threshold", 3)
+        self.declare_parameter("front_max_range", 9.0)
+        # A hinted candidate counts as on the current row when its lateral
+        # offset from the row line is within half a cell.
+        self.declare_parameter("front_row_tolerance_m", 1.5)
 
         target_alt = float(self.get_parameter("target_altitude").value)
         self._gains = Gains(
@@ -427,6 +470,28 @@ class LineTracerNode(Node):
         self._logged_candidates: dict = {}
         self._logged_dropped: set = set()
 
+        # --- front camera state (hints only) ----------------------------
+        self._front_enable = bool(self.get_parameter("front_camera_enable").value)
+        self._front_intrinsics: Optional[CameraIntrinsics] = None
+        self._front_mount = MountExtrinsics(
+            yaw=float(self.get_parameter("front_mount_yaw").value),
+            pitch=float(self.get_parameter("front_mount_pitch").value),
+            tx=float(self.get_parameter("front_mount_tx").value),
+            ty=float(self.get_parameter("front_mount_ty").value),
+            tz=float(self.get_parameter("front_mount_tz").value),
+        )
+        # Dedicated tracker; default snap_max_err like the side camera's.
+        self._front_tracker = CandidateTracker()
+        self._front_vote_threshold = int(
+            self.get_parameter("front_vote_threshold").value
+        )
+        self._front_max_range = float(self.get_parameter("front_max_range").value)
+        self._front_row_tolerance_m = float(
+            self.get_parameter("front_row_tolerance_m").value
+        )
+        # Last pushed (id, node) so the [FRONT] hint line logs on change only.
+        self._front_hint_prev: Optional[tuple] = None
+
         # FC setpoint shaping constants (cached from params)
         self._hover_thrust_norm = float(self.get_parameter("hover_thrust_norm").value)
         self._kp_alt_thrust = float(self.get_parameter("kp_alt_thrust").value)
@@ -484,12 +549,30 @@ class LineTracerNode(Node):
         # yaw inject). Real-flight builds get position from PF on landmarks.
         self._odom_truth_pose_xy: Optional[tuple] = None
 
+        self._mission_backend = str(self.get_parameter("mission_backend").value)
+        if self._mission_backend not in ("skeleton", "legacy"):
+            self.get_logger().warn(
+                f"unknown mission_backend {self._mission_backend!r}; using 'skeleton'"
+            )
+            self._mission_backend = "skeleton"
+
         # --- pubs/subs/srvs --------------------------------------------------
         # The flight controller (fc_sim_node in sim, real STM32 over USART2
         # later) consumes attitude/thrust setpoints, not body-frame Twist.
         # _build_setpoint() maps the planner's body-velocity intent through
         # a small-angle attitude map + altitude-hold P controller.
-        if Setpoint is None:
+        self._pub_mcu = None
+        if self._mission_backend == "skeleton":
+            # Skeleton backend: the MCU (fc_sim_node) owns control, so publish
+            # the high-level McuCommand and never the legacy Setpoint.
+            if McuCommand is None:
+                self.get_logger().error(
+                    "fc_sim_msgs.McuCommand unavailable; skeleton backend cannot run"
+                )
+            self._pub_cmd = None
+            self._pub_mcu = self.create_publisher(McuCommand, "/fc/mcu_command", 10)
+            self._setpoint_pub = False
+        elif Setpoint is None:
             self.get_logger().warn(
                 "fc_sim_msgs not available; falling back to /cmd_vel Twist."
             )
@@ -537,6 +620,23 @@ class LineTracerNode(Node):
             self._pub_lookahead_debug = self.create_publisher(
                 Image, "/line_tracer/lookahead_debug_image", 10
             )
+        # Front camera drives mission hints only, so it is wired on the
+        # skeleton backend alone. The overlay publishes every frame; the
+        # detector runs while EXPLORE can use the hint.
+        self._pub_front_debug = None
+        if self._mission_backend == "skeleton" and self._front_enable:
+            self._sub_front = self.create_subscription(
+                Image, "/front_camera/image", self._on_front, SENSOR_QOS
+            )
+            self._sub_front_info = self.create_subscription(
+                CameraInfo,
+                "/front_camera/camera_info",
+                self._on_front_info,
+                SENSOR_QOS,
+            )
+            self._pub_front_debug = self.create_publisher(
+                Image, "/line_tracer/front_debug_image", 10
+            )
         # /odom_truth is the sim stand-in for the lidar+IMU Z estimator
         # called out in the team proposal. Real-flight builds set
         # use_odom_truth_altitude=false and rely on the depth-camera median
@@ -555,13 +655,28 @@ class LineTracerNode(Node):
                 "line_tracer_msgs not available; /line_tracer/set_state disabled"
             )
 
+        # --- skeleton mission backend --------------------------------------
+        # Instantiate MissionManager + the intersection pulse detector once;
+        # the mission is driven from the downward image callback, not a timer.
+        self._mission = None
+        self._intersection_detector = None
+        self._sk_log_counter = 0
+        if self._mission_backend == "skeleton":
+            self._mission = MissionManager(logger=self.get_logger().info)
+            self._mission.target_altitude = target_alt
+            self._mission.send_command_to_mcu = self._publish_mcu_command
+            self._intersection_detector = IntersectionDetector()
+
         dt = float(self.get_parameter("dr_dt").value)
         self._dr_dt = dt
-        self._timer = self.create_timer(dt, self._on_dr_tick)
+        # Legacy backend runs its FSM + Setpoint on the DR timer. The skeleton
+        # backend drives MissionManager from _on_color instead.
+        if self._mission_backend == "legacy":
+            self._timer = self.create_timer(dt, self._on_dr_tick)
 
         self.get_logger().info(
-            f"line_tracer_node up (state={self._fsm.state.name}, "
-            f"target_alt={target_alt}, dr_dt={dt})"
+            f"line_tracer_node up (backend={self._mission_backend}, "
+            f"state={self._fsm.state.name}, target_alt={target_alt}, dr_dt={dt})"
         )
 
     # ------------------------------------------------------------------
@@ -619,6 +734,11 @@ class LineTracerNode(Node):
                 self._pub_debug.publish(debug_msg)
             except Exception as e:                            # pragma: no cover
                 self.get_logger().warn(f"debug publish failed: {e}")
+
+        # Skeleton backend runs the mission per downward frame; the debug
+        # overlay above still publishes in both backends.
+        if self._mission_backend == "skeleton":
+            self._skeleton_tick(result)
 
     def _on_pixel_error_external(self, msg: Vector3) -> None:
         self._external_pixel_error = msg
@@ -740,6 +860,115 @@ class LineTracerNode(Node):
             m.lifetime.sec = 5
             ma.markers.append(m)
         self._pub_markers.publish(ma)
+
+    # ------------------------------------------------------------------
+    # Front camera (mission speed-scheduling hints only)
+    # ------------------------------------------------------------------
+
+    def _on_front_info(self, msg: CameraInfo) -> None:
+        if self._front_intrinsics is None:
+            self._front_intrinsics = CameraIntrinsics.from_camera_info(msg)
+            self.get_logger().info(
+                f"front camera_info: fx={self._front_intrinsics.fx:.2f} "
+                f"size={self._front_intrinsics.width}x{self._front_intrinsics.height}"
+            )
+
+    def _on_front(self, msg: Image) -> None:
+        """Front camera frame: detect ArUco (side-camera oblique tuning),
+        project centers to the ground, vote onto grid nodes, and hand the
+        mission the nearest ahead-on-row hint for speed scheduling. Never
+        records — the downward camera stays the authoritative record path.
+        Detection runs only in EXPLORE; the overlay publishes every frame."""
+        try:
+            bgr = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as e:                                # pragma: no cover
+            self.get_logger().warn(f"front conversion failed: {e}")
+            return
+
+        grid = self._fsm.context.grid
+        # Hints only matter in EXPLORE; TAKEOFF/LAND attitudes are outside
+        # the projection's comfort zone. When paused, clear the hint so a
+        # stale one cannot keep slowing the cruise, and annotate the overlay.
+        paused = (
+            "mission " + self._mission.state.name
+            if self._mission.state != MissionState.EXPLORE
+            else "no camera_info" if self._front_intrinsics is None
+            else "no altitude" if self._altitude_m is None
+            else "no DR" if self._odom_truth_pose_xy is None
+            else "no grid" if grid is None
+            else ""
+        )
+
+        detections: list = []
+        projections: dict = {}
+        if not paused:
+            detections = detect_aruco_side(bgr, self._side_cfg)
+            stamp = (
+                float(msg.header.stamp.sec)
+                + float(msg.header.stamp.nanosec) * 1e-9
+            )
+            roll, pitch = self._odom_truth_rp if self._odom_truth_rp else (0.0, 0.0)
+            yaw = self._odom_truth_yaw if self._odom_truth_yaw is not None else 0.0
+            dr_x, dr_y = self._odom_truth_pose_xy
+            for det in detections:
+                hit = project_pixel_to_ground(
+                    det.center_uv[0],
+                    det.center_uv[1],
+                    self._front_intrinsics,
+                    self._front_mount,
+                    (dr_x, dr_y, self._altitude_m),
+                    (roll, pitch, yaw),
+                    max_range=self._front_max_range,
+                )
+                if hit is None:
+                    continue
+                xw, yw, slant = hit
+                projections[det.id] = (xw, yw)
+                self._front_tracker.observe(det.id, xw, yw, slant, stamp, grid)
+
+            candidates = self._front_tracker.snapshot(
+                self._front_vote_threshold, grid
+            )
+            hint = mission_adapter.select_front_hint(
+                candidates,
+                (dr_x, dr_y),
+                self._mission.move_direction,
+                row_tolerance_m=self._front_row_tolerance_m,
+            )
+            self._apply_front_hint(hint)
+        else:
+            self._apply_front_hint(None)
+
+        if self._pub_front_debug is not None and bool(
+            self.get_parameter("publish_debug_image").value
+        ):
+            try:
+                debug_bgr = draw_lookahead_overlay(
+                    bgr, detections, projections,
+                    note=f"detection paused ({paused})" if paused else "front hint",
+                )
+                debug_msg = self._bridge.cv2_to_imgmsg(debug_bgr, encoding="bgr8")
+                debug_msg.header = msg.header
+                self._pub_front_debug.publish(debug_msg)
+            except Exception as e:                            # pragma: no cover
+                self.get_logger().warn(f"front debug publish failed: {e}")
+
+    def _apply_front_hint(self, hint) -> None:
+        """Push the selected front hint (id, node, distance) to the mission
+        and log id/node changes once. None clears the mission hint."""
+        if hint is None:
+            if self._front_hint_prev is not None:
+                self._front_hint_prev = None
+                self._mission.set_front_hint(None, None, None)
+            return
+        marker_id, node, distance_m = hint
+        key = (marker_id, node)
+        if key != self._front_hint_prev:
+            self._front_hint_prev = key
+            self.get_logger().info(
+                f"[FRONT] hint id={marker_id} node={node} d={distance_m:.1f}m"
+            )
+        self._mission.set_front_hint(marker_id, node, distance_m)
 
     def _on_odom_truth(self, msg: Odometry) -> None:
         """Sim-only altitude + vz override.
@@ -1103,6 +1332,158 @@ class LineTracerNode(Node):
         sp.vz_sp = 0.0
         sp.thrust_norm = cmd.thrust_norm
         return sp
+
+    # ------------------------------------------------------------------
+    # Skeleton mission backend (per downward image frame)
+    # ------------------------------------------------------------------
+
+    def _skeleton_tick(self, result: PerceptionResult) -> None:
+        """Build PerceptionData + SensorData from one downward frame, step
+        MissionManager, and publish the McuCommand. The MCU owns control, so
+        this path emits no legacy Setpoint. Metric conversions are the pure
+        functions in mission_adapter."""
+        intr = self._intrinsics
+        altitude = self._altitude_m
+        if intr is None or altitude is None:
+            return                       # wait for camera_info + first altitude
+
+        now = self.get_clock().now().nanoseconds * 1e-9
+        move_dir = self._mission.move_direction
+        travel_axis = "x" if move_dir in (
+            MoveDirection.X_POS, MoveDirection.X_NEG) else "y"
+
+        # Line: both grid-line offsets + presence; angle is travel-selected.
+        dx, has_v, dy, has_h = mission_adapter.line_offsets_m(
+            result.du, result.dv, altitude, intr.fx, intr.fy
+        )
+        angle = mission_adapter.line_angle_error_rad(
+            travel_axis, result.psi_err, result.horizontal_line
+        )
+        followed_present = has_v if travel_axis == "x" else has_h
+        line = LineDetection(
+            has_vertical=has_v, has_horizontal=has_h, dx=dx, dy=dy,
+            angle_error=angle if angle is not None else 0.0,
+            confidence=1.0 if followed_present else 0.0,   # no confidence model yet
+        )
+
+        # Intersection pulse + branch flags. The detector labels flags for
+        # positive-axis travel; flip forward/back and left/right on X_NEG/Y_NEG.
+        vert, horiz = classify_lines(result.all_lines, self._perception_cfg)
+        ev = self._intersection_detector.update(vert, horiz, travel_axis, intr)
+        fwd, bwd, left, right = ev.forward, ev.backward, ev.left, ev.right
+        if move_dir in (MoveDirection.X_NEG, MoveDirection.Y_NEG):
+            fwd, bwd = bwd, fwd
+            left, right = right, left
+        intersection = IntersectionDetection(
+            detected=ev.detected, forward=fwd, left=left, right=right, backward=bwd,
+        )
+
+        # Marker: nearest-to-center detection wins.
+        markers = [(d.id, d.center_uv[0], d.center_uv[1]) for d in result.aruco]
+        chosen = mission_adapter.nearest_marker(markers, intr.cx, intr.cy)
+        if chosen is not None:
+            mid, mu, mv = chosen
+            err_x, err_y = mission_adapter.marker_center_errors_m(
+                mu, mv, intr.cx, intr.cy, altitude, intr.fx, intr.fy
+            )
+            aruco = MissionAruco(
+                detected=True, marker_id=mid,
+                center_error_x=err_x, center_error_y=err_y,
+                yaw_error=0.0, confidence=1.0,
+            )
+        else:
+            aruco = MissionAruco(detected=False, marker_id=None, confidence=0.0)
+
+        perception_data = PerceptionData(
+            line=line, intersection=intersection, aruco=aruco
+        )
+
+        # Sensors: battery/imu/lidar/rc stubbed healthy in sim; DR world pose
+        # and body velocity come from the /odom_truth callbacks.
+        dr_x = dr_y = None
+        if self._odom_truth_pose_xy is not None:
+            dr_x, dr_y = self._odom_truth_pose_xy
+        yaw = self._odom_truth_yaw if self._odom_truth_yaw is not None else 0.0
+        vx_est = vy_est = None
+        if (self._latest_vxy_world is not None
+                and self._latest_vxy_t is not None
+                and (now - self._latest_vxy_t) <= 0.5):
+            vx_est, vy_est = world_to_body(
+                self._latest_vxy_world[0], self._latest_vxy_world[1], yaw
+            )
+        sensors = SensorData(
+            altitude=float(altitude), battery_voltage=15.5,
+            imu_ok=True, lidar_ok=True, rc_connected=True,
+            dr_x=dr_x, dr_y=dr_y, vx_est=vx_est, vy_est=vy_est,
+        )
+
+        # Step (publishes McuCommand via the send hook), then emit the grep-able
+        # >> FSM / >> RECORD markers dev.sh's mission summary greps for.
+        prev_state = self._mission.state
+        prev_ids = set(self._mission.grid_map.marker_id_to_node.keys())
+        cmd = self._mission.step(now, sensors, perception_data)
+        if self._mission.state != prev_state:
+            self.get_logger().info(
+                f">> FSM: {prev_state.name} -> {self._mission.state.name} "
+                f"(alt={altitude:.2f})"
+            )
+        new_ids = set(self._mission.grid_map.marker_id_to_node.keys()) - prev_ids
+        for mid in sorted(new_ids):
+            node = self._mission.grid_map.marker_id_to_node[mid]
+            wx, wy = self._mission.grid_map.node_world(node)
+            self.get_logger().info(
+                f">> RECORD aruco id={mid} at ({wx:+.2f}, {wy:+.2f})"
+            )
+
+        # Throttled status line, format mirrors the legacy backend's.
+        self._sk_log_counter = (self._sk_log_counter + 1) % 20
+        if self._sk_log_counter == 0:
+            sx = dr_x if dr_x is not None else 0.0
+            sy = dr_y if dr_y is not None else 0.0
+            self.get_logger().info(
+                f"[{self._mission.state.name}/skeleton] "
+                f"xy=({sx:+.2f},{sy:+.2f}) yaw={yaw:+.2f} alt={altitude:.2f} "
+                f"mode={ControlMode(cmd.mode).name} "
+                f"dir={MoveDirection(cmd.move_direction).name}"
+            )
+
+    def _publish_mcu_command(self, cmd) -> None:
+        """MissionManager dispatch hook: publish the McuCommand dataclass on
+        /fc/mcu_command. mode carries no arm bit; arm is a separate field that
+        fc_sim_node folds into the wire mode byte. STOP (mission FINISHED)
+        requests disarm; the MCU also disarms on land cutoff."""
+        msg = McuCommand()
+        msg.mode = int(cmd.mode)
+        msg.arm = cmd.mode != int(ControlMode.STOP)
+        msg.mission_state = int(cmd.mission_state)
+        msg.seq = int(cmd.seq)
+        msg.node_x = int(cmd.node_x)
+        msg.node_y = int(cmd.node_y)
+        msg.move_direction = int(cmd.move_direction)
+        msg.target_altitude = float(cmd.target_altitude)
+        msg.line_dx = float(cmd.line_dx)
+        msg.line_dy = float(cmd.line_dy)
+        msg.vertical_line = bool(cmd.vertical_line)
+        msg.horizontal_line = bool(cmd.horizontal_line)
+        msg.line_angle_error = float(cmd.line_angle_error)
+        msg.line_confidence = float(cmd.line_confidence)
+        msg.intersection_detected = bool(cmd.intersection_detected)
+        msg.intersection_forward = bool(cmd.intersection_forward)
+        msg.intersection_left = bool(cmd.intersection_left)
+        msg.intersection_right = bool(cmd.intersection_right)
+        msg.intersection_backward = bool(cmd.intersection_backward)
+        msg.marker_detected = bool(cmd.marker_detected)
+        msg.marker_id = int(cmd.marker_id)
+        msg.marker_error_x = float(cmd.marker_error_x)
+        msg.marker_error_y = float(cmd.marker_error_y)
+        msg.marker_yaw_error = float(cmd.marker_yaw_error)
+        msg.marker_confidence = float(cmd.marker_confidence)
+        msg.vx_est = float(cmd.vx_est)
+        msg.vy_est = float(cmd.vy_est)
+        msg.vel_est_valid = bool(cmd.vel_est_valid)
+        msg.emergency = bool(cmd.emergency)
+        msg.speed_scale = int(cmd.speed_scale)
+        self._pub_mcu.publish(msg)
 
     # ------------------------------------------------------------------
     # ArUco markers → world frame

@@ -2,6 +2,312 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Interface extracted + serial packer + root README (2026-07-20)
+
+The Jetson<->MCU contract moved out of mission.py into
+mission_interface.py (enums, Node, perception/sensor dataclasses,
+McuCommand, direction helpers; mission.py re-exports so no caller
+changed). New pack_mcu_command() emits the exact 34-byte frame
+(pure-Python CRC16-CCITT matching protocol.c; Q14 truncation toward
+zero like the C cast; confidence round-half-up to u8) — the piece that
+was missing for a real Jetson->STM32 UART. A golden frame is pinned
+byte-for-byte in test_mission_interface.py AND test_protocol.cpp
+("change together" comments) so wire compatibility is regression-
+tested across languages. Root README.md added: interface quick
+reference, frequently-used symbols per side, and the STM32 wiring
+recipe. Suites: 318 pytest + 49 gtests.
+
+## r86: recovery validated in flight (2026-07-20)
+
+r86 (defaults, 1.0 m/s): full mission to FINISHED, 4/4 exact records,
+zero aborts — and the new lost-line recovery fired twice on REAL
+losses, both times legitimately and both times reacquiring: a 1.46 m
+lateral drift on the rescue path's row 18 (virtual line pulled the
+drone from x=1.54 to 2.01 toward nominal 3.0, real line back in 3
+frames) and a post-confirm braking drift at (7,2). No false triggers
+from crossing flicker. Earlier runs survived these same moments by
+luck; recovery makes them deterministic.
+
+## Lost-line recovery landed (2026-07-20)
+
+The r81 gap is closed: a cruising state that loses the followed
+line's presence bit for 2 s continuous enters recovery — the mission
+synthesizes a virtual line from DR (nominal perpendicular of the
+BELIEVED row minus the DR coordinate, wire-clamped) with speed_scale
+0, so the MCU's existing lateral law sidesteps the drone back onto
+the believed line; 3 consecutive real-line frames resume cruise, 20 s
+without reacquisition goes FAILSAFE, DR-None stays in the old HOLD
+degradation with a loud log. Pulses are ignored while recovering, and
+settles/confirms break absence continuity so crossing flicker cannot
+false-trigger. No protocol or MCU change — speed_scale 0 (creep) plus
+the line fields already expressed everything needed. 10 new tests;
+suite 305 pytest + 48 gtests.
+
+## r85: FULL mission at 1.0 m/s (2026-07-20)
+
+r85 (1200 s cap, seed 42, mission_cruise:=1.0 mission_max_vxy:=1.3):
+complete INIT -> FINISHED at double cruise — 4/4 markers exact
+(including id 14 at (3,6), the one r84 mis-placed), rescue, landing
+at 0.19 m, zero aborts. The 1.0 m/s enablers all pulled their weight:
+speed_scale kept turns/approaches at 0.4-0.5 effective, front-camera
+hints slowed marker approaches, and the marker-projection record made
+the confirm overshoot harmless. Timing vs r83 (0.5 m/s): search
+825 -> 571 s (-31 %), total ~1300 -> 952 s (-27 %); the
+speed-independent parts (slow legs, settles, confirms) bound the
+speedup. Cruise defaults promoted to 1.0 / 1.3.
+
+## r84 defects: marker recorded at the drone, not the marker (2026-07-20)
+
+r84 (first full 1.0 m/s attempt) exposed two latent defects. (1) The
+marker record snapped the DRONE's post-braking DR node: at 1.0 m/s
+the confirm braking overshoots ~3 m, so id 14 (truth (3,6)) was
+recorded one cell past at (0,6) and the current_node re-zero inherited
+the error. Fix: during the confirm window every sighting votes the
+MARKER's own projected node (dr + body-frame center error; body ==
+world under yaw lock), the record lands on the majority node with the
+snap tolerance, and the drone re-zero stays a separate, honest snap of
+the drone's own position. Latent at 0.5 m/s too — the smaller
+overshoot just masked it. (2) After a re-zero onto an edge node the
+stale outward move_direction made the next pulse advance off-grid and
+add_edge raised, stalling the mission: the direction is now re-chosen
+after every confirm re-zero, and off-grid pulses are dropped with a
+[GRID] warning instead of raising (both cruising states). Suite 295.
+
+## Front camera wired: hints slow the approach (2026-07-20)
+
+The 45-deg front camera now feeds the mission: side_camera's
+mount-agnostic machinery (detector config, ground projection,
+CandidateTracker) with the front extrinsics, a pure select_front_hint
+in mission_adapter (nearest unrecorded candidate ahead on the current
+row), set_front_hint per image tick, detection gated to EXPLORE with
+the overlay published every frame. Live 400 s check: hint for id 15
+qualified 24 m down the row and held through the approach, producing
+sustained hint-caused scale=50 at mid-row nodes; confirms and records
+unaffected; 0 gz aborts. Suite 289 pytest + 48 gtests. The 45-deg
+view sees far down the row, so the persistent vote — not a near-range
+sighting — is what carries the hint, as intended.
+
+## speed_scale deceleration scheduling landed (2026-07-20)
+
+Per spec section 7a: the mission frame gains a speed_scale percent
+byte (34-byte frame; decode clamps >100), the MCU scales only the
+along-track cruise term with it (lateral/angle/marker terms and
+ALIGN/LAND/HOLD untouched), and MissionManager schedules it per leg —
+transits and the first post-settle leg 40, the final leg before a row
+end 50, a front-camera marker hint within 4 m 50, straights 100,
+lowest wins. The front-hint hook (set_front_hint; recorded ids
+dropped) is in place for the node integration. Suites: fc_core 48
+gtests, line_tracer 281 pytest, all green. Unflown yet — the 1.0 m/s
+retest follows the front-camera node integration.
+
+## r83: FULL mission complete on the skeleton backend (2026-07-17)
+
+r83 (1500 s cap, seed 42, stock defaults cruise 0.5 / max_vxy 0.8):
+the whole mission ran to FINISHED for the first time on the skeleton
+backend — takeoff, serpentine explore with turn-settles, 4/4 markers
+recorded exactly at ground truth, rescue path in ascending ID order,
+return, LAND -> FINISHED at 0.19 m. Zero gz aborts. r82 (1200 s cap)
+had already reproduced everything but ran out of cap mid-rescue: the
+honest full-mission budget at 0.5 m/s is ~1300 sim s (search ~825 s
+incl. 14 settles + 5 confirms, rescue ~450 s incl. landing) — use a
+1500 s cap for full runs. This closes the end-to-end validation:
+skeleton pipeline verified in flight from INIT to FINISHED.
+
+## r81: turn-settle helps but 1.0 m/s stays infeasible (2026-07-17)
+
+The turn-settle phase (HOLD after axis-changing turns until the DR
+speed drops below 0.25 m/s; mission.py only, 8 new tests, suite 273)
+fired exactly where designed in r81, but braking authority is the
+binding constraint: from 1.3 m/s the attitude clamp (0.15 rad) plus
+the ~1.4 s cascade lag stretches the stop to 2-3.1 m — a full cell —
+so the drone still slid one row during the second settle, and the
+first turn carried it to x = 31.8, OUTSIDE the 30 m arena. A later
+lost-line stall parked the drone mid-cell for ~700 s: there is no
+lost-line recovery behavior yet (new robustness item). Conclusion:
+the protocol has no deceleration concept (direction x fixed cruise
+only), so 3 m legs cap the implementable cruise at ~0.5 m/s. Path to
+1.0+: a speed_scale field in the mission frame (slow before row ends
+and on transits) plus the front camera disambiguating the
+self-similar rows. Defaults promoted to the flight-proven
+cruise 0.5 / max_vxy 0.8.
+
+## r80: cruise 1.0 m/s — row slip at transits, 1/4 markers (2026-07-17)
+
+r80 (900 s cap, mission_cruise:=1.0 mission_max_vxy:=1.3): straight
+legs are clean at 1.0 m/s (row y=3 node-vs-DR ~0.2 m), but every
+row-to-row transit slips: the drone carries ~1 m/s of transit momentum
+into the turn, the kp_xy=0.2 lateral loop cannot brake it, and it
+slides ~2.9 m past the target row and captures the NEXT row's line —
+the grid is self-similar every 3 m, so vision cannot tell and node
+counting cannot see it (crossing pulses on the travel axis keep firing
+correctly). The mission flew row 9 believing row 6, skipped ids 15/14
+entirely, and finished the cap with 1/4 records. Notable positive: the
+marker-confirm DR snap corrected a 5.6 m node error when id 17 was
+found — the re-zero design absorbs even a full-row slip. Fix planned
+at the mission layer (no protocol change): after an axis-changing
+turn, hold until the DR velocity settles, re-acquire the line, then
+resume cruise; retest as r81.
+
+## r79: cruise 0.5 m/s — stable, 4/4 exact, phantom rejected (2026-07-17)
+
+r79 (900 sim s cap, seed 42, mission_cruise:=0.5 mission_max_vxy:=0.8
+via the new fc_sim overrides): line hold and node counting stayed
+clean at 2.5x the r78 speed — entry snap (0,1), node-vs-DR ~0.2 m all
+run, 4/4 markers recorded exactly at ground truth again. One
+MARKER_CONFIRM cycle ended "confirmation failed" at (27, 5.7), where
+no marker exists: a grass phantom ArUco triggered the confirm and the
+3 s majority vote rejected it — first in-flight proof that the vote
+gate catches the documented dark-quad false-positive hazard. The cap
+again cut the run just short of home (~30 s), so LAND remains unflown;
+r80 at 1.0 m/s should finish well inside 900 s.
+
+## r78: full mission on the skeleton backend, 4/4 exact records (2026-07-17)
+
+r78 (1800 sim s cap, seed 42) ran the fixed pipeline through the whole
+search phase: serpentine EXPLORE with node counting, all four markers
+recorded EXACTLY at their ground-truth intersections (id 8 (24,18),
+14 (3,6), 15 (6,6), 17 (21,15) — marker-confirm DR snap lands the node
+every time), rescue path planned in ascending ID order
+(8 -> 14 -> 15 -> 17 -> home) and walked with ~0.22 m node-vs-DR
+agreement. The run hit the time cap mid-rescue (~24 nodes + LAND
+remaining), so LAND/FINISHED on the skeleton backend is still
+unverified in flight (the land law itself is gtest-covered and shared
+with the exercised code path). Zero gz aborts.
+
+Timing reality check: cruise 0.2 m/s is now honestly enforced by the
+MCU velocity loop, so the full-arena sweep alone costs ~1300 sim s
+(the legacy path's apparent speed was the open-loop acceleration
+defect, and row-skip is parked with the side camera). Raising the
+mission cruise gain and porting row-skip are the two speed levers.
+
+## r77 defects root-caused and fixed; dbg2 verifies (2026-07-14..17)
+
+r77 (600 s, seed 42) flew the skeleton pipeline live and exposed two
+defects. Both are fixed and verified in dbg2 (400 s, same seed).
+
+1. Node off-by-one. The ENTER_GRID snap picked the NEAREST node
+   (DR (2.0, 3.0) -> node (1,1)) although the x=3 line was not yet
+   crossed, so the first pulse double-advanced and nominal x led DR by
+   one cell all run. Fix: GridMap.entry_node — travel axis takes the
+   last line already crossed (floor for positive travel, ceil for
+   negative), perpendicular axis nearest; used only at the ENTER_GRID
+   snap (marker-confirm snap stays nearest). dbg2: snap lands (0,1),
+   all 14 [GRID] advances agree with DR within 0.24 m (the pulse fires
+   at the detector enter-band, slightly before the node).
+
+2. Lateral divergence on the followed row (r77: y 3.00 -> 3.29 -> 1.96,
+   leaves the footprint). Instrumented runs disproved the suspects in
+   order: the MCU velocity loop IS closed and sign-correct (vel_valid=1,
+   vy_body tracks truth, roll matches the law); command age << 300 ms;
+   perception line_dx tracks the true offset within ~0.05 m even across
+   junctions (the earlier "junction kick" reading was the real error,
+   not a perception artifact). The actual causes, measured:
+
+   a. Gain mismatch vs the legacy loop (H4). Logging actual vs
+      commanded roll showed the attitude cascade lags roll_sp by
+      ~1.4 s at ~0.4x amplitude at the loop frequency — and the
+      mission FOLLOW_LINE law demanded kp_xy=0.8 lateral stiffness
+      (ωn ≈ 0.9 rad/s) that this actuator cannot follow: negative
+      damping, x1.85 growth per half-cycle, ~10 s limit cycle bounded
+      only by losing the line at |dx| ≈ 1.3 m. The legacy waypoint law
+      never flew that stiffness: its ~2.4 m/s raw along-track demand
+      saturated the max_vxy vector clamp, squeezing the effective
+      lateral gain to ~0.13-0.2. Fix at the point of truth:
+      fc_mission_gains.kp_xy default 0.8 -> 0.2 (mission_ctrl.c, doc
+      note in MISSION_INTERFACE section 7, gtest regression pins that
+      a 1 m line offset no longer saturates the clamp).
+
+   b. Setpoint deadband dead zone. With kp_xy=0.2 a bounded +-0.4 m
+      limit cycle remained: the sim's rate_deadband 0.001 zeroes rate
+      setpoints below 3 mrad/s, i.e. attitude commands below 7.5 mrad,
+      i.e. FOLLOW_LINE trim corrections below ~0.37 m of offset. The
+      deadband exists for SBUS stick centering (no sticks in sim) and
+      gates only the setpoint, not the noise path — sim defaults now
+      0.0 (fc_sim_node). This also explained the forward-speed deficit:
+      0.126 m/s was the dead-zone boundary of the pitch trim
+      (0.1*(0.2-v) < 7.5 mrad), not drag.
+
+   dbg2 (400 s): first X_POS leg y in [3.000, 3.060] over 28 m
+   (residual +0.05 m = known one-pixel line-edge bias), return X_NEG
+   row y in [5.80, 6.21], serpentine turn clean, cruise realized at
+   0.200 m/s sim-time (was 0.07-0.14). Suites: fc_core 43 gtests,
+   line_tracer 265 pytest, all green.
+
+## Skeleton pipeline integrated end-to-end (2026-07-14)
+
+line_tracer_node gains mission_backend = skeleton (default) | legacy.
+Skeleton path per image frame: perception -> mission_adapter (pure
+pixel->metric functions, new module + 11 tests) -> PerceptionData /
+SensorData -> MissionManager.step -> fc_sim_msgs/McuCommand on
+/fc/mcu_command; no Setpoint is published (the MCU owns control).
+Line info follows the user's [dx, dy, flag] contract: both grid-line
+offsets plus per-line presence bits travel to the MCU, which selects
+by move_direction (wire frame now 33 bytes; emergency moved to
+flags2). fc_sim_node runs fc_mission_tick before Control() whenever a
+mission command is fresh (<300 ms); with none, legacy behavior is
+byte-identical. Suites: fc_core 41 gtests, line_tracer 263 pytest,
+all green. Known gaps before the live run: skeleton mode leaves
+/waypoints/aruco RViz spheres on the unticked DR state (debug viz
+only); failsafe inputs are hard-stubbed healthy in sim.
+
+## Intersection pulse detector (2026-07-14)
+
+New IntersectionDetector in perception.py (additive): fires exactly one
+pulse per physical grid crossing via an enter/exit hysteresis band on
+the crossing line's center offset (40/90 px at 640x400, ~2 m alt), and
+reports forward/left/right/backward branch flags from the Hough
+segments at the firing frame. Re-arms only when the crossing is SEEN
+beyond the exit band, so a one-frame Hough miss cannot double-count.
+Branch flags are labeled for positive-axis travel; the mission layer
+owns the X_NEG/Y_NEG flip. 30 synthetic-image tests; suite at 232.
+
+## Node-based mission core landed (2026-07-14)
+
+line_tracer/mission.py: pure-Python (stdlib-only) mission layer per
+docs/MISSION_INTERFACE.md — fixed-value enums, metric dataclasses,
+preallocated 11x8 GridMap with node_world/nearest_node, self-contained
+BFS PathPlanner, boustrophedon ExplorationPlanner that never leaves the
+grid and re-sweeps on exhaustion, and MissionManager with injected
+now/logger, DR snap at grid entry and at marker confirm (off-by-one fix
++ counting-drift re-zero), and node+meters+DR in every state log line.
+Skeleton names preserved for team diffability. 20 new tests; suite at
+252. Deviations from the sketch are listed in the spec section 10 plus:
+initial direction is planner-chosen at grid entry (an edge snap would
+otherwise walk out of bounds on the first move).
+
+## Mission skeleton architecture adopted (2026-07-14)
+
+Team skeleton (docs/mission_skeleton.py) becomes the target interface:
+MissionManager.step(SensorData, PerceptionData) -> McuCommand, with the
+MCU (fc_core/STM32) running the outer control loops on raw vision
+errors. User decisions: node-based (intersection-counting) navigation
+is the main algorithm with world meters logged alongside; fc_core gets
+the outer loop (real STM32 is the deployment target); intersection
+detection gets a real implementation; the side/lookahead camera is
+deferred. Grid confirmed 30 x 21 m (11 x 8 nodes), not the skeleton's
+24 x 15. Full contract in docs/MISSION_INTERFACE.md, including the
+two DR snap points (grid entry, marker confirm) that re-zero counting
+drift, and the deviations list. Legacy Setpoint path stays behind a
+node parameter for A/B.
+
+## Vision comments rewritten for outside readers (2026-07-14)
+
+Comments-only pass over perception.py and side_camera.py (geom.py was
+already clean); the docstring-stripped AST is identical before and
+after, and the full test suite is green. The aruco_white_on_black
+comment now states the constraints without the run-history: standard
+marker so no negation; grass patches bounded by white grid lines can
+decode as an exact codeword; the mitigation belongs in the record path
+(multi-frame vote + size gate). The Korean rule quote is translated.
+The use_ipm comment's "+4 m band" was stale pre-respec wording and now
+reads "adjacent-row band (+3 m on the official grid)". Noticed but not
+applied (code change, out of scope for this pass): `detect_aruco` uses
+default `DetectorParameters()` while the side camera tunes its own — a
+shared detector-params helper would keep the two paths consistent.
+Follow-up on review feedback: mid-code comments are capped at 2-3
+lines; the grass false-positive hazard moved from the field comment
+into the perception.py module docstring.
+
 ## Lookahead overlay publishes in every FSM state (2026-07-09)
 
 `/line_tracer/lookahead_debug_image` already existed, but `_on_lookahead`

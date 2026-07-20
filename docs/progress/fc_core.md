@@ -4,6 +4,77 @@ Pure C library carrying the STM32 firmware controller into ROS2 land.
 
 ## Done
 
+### Cruise defaults promoted to 1.0 / 1.3 (2026-07-20)
+
+With speed_scale deceleration scheduling and front-camera hints in
+place, a full mission at cruise 1.0 / max_vxy 1.3 completed cleanly
+(4/4 exact records, landing, zero aborts; search -31 % vs 0.5).
+Defaults follow across mission_ctrl, the fc_sim parameters, and the
+launch args; seven cruise-dependent gtest expectations recomputed
+exactly. No FOLLOW_LINE case saturates the 1.3 clamp
+(max lateral |v| = 1.077).
+
+### Cruise defaults promoted to 0.5 / 0.8 (2026-07-17)
+
+fc_mission_gains cruise 0.2 -> 0.5 and max_vxy 0.4 -> 0.8, the values
+flight-proven in sim; fc_sim parameter and sim.launch defaults mirror
+them, gtest expectations recomputed exactly. 1.0 m/s cruise needs a
+protocol-level deceleration concept and is future work. Coverage note:
+with kp_xy 0.2 and wire-bounded +/-2.0 line offsets, no realistic
+FOLLOW_LINE input saturates clamp_vxy under the 0.8 envelope anymore —
+add a synthetic-input clamp test when the envelope next changes.
+
+### mission_ctrl kp_xy default 0.8 -> 0.2 (2026-07-17)
+
+The r77 lateral divergence root-caused to this gain: FOLLOW_LINE's
+constant cruise removed the vector-clamp squeeze that had limited the
+legacy waypoint law's effective lateral gain to ~0.13-0.2, so the
+ported 0.8 demanded a stiffness the attitude cascade cannot follow
+(measured ~1.4 s roll lag at 0.4x amplitude -> negative damping).
+Full evidence chain and verification in
+[line_tracer](line_tracer.md). New gtest pins that a 1 m line offset
+no longer saturates the max_vxy clamp (43 gtests green).
+
+### Mission downlink frame + mission_ctrl outer loop (2026-07-14)
+
+Per docs/MISSION_INTERFACE.md: the MCU now owns the outer control
+loops. New mission downlink (magic 0xA6, Q14 metric errors, flags
+byte, CRC16-CCITT; byte table in protocol.h is the wire source of
+truth) alongside the untouched 24-byte setpoint frame. Revised the
+same day to the user's [dx, dy, flag] contract: 33 bytes, line_dx +
+line_dy with per-line presence bits, emergency in flags2; FOLLOW_LINE
+selects the offset by move_direction and holds when the needed line
+is absent. New
+mission_ctrl.{h,c} ports the companion's Python laws 1:1
+(compute_body_velocity + body_vel_to_atti_thr, gains included):
+per-mode velocity intent, velocity-error P when an estimate is valid
+else open-loop v/g, altitude PD with takeoff burst, land descent with
+cutoff+disarm, and the FLU->NED yawrate negation at the COMP write.
+Control() is unchanged — mission_ctrl writes the same COMP struct the
+old path wrote. 39 gtests green (17 pre-existing + 22 new: frame
+roundtrip/saturation/tamper, every ControlMode, burst, cutoff, signs).
+Port notes: Python's unused compute_body_velocity.vz omitted; cruise
+default 0.2 m/s from the LINE_FOLLOW behavior; gains in a module
+global mirroring the pid_rate retuning pattern.
+
+### Comments rewritten for outside readers + known-bug warnings (2026-07-14)
+
+Comments-only pass, no code changes (verified by stripping comments and
+comparing byte-identical against the previous revision; full test suite
+green). controller.c constant rationales lose the internal run numbers
+and work-log pointers but keep the physics: the yaw-rate limit bump,
+the deadband 1/3 rescale, and the F2PWM thrust-stand recalibration
+warning. Three known traps that carried no in-code warning are now
+marked KNOWN BUG at the function: `Allocation()`'s roll/pitch
+arm-length swap (~9 % asymmetry), `quat_to_euler()`'s sign-flipped
+pitch (both already tracked as deferred firmware items), and
+`GetAngle2Vec()` returning uninitialized y/z — newly noticed in this
+pass; dead code, no callers in this repo, must be fixed before use.
+The other 14 fc_core files were already jargon-free and untouched.
+Follow-up on review feedback: mid-code comments are capped at 2-3
+lines (long prose belongs in the file header only); the stale-link
+fallback contract moved into controller.c's header comment.
+
 ### Thrust scale switched to the real power train: 900 g/motor, 2212-920KV on 4S (2026-07-08)
 
 `Control()`'s thrust mapping assumed 600 g max thrust per motor (the
