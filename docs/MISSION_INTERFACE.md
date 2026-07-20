@@ -135,6 +135,7 @@ metric and radians; the Jetson converts pixels to meters with
 | marker_confidence | u8 | 0..255 | |
 | flags | u8 | bit0 vertical_line, bit1 horizontal_line, bit2 intersection_detected, bit3 fwd, bit4 left, bit5 right, bit6 back, bit7 marker_detected | line presence per axis (the [dx, dy, flag] contract) |
 | flags2 | u8 | bit0 vel_est_valid, bit1 emergency | rest reserved |
+| speed_scale | u8 | percent 0..100 (values above 100 clamp to 100) | scales the MCU cruise for this command; 100 = full cruise. The mission slows legs that end in a stop or turn (section 7a). |
 
 Line information is deliberately sent as the full [dx, dy, flag]
 triple — both grid-line offsets plus per-line presence bits — rather
@@ -202,6 +203,34 @@ Mode behavior table:
 Stale-command fallback: reuse the existing COMP_STALE_MS contract —
 mission_ctrl only writes COMP when a fresh McuCommand exists; the
 Control() stale fallback stays the safety net.
+
+## 7a. Speed scheduling (Jetson side) and the front camera
+
+The MCU applies effective_cruise = cruise * speed_scale / 100 in
+FOLLOW_LINE / SEARCH_LINE / MOVE_TO_LANDMARK. The mission sets
+speed_scale per leg (constructor-tunable defaults):
+
+- transit legs (Y moves between rows) and the first leg after any
+  settle: 40
+- the final leg before a known row end (next node in the travel
+  direction is a boundary node): 50
+- a front-camera marker hint projected within hint_slow_range_m
+  (default 4.0) ahead on the current row: 50
+- otherwise: 100
+
+Rationale: braking authority (attitude clamp + cascade lag) needs
+~a full 3 m cell from 1.3 m/s, so speed must already be low wherever
+a stop or turn can occur; straights carry the full cruise.
+
+Front camera (IMX219 8MP 120 deg wide, front-mounted, 45 deg down;
+sim: /front_camera/image + /front_camera/camera_info, 1024x768,
+fx 295.6): HINTS ONLY, never records — the downward camera stays the
+authoritative record path. Pipeline reuses the mount-agnostic
+machinery in side_camera.py (MountExtrinsics yaw=0, pitch=pi/4,
+tx=+0.08, tz=-0.03; project_pixel_to_ground; CandidateTracker voting
+onto grid nodes). The node feeds the mission a per-tick hint
+(marker id, node, ground distance ahead); the mission uses it only
+for speed_scale and to anticipate MARKER_CONFIRM braking.
 
 ## 8. Sim wiring
 
