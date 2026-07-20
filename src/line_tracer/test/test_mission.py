@@ -398,6 +398,129 @@ def test_marker_confirm_dr_none_falls_back_to_current_node():
     assert m.current_node == Node(4, 1)
 
 
+def test_marker_confirm_records_marker_node_not_overshot_drone_node():
+    """r84 overshoot: the drone brakes a full cell past the marker while the
+    hover ticks see the marker's center errors pointing back at its true node.
+    The record must land on the marker node; current_node on the drone node."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(2, 0)     # stale count
+    m.move_direction = MoveDirection.X_NEG
+
+    # marker sits at world (3, 0) = node (1, 0); center errors = marker - drone
+    m.step(0.0, _sensors(dr_x=4.0, dr_y=0.1), _perception(aruco_id=14, cx=-1.0, cy=-0.1))
+    m.step(1.0, _sensors(dr_x=2.0, dr_y=0.05), _perception(aruco_id=14, cx=1.0, cy=-0.05))
+    m.step(2.0, _sensors(dr_x=0.5, dr_y=0.0), _perception(aruco_id=14, cx=2.5, cy=0.0))
+    # drone ends at world (0, 0) = node (0, 0), one cell past the marker
+    m.step(3.0, _sensors(dr_x=0.0, dr_y=0.0), _perception())
+
+    assert m.state == MissionState.EXPLORE
+    assert m.grid_map.node_of_marker(14) == Node(1, 0)   # marker's own node
+    assert m.current_node == Node(0, 0)                  # drone's actual node
+    assert m.grid_map.node_of_marker(14) != m.current_node
+
+
+def test_marker_confirm_id_and_node_majority_combined():
+    """The winning id is the id majority; the recorded node is that id's node
+    majority. A minority id and a minority node both lose."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(3, 0)
+
+    # marker at world (6, 0) = node (2, 0)
+    m.step(0.0, _sensors(dr_x=6.0, dr_y=0.0), _perception(aruco_id=8))
+    m.step(0.5, _sensors(dr_x=6.0, dr_y=0.0), _perception(aruco_id=8))
+    m.step(1.0, _sensors(dr_x=6.0, dr_y=0.0), _perception(aruco_id=8))
+    # a single id-8 sighting whose projection lands on node (3, 0): minority node
+    m.step(1.5, _sensors(dr_x=6.0, dr_y=0.0), _perception(aruco_id=8, cx=3.0))
+    # a minority id (2) projecting onto (2, 0): loses the id vote
+    m.step(2.0, _sensors(dr_x=6.0, dr_y=0.0), _perception(aruco_id=2))
+    m.step(3.0, _sensors(dr_x=6.0, dr_y=0.0), _perception())
+
+    assert m.grid_map.contains_marker(8)
+    assert not m.grid_map.contains_marker(2)
+    assert m.grid_map.node_of_marker(8) == Node(2, 0)
+
+
+def test_marker_confirm_rejects_when_projection_out_of_tolerance():
+    """Every hover projection sits farther than snap_max_err from any node, so
+    the id has zero node votes and the confirm is rejected (nothing recorded).
+    current_node still re-zeros to the drone's DR node."""
+    m = MissionManager(logger=_null, snap_max_err=0.5)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(3, 0)
+
+    m.step(0.0, _sensors(dr_x=9.0, dr_y=0.0), _perception(aruco_id=7))
+    # projected 1.2 m off node (3, 0) each tick > snap_max_err 0.5 -> no vote
+    m.step(1.0, _sensors(dr_x=9.0, dr_y=0.0), _perception(aruco_id=7, cx=1.2))
+    m.step(2.0, _sensors(dr_x=9.0, dr_y=0.0), _perception(aruco_id=7, cx=1.2))
+    m.step(3.0, _sensors(dr_x=9.0, dr_y=0.0), _perception())
+
+    assert m.state == MissionState.EXPLORE
+    assert not m.grid_map.contains_marker(7)
+    assert m.current_node == Node(3, 0)
+
+
+def test_marker_confirm_rechooses_stale_outward_direction():
+    """After the re-zero parks the drone on an edge node, a stale outward
+    move_direction is re-chosen so the next pulse advances INTO the grid
+    instead of stepping off it (r84 add_edge out-of-bounds crash)."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(2, 2)
+    m.move_direction = MoveDirection.X_NEG    # points off-grid once re-zeroed
+
+    # marker at world (3, 6) = node (1, 2); the drone brakes a cell past it
+    m.step(0.0, _sensors(dr_x=3.5, dr_y=6.0), _perception(aruco_id=20, cx=-0.5))
+    m.step(1.0, _sensors(dr_x=2.0, dr_y=6.0), _perception(aruco_id=20, cx=1.0))
+    m.step(2.0, _sensors(dr_x=0.5, dr_y=6.0), _perception(aruco_id=20, cx=2.5))
+    m.step(3.0, _sensors(dr_x=0.0, dr_y=6.0), _perception())
+
+    assert m.state == MissionState.EXPLORE
+    assert m.current_node == Node(0, 2)                 # drone node (x edge)
+    assert m.grid_map.node_of_marker(20) == Node(1, 2)  # marker's own node
+    assert m.move_direction != MoveDirection.X_NEG      # stale outward cleared
+    assert m.move_direction == MoveDirection.Y_POS      # re-chosen into the grid
+
+    # the next pulse advances into the grid; no exception is raised
+    m.step(4.0, _sensors(dr_x=0.0, dr_y=9.0), _perception(intersection=True))
+    assert m.current_node == Node(0, 3)
+
+
+def test_explore_off_grid_pulse_dropped_and_direction_recovered():
+    """Defensive net: a pulse whose advance would leave the grid is dropped
+    (no add_edge, no raise); the direction is re-chosen so the following pulse
+    advances in."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.EXPLORE
+    m.current_node = Node(0, 3)
+    m.move_direction = MoveDirection.X_NEG    # (-1, 3) is off-grid
+
+    cmd = m.step(0.0, _sensors(vx=0.0, vy=0.0), _perception(intersection=True))
+    assert m.current_node == Node(0, 3)               # not advanced
+    assert m.move_direction != MoveDirection.X_NEG    # re-chosen
+    assert cmd.mode == int(ControlMode.FOLLOW_LINE)
+
+    m.step(1.0, _sensors(vx=0.0, vy=0.0), _perception(intersection=True))
+    assert m.grid_map.in_bounds(m.current_node)
+    assert m.current_node != Node(0, 3)               # advanced into the grid
+
+
+def test_follow_rescue_off_grid_pulse_dropped_without_advance():
+    """Defensive net on the rescue path: a malformed off-grid waypoint would
+    step the advance off the grid; the pulse is dropped instead of raising."""
+    m = MissionManager(logger=_null)
+    m.state = MissionState.FOLLOW_RESCUE_PATH
+    m.current_node = Node(0, 0)
+    m.rescue_path = [Node(-1, 0)]     # intentionally off-grid to force the guard
+    m.path_index = 0
+
+    cmd = m.step(0.0, _sensors(vx=0.0, vy=0.0), _perception(intersection=True))
+    assert m.state == MissionState.FOLLOW_RESCUE_PATH
+    assert m.current_node == Node(0, 0)               # not advanced, no raise
+    assert cmd.mode == int(ControlMode.FOLLOW_LINE)
+
+
 # ---------------------------------------------------------------------------
 # rescue path (BFS in ascending ID order) -> LAND -> FINISHED
 # ---------------------------------------------------------------------------

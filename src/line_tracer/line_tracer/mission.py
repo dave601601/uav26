@@ -615,6 +615,7 @@ class MissionManager:
         grid_map: Optional[GridMap] = None,
         logger: Callable[[str], None] = print,
         required_marker_count: int = 4,
+        snap_max_err: float = 2.0,
         settle_speed_mps: float = 0.25,
         settle_timeout_s: float = 4.0,
         settle_min_s: float = 1.5,
@@ -669,9 +670,15 @@ class MissionManager:
         self.path_index = 0
 
         # 3 s marker confirmation (majority vote over the hover window).
+        # detected_ids_during_hover votes the id; marker_node_votes votes,
+        # per id, the marker's own projected grid node. Recording a
+        # projection farther than snap_max_err from any node is refused
+        # (markers sit on intersections, so a far projection is untrusted).
         self.marker_confirm_start_time: Optional[float] = None
         self.detected_ids_during_hover: List[int] = []
+        self.marker_node_votes: Dict[int, List[Node]] = {}
         self.required_marker_count = required_marker_count
+        self.snap_max_err = snap_max_err
 
         self._seq = 0
         self._last_dr: Tuple[Optional[float], Optional[float]] = (None, None)
@@ -724,6 +731,56 @@ class MissionManager:
         if dx is None or dy is None:
             return self.current_node
         return self.grid_map.nearest_node(dx, dy)
+
+    def _marker_node_from_projection(self, aruco: ArucoDetection) -> Optional[Node]:
+        """Grid node nearest the marker's own projected world position, or
+        None when DR is unavailable or the projection sits farther than
+        snap_max_err from any node (the trackers' snap tolerance)."""
+
+        dr_x, dr_y = self._last_dr
+        if dr_x is None or dr_y is None:
+            return None
+        # center errors are body-frame meters; yaw is locked to the grid
+        # axes, so body axes == world axes and these add directly.
+        mx = dr_x + aruco.center_error_x
+        my = dr_y + aruco.center_error_y
+        node = self.grid_map.nearest_node(mx, my)
+        nx, ny = self.grid_map.node_world(node)
+        if hypot(nx - mx, ny - my) > self.snap_max_err:
+            return None
+        return node
+
+    def _finish_marker_confirm(self) -> None:
+        """Close the confirm window. Re-zero current_node to the drone's DR
+        node (independent of the marker — the drone can sit a cell away after
+        braking), then record the majority id at the marker's own
+        majority-voted node. Reject when no id was seen, or, with DR, when the
+        winning id has no in-tolerance node vote. Without DR, fall back to
+        recording at the drone's current node (degraded but defined)."""
+
+        self.current_node = self._snap_node_from_dr()
+        # A re-zero can leave move_direction pointing off-grid (braking may
+        # have parked the drone on an edge node). Re-choose it from the new
+        # node so the next pulse advances into the grid, as ENTER_GRID does.
+        self.move_direction = self.exploration_planner.choose_direction(
+            self.grid_map, self.current_node, self.move_direction
+        )
+
+        if not self.detected_ids_during_hover:
+            self._log("[MARKER] confirmation failed: no id seen")
+            return
+        confirmed_id = Counter(self.detected_ids_during_hover).most_common(1)[0][0]
+
+        if self._last_dr[0] is None or self._last_dr[1] is None:
+            self.grid_map.save_marker(confirmed_id, self.current_node)
+            return
+
+        node_votes = self.marker_node_votes.get(confirmed_id)
+        if not node_votes:
+            self._log(f"[MARKER] confirmation failed: id {confirmed_id} no node vote")
+            return
+        marker_node = Counter(node_votes).most_common(1)[0][0]
+        self.grid_map.save_marker(confirmed_id, marker_node)
 
     def _entry_node_from_dr(self) -> Node:
         """Grid-entry node from DR: behind the drone along move_direction
@@ -838,6 +895,7 @@ class MissionManager:
             ):
                 self.marker_confirm_start_time = now
                 self.detected_ids_during_hover = []
+                self.marker_node_votes = {}
                 self.change_state(MissionState.MARKER_CONFIRM)
                 return ControlMode.ALIGN_MARKER
 
@@ -845,7 +903,20 @@ class MissionManager:
             #    direction (guaranteed in-bounds by the serpentine planner).
             if perception.intersection.detected:
                 prev_node = self.current_node
-                self.current_node = move_to_next_node(prev_node, self.move_direction)
+                next_node = move_to_next_node(prev_node, self.move_direction)
+                # Defensive: a stale outward direction must never step off the
+                # grid. Drop the pulse, re-choose a valid direction, and wait
+                # for the next crossing.
+                if not self.grid_map.in_bounds(next_node):
+                    self._log(
+                        f"[GRID] off-grid pulse dropped dir={self.move_direction.name} "
+                        f"{self._context_str()}"
+                    )
+                    self.move_direction = self.exploration_planner.choose_direction(
+                        self.grid_map, prev_node, self.move_direction
+                    )
+                    return ControlMode.FOLLOW_LINE
+                self.current_node = next_node
                 self._first_leg_after_settle = False  # advanced past the first leg
                 self.grid_map.add_edge(prev_node, self.current_node)
                 self.grid_map.mark_edge_visited(prev_node, self.current_node)
@@ -871,21 +942,20 @@ class MissionManager:
             return ControlMode.FOLLOW_LINE
 
         if self.state == MissionState.MARKER_CONFIRM:
-            # Accumulate IDs for the majority vote over the hover window.
+            # Vote the id (majority) and, per id, the marker's own projected
+            # grid node over the hover window. The marker node comes from the
+            # marker's projection, not the drone's DR: braking into the confirm
+            # can leave the drone a cell past the marker.
             if perception.aruco.detected and perception.aruco.marker_id is not None:
-                self.detected_ids_during_hover.append(perception.aruco.marker_id)
+                marker_id = perception.aruco.marker_id
+                self.detected_ids_during_hover.append(marker_id)
+                node = self._marker_node_from_projection(perception.aruco)
+                if node is not None:
+                    self.marker_node_votes.setdefault(marker_id, []).append(node)
 
             elapsed = now - self.marker_confirm_start_time
             if elapsed >= 3.0:
-                if self.detected_ids_during_hover:
-                    confirmed_id = Counter(self.detected_ids_during_hover).most_common(1)[0][0]
-                    # The marker sits ON an intersection, so re-zero the node
-                    # index against DR and record the marker there.
-                    snap_node = self._snap_node_from_dr()
-                    self.current_node = snap_node
-                    self.grid_map.save_marker(confirmed_id, snap_node)
-                else:
-                    self._log("[MARKER] confirmation failed")
+                self._finish_marker_confirm()
                 self.change_state(MissionState.EXPLORE)
             return ControlMode.ALIGN_MARKER
 
@@ -915,6 +985,17 @@ class MissionManager:
             self.move_direction = direction_to_adjacent_node(self.current_node, target_node)
 
             if perception.intersection.detected:
+                # Defensive: never advance off-grid. move_direction already
+                # points at the waypoint (line above); if that step would still
+                # leave the grid, drop the pulse rather than raise.
+                if not self.grid_map.in_bounds(
+                    move_to_next_node(self.current_node, self.move_direction)
+                ):
+                    self._log(
+                        f"[GRID] off-grid pulse dropped dir={self.move_direction.name} "
+                        f"{self._context_str()}"
+                    )
+                    return ControlMode.FOLLOW_LINE
                 prev_direction = self.move_direction
                 self.current_node = move_to_next_node(self.current_node, self.move_direction)
                 self._first_leg_after_settle = False  # advanced past the first leg

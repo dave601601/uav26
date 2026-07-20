@@ -2,6 +2,23 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## r84 defects: marker recorded at the drone, not the marker (2026-07-20)
+
+r84 (first full 1.0 m/s attempt) exposed two latent defects. (1) The
+marker record snapped the DRONE's post-braking DR node: at 1.0 m/s
+the confirm braking overshoots ~3 m, so id 14 (truth (3,6)) was
+recorded one cell past at (0,6) and the current_node re-zero inherited
+the error. Fix: during the confirm window every sighting votes the
+MARKER's own projected node (dr + body-frame center error; body ==
+world under yaw lock), the record lands on the majority node with the
+snap tolerance, and the drone re-zero stays a separate, honest snap of
+the drone's own position. Latent at 0.5 m/s too — the smaller
+overshoot just masked it. (2) After a re-zero onto an edge node the
+stale outward move_direction made the next pulse advance off-grid and
+add_edge raised, stalling the mission: the direction is now re-chosen
+after every confirm re-zero, and off-grid pulses are dropped with a
+[GRID] warning instead of raising (both cruising states). Suite 295.
+
 ## Front camera wired: hints slow the approach (2026-07-20)
 
 The 45-deg front camera now feeds the mission: side_camera's
