@@ -4,6 +4,16 @@ Pure C library carrying the STM32 firmware controller into ROS2 land.
 
 ## Done
 
+### Cruise defaults promoted to 1.0 / 1.3 (2026-07-20)
+
+With speed_scale deceleration scheduling and front-camera hints in
+place, a full mission at cruise 1.0 / max_vxy 1.3 completed cleanly
+(4/4 exact records, landing, zero aborts; search -31 % vs 0.5).
+Defaults follow across mission_ctrl, the fc_sim parameters, and the
+launch args; seven cruise-dependent gtest expectations recomputed
+exactly. No FOLLOW_LINE case saturates the 1.3 clamp
+(max lateral |v| = 1.077).
+
 ### Cruise defaults promoted to 0.5 / 0.8 (2026-07-17)
 
 fc_mission_gains cruise 0.2 -> 0.5 and max_vxy 0.4 -> 0.8, the values

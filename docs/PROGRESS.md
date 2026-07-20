@@ -25,9 +25,11 @@ MissionManager.step -> McuCommand -> fc_core outer loop (STM32-shared),
 node-based navigation with DR snaps, [dx, dy, flag] line contract.
 Contract in [MISSION_INTERFACE](MISSION_INTERFACE.md). r83 flew the
 FULL mission to FINISHED: 4/4 exact records, ID-order rescue, landing.
-316 tests green. Cruise default 0.5 m/s (flight-proven); 1.0 needs a
-protocol speed_scale + the new front camera (IMX219 8MP 120 deg, 45 deg
-down, in sim) — that integration is the next work item, along with
+343 tests green. Cruise default 1.0 m/s: speed_scale deceleration
+scheduling (transits/final legs/marker approaches slow, straights
+full) plus front-camera hints (IMX219 45 deg down, hints-only) made
+1.0 fly clean end-to-end — search -31 % vs 0.5. Markers now record at
+their own projected node (confirm-overshoot-proof). Remaining:
 lost-line recovery and the FAILSAFE stubs. Legacy FSM stays selectable
 (mission_backend:=legacy). Full history:
 [line_tracer](progress/line_tracer.md) r77-r83 entries.

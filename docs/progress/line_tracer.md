@@ -2,6 +2,19 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## r85: FULL mission at 1.0 m/s (2026-07-20)
+
+r85 (1200 s cap, seed 42, mission_cruise:=1.0 mission_max_vxy:=1.3):
+complete INIT -> FINISHED at double cruise — 4/4 markers exact
+(including id 14 at (3,6), the one r84 mis-placed), rescue, landing
+at 0.19 m, zero aborts. The 1.0 m/s enablers all pulled their weight:
+speed_scale kept turns/approaches at 0.4-0.5 effective, front-camera
+hints slowed marker approaches, and the marker-projection record made
+the confirm overshoot harmless. Timing vs r83 (0.5 m/s): search
+825 -> 571 s (-31 %), total ~1300 -> 952 s (-27 %); the
+speed-independent parts (slow legs, settles, confirms) bound the
+speedup. Cruise defaults promoted to 1.0 / 1.3.
+
 ## r84 defects: marker recorded at the drone, not the marker (2026-07-20)
 
 r84 (first full 1.0 m/s attempt) exposed two latent defects. (1) The

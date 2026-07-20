@@ -204,12 +204,12 @@ public:
 
         // Mission outer-loop gain overrides, so cruise-speed experiments
         // run without rebuilding. Defaults match fc_mission_gains
-        // (cruise 0.5, max_vxy 0.8). max_vxy clamps the total xy velocity,
+        // (cruise 1.0, max_vxy 1.3). max_vxy clamps the total xy velocity,
         // so raising cruise past it is a no-op unless max_vxy rises too.
         fc_mission_gains.cruise = (float)this->declare_parameter<double>(
-            "mission_cruise", 0.5);
+            "mission_cruise", 1.0);
         fc_mission_gains.max_vxy = (float)this->declare_parameter<double>(
-            "mission_max_vxy", 0.8);
+            "mission_max_vxy", 1.3);
         RCLCPP_INFO(get_logger(),
             "mission gains: cruise=%.2f max_vxy=%.2f",
             fc_mission_gains.cruise, fc_mission_gains.max_vxy);
