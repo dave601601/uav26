@@ -150,8 +150,13 @@ case "${1:-gui}" in
     echo "[dev] ---- FSM events ----"
     grep -E ">> (FSM|RECORD)" "$LOG" | sed 's/.*line_tracer_node\]: //' || true
     echo "[dev] ---- final pose ----"
-    tail -2 "$LOG" | grep -o "xy=([^)]*) alt=[0-9.]*" | tail -1 || true
-    echo "[dev] ---- gz aborts: $(grep -c Aborted "build/sweep_logs/mission/${RUN}_sim.log" 2>/dev/null || echo 0) ----"
+    # The state line carries yaw between xy and alt, and the last log lines are
+    # not always state lines, so scan the whole log rather than its tail.
+    grep -o "xy=([^)]*)[^)]*alt=[0-9.]*" "$LOG" | tail -1 || true
+    # grep -c prints 0 AND exits 1 when there is no match, so a plain
+    # `|| echo 0` fallback appends a second count.
+    ABORTS=$(grep -c Aborted "build/sweep_logs/mission/${RUN}_sim.log" 2>/dev/null || true)
+    echo "[dev] ---- gz aborts: ${ABORTS:-0} ----"
     ;;
 
   *)

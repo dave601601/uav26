@@ -2,6 +2,22 @@
 
 Build environment for the workspace.
 
+## dev.sh mission reported an empty final pose and a doubled abort count (2026-07-21)
+
+Two reporting defects in the `mission` post-processing, both silent.
+
+The final-pose extractor matched `xy=(...) alt=`, but the state line
+gained a `yaw=` field between those two, so the pattern stopped
+matching and every run since printed nothing under "final pose". It
+also read only `tail -2`, which is a shutdown message as often as a
+state line. Now it scans the whole log and tolerates fields between
+`xy` and `alt`.
+
+`grep -c` prints `0` and exits 1 when nothing matches, so the
+`|| echo 0` fallback appended a second count and the line read
+"gz aborts: 0" followed by a bare "0". Capture with `|| true` and
+default the empty (file-missing) case instead.
+
 ## WSL DNS proxy failure blocks git push from the host (2026-07-14)
 
 Symptom: `git push` fails with "Could not resolve host: github.com"
