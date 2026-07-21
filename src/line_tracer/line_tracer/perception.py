@@ -493,14 +493,16 @@ class IntersectionDetector:
     def __init__(self, cfg: Optional[IntersectionConfig] = None) -> None:
         self.cfg = cfg or IntersectionConfig()
         self._armed = True
+        self._last_axis: Optional[str] = None
 
     @property
     def armed(self) -> bool:
         return self._armed
 
     def reset(self) -> None:
-        """Re-arm and forget history (e.g. after a direction change)."""
+        """Re-arm and forget history."""
         self._armed = True
+        self._last_axis = None
 
     def update(
         self,
@@ -516,6 +518,13 @@ class IntersectionDetector:
             followed_lines, crossing_lines = lines_horizontal, lines_vertical
         else:
             raise ValueError(f"travel_axis must be 'x' or 'y', got {travel_axis!r}")
+
+        # A turn swaps which family counts as the crossing, handing the role to
+        # the line the drone is parked on. Disarm so it must leave the exit band
+        # first; a turn taken mid-cell re-arms again below on the same frame.
+        if self._last_axis is not None and travel_axis != self._last_axis:
+            self._armed = False
+        self._last_axis = travel_axis
 
         crossing = self._pick_crossing(crossing_lines, cx, cy)
         followed = pick_nearest_line(followed_lines, cx, cy)

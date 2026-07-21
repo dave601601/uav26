@@ -2,6 +2,31 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Phantom crossing pulse on a turn taken without a settle (2026-07-21)
+
+A turn swaps which Hough family counts as the crossing, handing that
+role to the line the drone is parked on at offset ~0. The detector kept
+its armed flag across the swap, so it fired a pulse for a crossing that
+was never flown. Ordinary turns hid this: a direction change begins a
+settle, and the mission ignores pulses while settling, which burnt the
+phantom. Marker confirm re-chooses move_direction next to the
+current_node re-zero without a settle, so there the phantom was
+consumed as a real crossing.
+
+Seen on a 120 s seed-42 run: 75 ms after recording id 14 the mission
+advanced (0,2) -> (0,3) with DR unchanged at y=6.02, then flew the
+whole next leg believing row y=9 while physically re-flying row y=6.
+Row y=9 went unswept, and lost-line recovery steers toward
+node_world(current_node), so a loss on that leg would have pulled the
+drone 3 m off its line.
+
+The fix belongs in the detector, not the mission: on a travel-axis
+change, disarm, so the new crossing must leave the exit band before it
+can fire. A turn taken mid-cell re-arms on the same frame, so no real
+pulse is lost. reset() could not serve here — it arms, which guarantees
+the phantom — and had no caller outside the tests. The same run after
+the fix reaches node (0,3) at dr y=8.79. Suite 322 pytest + 49 gtests.
+
 ## MCU_CMD log shows the full line contract (2026-07-21)
 
 The default send_command_to_mcu summary logged line_dx/line_dy but
