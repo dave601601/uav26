@@ -2,6 +2,26 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Lookahead detection never runs on the skeleton backend (2026-07-21)
+
+The lookahead gate tests the legacy FSM state against
+{LINE_FOLLOW, GOTO_CANDIDATE, WAYPOINT_VISIT}, but the skeleton backend
+never creates the timer that ticks that FSM, so it holds its
+constructor default TAKEOFF for the whole flight and the gate never
+opens. A full seed-42 run logged zero CANDIDATE lines. The overlay
+named the cause "FSM TAKEOFF", pointing a reader at a takeoff that had
+ended twenty minutes earlier.
+
+Deferring the side camera on this branch is intended
+(MISSION_INTERFACE.md scope), but nothing said so. params.yaml still
+advertises lookahead_enable and sweep_row_step, and sweep_row_step is
+read only by state_machine.py — the skeleton's ExplorationPlanner steps
+one row unconditionally. The M-D row-skip result therefore belongs to
+the legacy backend; the default backend sweeps every row.
+
+The overlay now names the backend as the reason and both keys are
+marked legacy-only. No behavior change.
+
 ## speed_scale logged per tick drowned the event lines (2026-07-21)
 
 The scale line was emitted on every tick whose scale was not 100, i.e.
