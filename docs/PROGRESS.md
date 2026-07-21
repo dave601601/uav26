@@ -17,6 +17,33 @@ Planning docs (checklists, not logs):
 
 ## Open
 
+### Bug sweep against real runs (2026-07-21, `fix/intersection-axis-change`)
+
+Eight defects found by flying seed 42 and reading the logs, not by
+inspection. The flight one: a turn swapped which Hough family counted
+as the crossing and handed the role to the line the drone was parked
+on, so any turn taken without a settle counted a node that was never
+flown — after a marker confirm the mission believed row y=9 while
+re-flying y=6. Fixed in the detector by disarming on a travel-axis
+change. Then the launch file's attitude gains, which halved
+`fc_sim_node`'s defaults on a premise (ground contact at takeoff) this
+world no longer has: paired runs put cross-track RMS at 0.145 m against
+0.324 m, so the launch defaults now track the node. The rest were
+silent tooling and metadata breaks — `plot_mission.py` parsed nothing
+from any current log, `dev.sh` printed an empty final pose, 82 % of a
+run log was one repeated line, marker confirms did not name the id that
+opened them, and four descriptions documented a retired arena.
+
+Post-fix full mission on this host: INIT -> FINISHED in 490 s, 4/4
+records at 0.00 m, ID-order rescue, 0.17 m landing miss, zero gz
+aborts. 371 tests green. Details in the topic files; the run logs are
+`build/sweep_logs/mission/{full01,gainA,gainB,gainBfull}_*.log`.
+
+Not fixed, needs a decision: a grass phantom opened a marker confirm at
+(27.0, 15.1) with no marker within 6 m. The vote rejected it, so the
+record path held, but the stop was paid — this is M-E reproducing on
+the standard texture.
+
 ### Skeleton mission architecture: verified end-to-end (2026-07-17)
 
 `feat/mission-skeleton-interface` (pushed through the r80 log; later
@@ -114,12 +141,16 @@ recreation, and the zombie-sweep contract.
       is the real M-B risk, revisit with the LIDAR/flow estimator).
 - [ ] M-C: retrieval order verification output (40 pt) + per-WP Z
       (20 pt).
-- [x] M-D: search time. Lookahead camera, row-skip, candidates,
-      short-circuit, and the visit policy (coverage filter +
-      cheapest-transit flush). r75 vs r76: search -39.3 % against its
-      own control, -31.1 % against the full serpentine. Further gains
-      are possible (skip ahead to the leg holding a covered candidate
-      when the short-circuit fires) but the milestone is met.
+- [x] M-D: search time, ON THE LEGACY BACKEND. Lookahead camera,
+      row-skip, candidates, short-circuit, and the visit policy
+      (coverage filter + cheapest-transit flush). r75 vs r76: search
+      -39.3 % against its own control, -31.1 % against the full
+      serpentine. None of it is reachable from the default skeleton
+      backend: `sweep_row_step` is read only by `state_machine.py`, and
+      the lookahead gate tests a legacy FSM the skeleton never ticks, so
+      a 2026-07-21 full run logged zero candidates. The skeleton sweeps
+      every row and searched in 286 s. Porting the row-skip and the
+      visit policy to `ExplorationPlanner` is the open item.
 - [ ] M-E: robustness. The downward record path takes a single frame's
       ArUco id with no vote and no geometric check, while the side
       camera's hint path needs 3 votes per node — the authoritative path
@@ -161,7 +192,7 @@ recreation, and the zombie-sweep contract.
    rebuild-if-needed, X11 bridge, and teardown. `dev.sh view` shows
    the detection overlay. Container recreation drops
    `/workspace/install`; dev.sh rebuilds automatically.
-4. Smoke test: `colcon test --packages-select fc_core line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs` should give **227 passing tests** (18 fc_core gtest + 209 line_tracer pytest).
+4. Smoke test: `colcon test --packages-select fc_core line_tracer --packages-ignore realsense2_camera realsense2_camera_msgs` should give 371 passing tests (49 fc_core gtest + 322 line_tracer pytest).
 5. Analysis tools: `scripts/plot_mission.py <tracer.log>` (trajectory
    PNG + recorded-vs-GT diff; pass `--layout` with the runtime
    aruco_layout.yaml), `src/line_tracer/scripts/record_debug_video.py`
