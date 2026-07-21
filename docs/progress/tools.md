@@ -4,6 +4,26 @@ Standalone scripts under `scripts/` that help develop or evaluate the system.
 
 ## Done
 
+### plot_mission.py parsed nothing from any current log (2026-07-21)
+
+The sample regex required `alt=` immediately after `xy=(...)` and a
+trailing `vz_truth=`. The skeleton backend inserted `yaw=` between the
+two and replaced the trailing field with `mode=`/`dir=`, so the tool
+exited "no samples parsed" on every log it was pointed at — the same
+break that silently emptied dev.sh's final-pose line. The regex now
+tolerates fields between `xy` and `alt`, and `vz_truth` is read
+separately when present.
+
+STATE_COLORS also held only legacy FSM names, so every skeleton state
+fell through to the default grey. Added the MissionState names, and
+corrected the reference grid from 4 m to the 3 m official spec.
+
+Verified on a full seed-42 run: three panels, all four markers at
+0.00 m error against the layout, FSM timeline INIT -> FINISHED.
+Note the PNG lands next to the log by default, and
+build/sweep_logs is root-owned because the container writes it, so
+pass --out when running from the host.
+
 ### `scripts/dev.sh` + `scripts/run_mission.sh` — workflow drivers (2026-07-08)
 
 `dev.sh` is the daily driver: `gui` (X11 bridge + container up +
