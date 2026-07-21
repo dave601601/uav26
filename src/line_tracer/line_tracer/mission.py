@@ -429,6 +429,8 @@ class MissionManager:
         # True from a settle exit until the next node advance (the first leg
         # after any settle runs slow).
         self._first_leg_after_settle = False
+        # Last speed_scale written to the log, so a slow leg logs once.
+        self._last_logged_scale = 100
         # Latest front-camera marker hint (id, node, ground distance ahead).
         self._front_hint_id: Optional[int] = None
         self._front_hint_node: Optional[Node] = None
@@ -995,8 +997,11 @@ class MissionManager:
                 line_dy = max(-2.0, min(2.0, nom_x - dr_x))
                 horizontal_line = True
 
-        if speed_scale != 100:
+        # Log leg boundaries, not every tick: the scale holds for a whole leg
+        # and at the perception rate it otherwise drowns the event lines.
+        if speed_scale != self._last_logged_scale:
             self._log(f"[{self.state.name}] scale={speed_scale} {self._context_str()}")
+            self._last_logged_scale = speed_scale
         vel_valid = sensors.vx_est is not None and sensors.vy_est is not None
         marker_id = perception.aruco.marker_id
         return McuCommand(

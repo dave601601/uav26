@@ -2,6 +2,15 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## speed_scale logged per tick drowned the event lines (2026-07-21)
+
+The scale line was emitted on every tick whose scale was not 100, i.e.
+at the perception rate for the whole of any slow leg. A 1400 s run came
+out 82 % scale lines (722 of 882 at the 120 s mark), which buries the
+FSM, GRID and RECORD lines the run summary and the plots are built
+from. It now logs only when the value changes, so a leg costs one line
+and the return to full cruise is visible too.
+
 ## Phantom crossing pulse on a turn taken without a settle (2026-07-21)
 
 A turn swaps which Hough family counts as the crossing, handing that
