@@ -774,7 +774,12 @@ class LineTracerNode(Node):
         # "the side camera sees nothing", which is a different claim.
         grid = self._fsm.context.grid
         paused = (
-            "FSM " + self._fsm.state.name
+            # The gate below reads the legacy FSM, which the skeleton backend
+            # never ticks, so it would otherwise blame a TAKEOFF that ended
+            # long ago. Candidates feed the legacy planner only.
+            "mission_backend=skeleton"
+            if self._mission_backend != "legacy"
+            else "FSM " + self._fsm.state.name
             if self._fsm.state not in _LOOKAHEAD_ACTIVE_STATES
             else "no camera_info" if self._lookahead_intrinsics is None
             else "no altitude" if self._altitude_m is None

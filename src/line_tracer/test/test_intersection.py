@@ -307,3 +307,54 @@ class TestMisc:
         det = IntersectionDetector(IntersectionConfig(min_crossing_length_px=120.0))
         img = _frame([(int(CX), 0, int(CX), H), (300, int(CY), 340, int(CY))])
         assert not _run(det, img, "x", cfg, intr).detected
+
+
+# ---------------------------------------------------------------------------
+# Turns (travel-axis change)
+# ---------------------------------------------------------------------------
+
+class TestAxisChange:
+    """A turn swaps the followed and crossing families. The line the drone is
+    parked on inherits the crossing role at offset ~0, so without a disarm it
+    fires a pulse for a crossing that was never flown."""
+
+    def test_turn_onto_the_parked_line_does_not_fire(self, cfg, intr):
+        # Cruising 'x' along a line that is vertical in the image, no crossing.
+        det = IntersectionDetector()
+        img = _frame([(int(CX), 0, int(CX), H)])
+        assert not _run(det, img, "x", cfg, intr).detected
+        assert det.armed
+        # Turn onto 'y': that same line is now the crossing, dead center.
+        assert not _run(det, img, "y", cfg, intr).detected
+
+    def test_leaving_the_parked_line_re_arms_then_the_next_crossing_fires(
+        self, cfg, intr
+    ):
+        det = IntersectionDetector()
+        parked = _frame([(int(CX), 0, int(CX), H)])
+        _run(det, parked, "x", cfg, intr)
+        _run(det, parked, "y", cfg, intr)
+        # Fly off the parked line: beyond exit_px the detector re-arms.
+        off = int(CX) + 150
+        assert not _run(det, _frame([(off, 0, off, H)]), "y", cfg, intr).detected
+        assert det.armed
+        # The next real crossing fires exactly once.
+        assert _run(det, parked, "y", cfg, intr).detected
+        assert not _run(det, parked, "y", cfg, intr).detected
+
+    def test_turn_taken_mid_cell_keeps_the_next_pulse(self, cfg, intr):
+        # Turning with no crossing near center must not swallow the next one.
+        det = IntersectionDetector()
+        _run(det, _frame([(int(CX), 0, int(CX), H)]), "x", cfg, intr)
+        far = int(CX) + 150
+        assert not _run(det, _frame([(far, 0, far, H)]), "y", cfg, intr).detected
+        assert det.armed
+        assert _run(det, _frame([(int(CX), 0, int(CX), H)]), "y", cfg, intr).detected
+
+    def test_turning_back_does_not_double_count(self, cfg, intr):
+        # x -> y -> x while parked on the same intersection: no pulse either way.
+        det = IntersectionDetector()
+        img = _frame([(int(CX), 0, int(CX), H), (0, int(CY), W, int(CY))])
+        assert _run(det, img, "x", cfg, intr).detected     # the real crossing
+        assert not _run(det, img, "y", cfg, intr).detected
+        assert not _run(det, img, "x", cfg, intr).detected

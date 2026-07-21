@@ -12,7 +12,7 @@ Reads the headless line_tracer log piped from:
 Extracts:
   - FSM transitions (`>> FSM: A -> B (alt=...)`)
   - Marker records (`>> RECORD aruco id=N at (x, y)`)
-  - 1 Hz status (`[STATE/source] xy=(x,y) alt=Z vz_truth=V | du=... | vx=... vz=...`)
+  - 1 Hz status (`[STATE/source] xy=(x,y) yaw=Y alt=Z mode=M dir=D`)
 
 Writes a 3-panel PNG:
 
@@ -52,12 +52,16 @@ FSM_RE = re.compile(r">> FSM: (\w+) -> (\w+) \(alt=([+-]?\d+\.\d+)\)")
 RECORD_RE = re.compile(
     r">> RECORD aruco id=(\d+) at \(([+-]?\d+\.\d+),\s*([+-]?\d+\.\d+)\)"
 )
+# Tolerant of fields inserted between xy and alt (the skeleton backend added
+# yaw there) and of the trailing field changing (vz_truth -> mode/dir).
 SAMPLE_RE = re.compile(
-    r"\[(\w+)/\w+\] xy=\(([+-]?\d+\.\d+),([+-]?\d+\.\d+)\) "
-    r"alt=([+-]?\d+\.\d+) vz_truth=([+-]?\d+\.\d+)"
+    r"\[(\w+)/\w+\] xy=\(([+-]?\d+\.\d+),\s*([+-]?\d+\.\d+)\)"
+    r"[^=]*?(?:\w+=\S+ )*?alt=([+-]?\d+\.\d+)"
 )
+VZ_RE = re.compile(r"vz_truth=([+-]?\d+\.\d+)")
 
 
+# Both backends: legacy FSM names and the skeleton's MissionState names.
 STATE_COLORS = {
     "TAKEOFF": "#7c8cff",
     "LINE_FOLLOW": "#33aa55",
@@ -65,6 +69,15 @@ STATE_COLORS = {
     "ARRANGE_BY_ID": "#aa44aa",
     "RETURN_PATH": "#a05050",
     "LAND": "#444444",
+    "LOCALIZE": "#6699cc",
+    "ENTER_GRID": "#44bbaa",
+    "EXPLORE": "#33aa55",
+    "MARKER_CONFIRM": "#cc8822",
+    "PLAN_RESCUE_PATH": "#aa44aa",
+    "FOLLOW_RESCUE_PATH": "#a05050",
+    "RETURN_HOME": "#996633",
+    "FINISHED": "#222222",
+    "FAILSAFE": "#cc2222",
 }
 
 
@@ -131,9 +144,10 @@ def parse(path: Path) -> Run:
                 # Drop those so they don't dominate the plot.
                 if abs(x) > 200 or abs(y) > 200 or alt < -10 or alt > 50:
                     continue
+                vz = VZ_RE.search(line)
                 run.samples.append(Sample(
                     t=t, state=m.group(1), x=x, y=y, alt=alt,
-                    vz_truth=float(m.group(5)),
+                    vz_truth=float(vz.group(1)) if vz else 0.0,
                 ))
                 if run.t0 is None:
                     run.t0 = t
@@ -211,10 +225,10 @@ def plot(run: Run, layout: dict[int, tuple[float, float]], out: Path) -> None:
         ax.annotate(f"gt {mid}", (mx, my), xytext=(-26, -16),
                     textcoords="offset points", fontsize=8, color="#cc2222")
 
-    # Show grid lines (4 m cells assumed; rules say "약 4m × 4m").
-    for gx in range(0, 32, 4):
+    # Grid lines: the 2026-07 official spec is a 30 x 21 m arena on 3 m cells.
+    for gx in range(0, 31, 3):
         ax.axvline(gx, color="#dddddd", lw=0.6, zorder=1)
-    for gy in range(0, 22, 4):
+    for gy in range(0, 22, 3):
         ax.axhline(gy, color="#dddddd", lw=0.6, zorder=1)
 
     ax.set_xlabel("x [m]")

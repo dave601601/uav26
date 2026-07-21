@@ -157,11 +157,9 @@ public:
             COMP.last_ms = 0;       // will be refreshed each /clock tick below
         }
 
-        // Sim retune: the firmware gains were hand-tuned for the real
-        // airframe. In gz the integral term winds up against IMU noise
-        // and flips the drone within ~25 s. Disable rate integrators
-        // and dial the rate kp down somewhat. The attitude PID is left
-        // alone — it has no integrator and its kp damps tilt.
+        // Applies the sim-side deviations from the firmware gains, each
+        // justified at its own line below. Set false to fly the firmware
+        // constants exactly.
         const bool sim_retune = this->declare_parameter<bool>("sim_retune", true);
         if (sim_retune) {
             pid_rate.ki = vec(0.0f, 0.0f, 0.0f);

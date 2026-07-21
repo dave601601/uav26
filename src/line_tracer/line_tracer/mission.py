@@ -429,6 +429,10 @@ class MissionManager:
         # True from a settle exit until the next node advance (the first leg
         # after any settle runs slow).
         self._first_leg_after_settle = False
+        # Last speed_scale written to the log, so a slow leg logs once.
+        self._last_logged_scale = 100
+        # Id whose single-frame sighting opened the current confirm window.
+        self._confirm_trigger_id: Optional[int] = None
         # Latest front-camera marker hint (id, node, ground distance ahead).
         self._front_hint_id: Optional[int] = None
         self._front_hint_node: Optional[Node] = None
@@ -573,7 +577,10 @@ class MissionManager:
         )
 
         if not self.detected_ids_during_hover:
-            self._log("[MARKER] confirmation failed: no id seen")
+            self._log(
+                f"[MARKER] confirmation failed: id {self._confirm_trigger_id} "
+                "opened the window but was never seen again"
+            )
             return
         confirmed_id = Counter(self.detected_ids_during_hover).most_common(1)[0][0]
 
@@ -782,6 +789,11 @@ class MissionManager:
                 self.marker_confirm_start_time = now
                 self.detected_ids_during_hover = []
                 self.marker_node_votes = {}
+                # A single frame opens the confirm, so name the id that did it:
+                # a rejected confirm is otherwise indistinguishable in the log
+                # from a real marker the vote happened to lose.
+                self._confirm_trigger_id = perception.aruco.marker_id
+                self._log(f"[MARKER] confirm opened by id {self._confirm_trigger_id}")
                 self.change_state(MissionState.MARKER_CONFIRM)
                 return ControlMode.ALIGN_MARKER
 
@@ -995,8 +1007,11 @@ class MissionManager:
                 line_dy = max(-2.0, min(2.0, nom_x - dr_x))
                 horizontal_line = True
 
-        if speed_scale != 100:
+        # Log leg boundaries, not every tick: the scale holds for a whole leg
+        # and at the perception rate it otherwise drowns the event lines.
+        if speed_scale != self._last_logged_scale:
             self._log(f"[{self.state.name}] scale={speed_scale} {self._context_str()}")
+            self._last_logged_scale = speed_scale
         vel_valid = sensors.vx_est is not None and sensors.vy_est is not None
         marker_id = perception.aruco.marker_id
         return McuCommand(
@@ -1050,7 +1065,11 @@ class MissionManager:
             f"state={MissionState(command.mission_state).name} seq={command.seq} "
             f"node=({command.node_x}, {command.node_y}) "
             f"dir={MoveDirection(command.move_direction).name} "
-            f"line_dx={command.line_dx:.3f} line_dy={command.line_dy:.3f} "
+            # Presence flags travel with the offsets: without them a logged
+            # dx=0.000 reads the same whether the line is centered or absent.
+            f"line=(v={int(command.vertical_line)} dx={command.line_dx:.3f} "
+            f"h={int(command.horizontal_line)} dy={command.line_dy:.3f} "
+            f"angle={command.line_angle_error:.3f}) "
             f"marker_id={command.marker_id} "
             f"vel_valid={command.vel_est_valid} emergency={command.emergency}"
         )

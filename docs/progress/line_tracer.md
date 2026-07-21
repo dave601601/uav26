@@ -2,6 +2,91 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Grass phantom opened a marker confirm on the standard texture (2026-07-21)
+
+A full seed-42 run detected an ArUco at (27.0, 15.1) on row y=15 where
+no marker exists — the nearest, id 17, sits 6 m west at (21, 15). The
+3 s vote rejected it, so no false record, but the stop and its braking
+overshoot were paid. This is the M-E hazard reproducing on the standard
+non-negated marker texture, which PROGRESS.md flagged as live after the
+polarity change.
+
+The log could not say that. Entry into MARKER_CONFIRM takes a single
+frame's id and logged nothing about it, so a rejected confirm read
+exactly like a real marker whose vote lost. The entry now names the
+triggering id and the rejection quotes it back — the false-positive
+rate an M-E gate has to beat is only measurable once that is in the log.
+
+## Lookahead detection never runs on the skeleton backend (2026-07-21)
+
+The lookahead gate tests the legacy FSM state against
+{LINE_FOLLOW, GOTO_CANDIDATE, WAYPOINT_VISIT}, but the skeleton backend
+never creates the timer that ticks that FSM, so it holds its
+constructor default TAKEOFF for the whole flight and the gate never
+opens. A full seed-42 run logged zero CANDIDATE lines. The overlay
+named the cause "FSM TAKEOFF", pointing a reader at a takeoff that had
+ended twenty minutes earlier.
+
+Deferring the side camera on this branch is intended
+(MISSION_INTERFACE.md scope), but nothing said so. params.yaml still
+advertises lookahead_enable and sweep_row_step, and sweep_row_step is
+read only by state_machine.py — the skeleton's ExplorationPlanner steps
+one row unconditionally. The M-D row-skip result therefore belongs to
+the legacy backend; the default backend sweeps every row.
+
+The overlay now names the backend as the reason and both keys are
+marked legacy-only. No behavior change.
+
+## speed_scale logged per tick drowned the event lines (2026-07-21)
+
+The scale line was emitted on every tick whose scale was not 100, i.e.
+at the perception rate for the whole of any slow leg. A 1400 s run came
+out 82 % scale lines (722 of 882 at the 120 s mark), which buries the
+FSM, GRID and RECORD lines the run summary and the plots are built
+from. It now logs only when the value changes, so a leg costs one line
+and the return to full cruise is visible too.
+
+## Phantom crossing pulse on a turn taken without a settle (2026-07-21)
+
+A turn swaps which Hough family counts as the crossing, handing that
+role to the line the drone is parked on at offset ~0. The detector kept
+its armed flag across the swap, so it fired a pulse for a crossing that
+was never flown. Ordinary turns hid this: a direction change begins a
+settle, and the mission ignores pulses while settling, which burnt the
+phantom. Marker confirm re-chooses move_direction next to the
+current_node re-zero without a settle, so there the phantom was
+consumed as a real crossing.
+
+Seen on a 120 s seed-42 run: 75 ms after recording id 14 the mission
+advanced (0,2) -> (0,3) with DR unchanged at y=6.02, then flew the
+whole next leg believing row y=9 while physically re-flying row y=6.
+Row y=9 went unswept, and lost-line recovery steers toward
+node_world(current_node), so a loss on that leg would have pulled the
+drone 3 m off its line.
+
+The fix belongs in the detector, not the mission: on a travel-axis
+change, disarm, so the new crossing must leave the exit band before it
+can fire. A turn taken mid-cell re-arms on the same frame, so no real
+pulse is lost. reset() could not serve here — it arms, which guarantees
+the phantom — and had no caller outside the tests. The same run after
+the fix reaches node (0,3) at dr y=8.79. Suite 322 pytest + 49 gtests.
+
+## MCU_CMD log shows the full line contract (2026-07-21)
+
+The default send_command_to_mcu summary logged line_dx/line_dy but
+neither the presence flags nor line_angle_error, so a reader could not
+tell a centered line from an absent one and the angle looked like it
+was never sent at all (it is, at wire offset 14, and mission_ctrl
+turns it into wz). The skeleton logged the angle; the interface
+extraction dropped it. Log now carries v/h presence with the offsets
+plus the angle.
+
+Gap left open: line_angle_error has no validity bit of its own. The
+node folds a missing angle to 0.0, which is indistinguishable from
+"aligned"; today only the MCU's presence-bit gate on the offsets keeps
+that safe, so the angle's validity rides on a flag it does not come
+from. flags2 has six free bits if this ever needs its own.
+
 ## Interface extracted + serial packer + root README (2026-07-20)
 
 The Jetson<->MCU contract moved out of mission.py into

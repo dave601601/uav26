@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>
     UAV26 line_tracer 검증용 Gazebo Harmonic 월드 + X-frame quadrotor + 가짜 FC.
-    30×20 m 격자 바닥, ArUco DICT_6X6_250 마커 9개, 하향 D435 카메라 sim.
+    30×21 m 격자 바닥, ArUco DICT_4X4_50 마커 4개, 하향 D435 카메라 sim.
   </description>
 
   <maintainer email="noreply@todo.todo">Dongha Gwak</maintainer>
