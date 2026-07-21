@@ -163,19 +163,16 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
-    # Optional fc_sim_node gain overrides exposed as launch args so the
-    # caller can dial down responsiveness without rebuilding.
-    # Half-gain defaults: with the sphere body collision the drone can
-    # actually rotate on the ground at takeoff, and the firmware-native
-    # 0.80 atti gain over-corrects on every contact perturbation which
-    # makes DartSim's ODE collision detector explode. The halved gains
-    # (0.20 rate / 0.40 atti / 0.20 kd) match what flight_demo +
-    # waypoint_demo verified stable in earlier runs.
-    rate_kp_p_arg     = DeclareLaunchArgument("rate_kp_p",     default_value="0.20")
-    rate_kp_q_arg     = DeclareLaunchArgument("rate_kp_q",     default_value="0.20")
-    rate_kp_r_arg     = DeclareLaunchArgument("rate_kp_r",     default_value="0.40")
-    atti_kp_roll_arg  = DeclareLaunchArgument("atti_kp_roll",  default_value="0.40")
-    atti_kp_pitch_arg = DeclareLaunchArgument("atti_kp_pitch", default_value="0.40")
+    # fc_sim_node gain overrides, so responsiveness can be dialled without a
+    # rebuild. Defaults track fc_sim_node's firmware-native values: the earlier
+    # halved defaults were justified by a takeoff ground contact this world no
+    # longer has (spawn is airborne at 3 m, the prime holds 1.2 m), and they
+    # cost half the line-tracking accuracy.
+    rate_kp_p_arg     = DeclareLaunchArgument("rate_kp_p",     default_value="0.40")
+    rate_kp_q_arg     = DeclareLaunchArgument("rate_kp_q",     default_value="0.40")
+    rate_kp_r_arg     = DeclareLaunchArgument("rate_kp_r",     default_value="0.80")
+    atti_kp_roll_arg  = DeclareLaunchArgument("atti_kp_roll",  default_value="0.80")
+    atti_kp_pitch_arg = DeclareLaunchArgument("atti_kp_pitch", default_value="0.80")
     atti_kd_roll_arg  = DeclareLaunchArgument("atti_kd_roll",  default_value="0.20")
     atti_kd_pitch_arg = DeclareLaunchArgument("atti_kd_pitch", default_value="0.20")
 

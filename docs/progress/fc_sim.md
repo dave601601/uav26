@@ -4,6 +4,33 @@ ROS2 C++ wrapper around `fc_core` that flies the simulated drone in Gazebo Harmo
 
 ## Done (recent)
 
+### Launch and node disagreed on the attitude gains; the node was right (2026-07-21)
+
+`fc_sim_node` declared the firmware-native gains (rate 0.40/0.40/0.80,
+atti kp 0.80) while `world/launch/sim.launch.py` overrode every one of
+them to half, so every mission ever flown used the halved set and the
+node's defaults were never exercised. The two comments cited the same
+two root causes and drew opposite conclusions: the launch file blamed
+ground contact at takeoff exploding DartSim, the node called that a
+misdiagnosis of the since-fixed pitch-sign bug.
+
+The launch file's premise no longer holds. The drone spawns airborne at
+3 m and the auto-hover prime settles it at 1.2 m, so there is no ground
+contact before takeoff at all; contact happens only at landing.
+
+Paired seed-42 runs settle it. Firmware-native gains halve the
+cross-track error on EXPLORE legs — RMS 0.324 -> 0.145 m, p95
+0.650 -> 0.360 m, worst 1.37 -> 0.69 m — at identical altitude RMS
+(0.007 m). Both configurations fly the full mission to FINISHED with
+4/4 exact records, zero gz aborts and no ODE fault through landing;
+the firmware gains land 0.17 m from home against 0.32 m. The worst case
+matters most: 1.37 m of drift on a 3 m cell is close to the lost-line
+threshold, and the halved gains got there.
+
+Launch defaults now track the node. Search time was 283 s against
+302 s in favour of the halved gains, which is the one metric that did
+not improve and is worth watching across more seeds.
+
 ### Mission-gain override parameters (2026-07-17)
 
 fc_sim_node declares mission_cruise (default 0.2) and mission_max_vxy
