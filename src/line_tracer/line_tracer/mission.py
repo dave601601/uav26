@@ -1050,7 +1050,11 @@ class MissionManager:
             f"state={MissionState(command.mission_state).name} seq={command.seq} "
             f"node=({command.node_x}, {command.node_y}) "
             f"dir={MoveDirection(command.move_direction).name} "
-            f"line_dx={command.line_dx:.3f} line_dy={command.line_dy:.3f} "
+            # Presence flags travel with the offsets: without them a logged
+            # dx=0.000 reads the same whether the line is centered or absent.
+            f"line=(v={int(command.vertical_line)} dx={command.line_dx:.3f} "
+            f"h={int(command.horizontal_line)} dy={command.line_dy:.3f} "
+            f"angle={command.line_angle_error:.3f}) "
             f"marker_id={command.marker_id} "
             f"vel_valid={command.vel_est_valid} emergency={command.emergency}"
         )

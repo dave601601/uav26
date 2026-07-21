@@ -2,6 +2,22 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## MCU_CMD log shows the full line contract (2026-07-21)
+
+The default send_command_to_mcu summary logged line_dx/line_dy but
+neither the presence flags nor line_angle_error, so a reader could not
+tell a centered line from an absent one and the angle looked like it
+was never sent at all (it is, at wire offset 14, and mission_ctrl
+turns it into wz). The skeleton logged the angle; the interface
+extraction dropped it. Log now carries v/h presence with the offsets
+plus the angle.
+
+Gap left open: line_angle_error has no validity bit of its own. The
+node folds a missing angle to 0.0, which is indistinguishable from
+"aligned"; today only the MCU's presence-bit gate on the offsets keeps
+that safe, so the angle's validity rides on a flag it does not come
+from. flags2 has six free bits if this ever needs its own.
+
 ## Interface extracted + serial packer + root README (2026-07-20)
 
 The Jetson<->MCU contract moved out of mission.py into
