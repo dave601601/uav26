@@ -7,8 +7,8 @@
 #
 # Official spec (2026-07 survey): 30x21 m grass arena (dims assumed
 # until the rules confirm), 3 m cells, WHITE 10 cm satin lines,
-# markers 0.4 m sheets (white bg / black code) on INTERIOR grid
-# vertices, 4 unique IDs from 0..49. Dictionary is NOT specified by
+# markers 0.4 m sheets (standard ArUco: black field, white code) on
+# INTERIOR grid vertices, 4 unique IDs from 0..49. Dictionary is NOT specified by
 # the rules — the sim assumes DICT_4X4_50 (see aruco.py --dict).
 
 marker_size: 0.4

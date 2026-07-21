@@ -4,6 +4,19 @@ Gazebo Harmonic simulation package: arena, drone model, sensor plugins, bridge, 
 
 ## Done (recent)
 
+### Stale package metadata corrected (2026-07-21)
+
+Three descriptions still documented a world that no longer exists.
+`package.xml` claimed a 30x20 m arena with nine DICT_6X6_250 markers
+(it is 30x21, four markers, DICT_4X4_50). `models/uav26_quad/model.config`
+still advertised the removed multicopter-velocity-control fake FC and
+omitted the side and front cameras. The checked-in `aruco_layout.yaml`
+sample still described the marker as white background with a black
+code, which the 2026-07-09 polarity decision overturned — it is a
+standard ArUco, black field with a white code, which is why
+`aruco_white_on_black` stays false. Also dropped an unused
+`TimerAction` import from `sim.launch.py`.
+
 ### Front camera added: IMX219 8MP 120 deg, 45 deg down (2026-07-17)
 
 Hardware spec change (user, 2026-07-17): the planned additional camera
