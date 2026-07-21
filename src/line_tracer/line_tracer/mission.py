@@ -431,6 +431,8 @@ class MissionManager:
         self._first_leg_after_settle = False
         # Last speed_scale written to the log, so a slow leg logs once.
         self._last_logged_scale = 100
+        # Id whose single-frame sighting opened the current confirm window.
+        self._confirm_trigger_id: Optional[int] = None
         # Latest front-camera marker hint (id, node, ground distance ahead).
         self._front_hint_id: Optional[int] = None
         self._front_hint_node: Optional[Node] = None
@@ -575,7 +577,10 @@ class MissionManager:
         )
 
         if not self.detected_ids_during_hover:
-            self._log("[MARKER] confirmation failed: no id seen")
+            self._log(
+                f"[MARKER] confirmation failed: id {self._confirm_trigger_id} "
+                "opened the window but was never seen again"
+            )
             return
         confirmed_id = Counter(self.detected_ids_during_hover).most_common(1)[0][0]
 
@@ -784,6 +789,11 @@ class MissionManager:
                 self.marker_confirm_start_time = now
                 self.detected_ids_during_hover = []
                 self.marker_node_votes = {}
+                # A single frame opens the confirm, so name the id that did it:
+                # a rejected confirm is otherwise indistinguishable in the log
+                # from a real marker the vote happened to lose.
+                self._confirm_trigger_id = perception.aruco.marker_id
+                self._log(f"[MARKER] confirm opened by id {self._confirm_trigger_id}")
                 self.change_state(MissionState.MARKER_CONFIRM)
                 return ControlMode.ALIGN_MARKER
 

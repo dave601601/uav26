@@ -2,6 +2,21 @@
 
 Vision-driven companion: downward camera -> Hough line + ArUco -> dead reckoning + FSM -> setpoint to FC.
 
+## Grass phantom opened a marker confirm on the standard texture (2026-07-21)
+
+A full seed-42 run detected an ArUco at (27.0, 15.1) on row y=15 where
+no marker exists — the nearest, id 17, sits 6 m west at (21, 15). The
+3 s vote rejected it, so no false record, but the stop and its braking
+overshoot were paid. This is the M-E hazard reproducing on the standard
+non-negated marker texture, which PROGRESS.md flagged as live after the
+polarity change.
+
+The log could not say that. Entry into MARKER_CONFIRM takes a single
+frame's id and logged nothing about it, so a rejected confirm read
+exactly like a real marker whose vote lost. The entry now names the
+triggering id and the rejection quotes it back — the false-positive
+rate an M-E gate has to beat is only measurable once that is in the log.
+
 ## Lookahead detection never runs on the skeleton backend (2026-07-21)
 
 The lookahead gate tests the legacy FSM state against
